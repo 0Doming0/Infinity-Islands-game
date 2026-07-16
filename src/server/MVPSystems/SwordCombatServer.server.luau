@@ -231,34 +231,40 @@ end
 
 local function resolveModelFromPart(part, attackerCharacter)
 	local ancestor = part
-	local fallbackModel, fallbackHumanoid
 	while ancestor and ancestor ~= workspace do
 		if ancestor:IsA("Model") then
-			local humanoid = ancestor:FindFirstChildWhichIsA("Humanoid", true)
-			if humanoid and not fallbackModel then
-				fallbackModel, fallbackHumanoid = ancestor, humanoid
+			-- Nunca deixe a busca subir ate o modelo da ilha. Uma ilha pode conter
+			-- monstros com Humanoid, mas isso nao transforma o terreno em personagem.
+			if ancestor:GetAttribute("IsSkyIsland") == true then
+				return nil
 			end
-			if CollectionService:HasTag(ancestor, Config.TargetTag) then
-				fallbackModel, fallbackHumanoid = ancestor, humanoid
-				break
+
+			-- Personagens normais possuem o Humanoid diretamente no proprio Model.
+			-- Para alvos explicitamente marcados, aceitamos rigs com o Humanoid em
+			-- um submodelo, mas continuamos retornando somente o Model marcado.
+			local humanoid = ancestor:FindFirstChildOfClass("Humanoid")
+			if not humanoid and CollectionService:HasTag(ancestor, Config.TargetTag) then
+				humanoid = ancestor:FindFirstChildWhichIsA("Humanoid", true)
+			end
+
+			if humanoid then
+				if ancestor == attackerCharacter or humanoid.Health <= 0 then
+					return nil
+				end
+				local root = ancestor:FindFirstChild("HumanoidRootPart", true)
+					or ancestor:FindFirstChild("UpperTorso", true)
+					or ancestor:FindFirstChild("Torso", true)
+					or ancestor.PrimaryPart
+					or ancestor:FindFirstChildWhichIsA("BasePart", true)
+				if root and root:IsA("BasePart") then
+					return ancestor, humanoid, root
+				end
+				return nil
 			end
 		end
 		ancestor = ancestor.Parent
 	end
-
-	local model, humanoid = fallbackModel, fallbackHumanoid
-	if not model or model == attackerCharacter or not humanoid or humanoid.Health <= 0 then
-		return nil
-	end
-	local root = model:FindFirstChild("HumanoidRootPart", true)
-		or model:FindFirstChild("UpperTorso", true)
-		or model:FindFirstChild("Torso", true)
-		or model.PrimaryPart
-		or model:FindFirstChildWhichIsA("BasePart", true)
-	if not root or not root:IsA("BasePart") then
-		return nil
-	end
-	return model, humanoid, root
+	return nil
 end
 
 local function insideBox(boxCFrame, size, position)
@@ -271,6 +277,9 @@ end
 
 local function addTarget(list, seen, player, character, attackerRoot, model, humanoid, root)
 	if not model or not humanoid or not root or humanoid.Health <= 0 then
+		return
+	end
+	if model:GetAttribute("IsSkyIsland") == true then
 		return
 	end
 	if model == character or seen[humanoid] or DamageService.IsFriendly(player, model, Config.FriendlyFire) then

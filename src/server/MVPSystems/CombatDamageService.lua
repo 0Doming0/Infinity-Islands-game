@@ -199,6 +199,12 @@ function DamageService.ApplySwordHit(attacker, attackerRoot, target, attack)
 	if not model or not model.Parent or not humanoid or humanoid.Health <= 0 or not root or not root.Parent then
 		return false, false
 	end
+	-- Defesa final: mesmo que uma hitbox futura resolva o alvo incorretamente,
+	-- terreno procedural jamais pode receber dano ou ser desancorado pelo combate.
+	if model:GetAttribute("IsSkyIsland") == true then
+		warn("[SwordCombatV6] Tentativa de atingir uma ilha foi bloqueada: " .. model:GetFullName())
+		return false, false
+	end
 	if model:GetAttribute("Invulnerable") == true or model:GetAttribute("NoSwordDamage") == true then
 		return false, false
 	end
