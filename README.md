@@ -15,3 +15,45 @@ rojo serve
 ```
 
 For more help, check out [the Rojo documentation](https://rojo.space/docs).
+
+## Sistemas do MVP
+
+Esta versao inclui:
+
+- agua adaptativa com aquecimento, desaceleracao de emergencia e aceleracao quando o grupo fica muito adiantado;
+- vila procedural em MainHalls, garantida a cada tres rounds e com chance adicional;
+- catalogo com quatro espadas, compra por pontos, equipamento e modelos de exemplo;
+- salvamento de `TotalScore`, `BestScore`, `OwnedSwords` e `EquippedSword`;
+- HUD responsiva, botao de ataque mobile, teclado `F` e gatilho `R2`;
+- sons e animacoes provisorias centralizados.
+
+## Substituir os exemplos
+
+Os valores temporarios ficam em `src/shared/MVPConfig.lua` e as espadas em
+`src/shared/SwordCatalog.lua`.
+
+Para usar modelos reais de espada, coloque Tools em:
+
+```text
+ServerStorage/MVPAssets/Swords
+```
+
+Cada Tool deve ter `Handle`; use o nome ou atributo `SwordId` correspondente a
+`ClassicSword`, `BronzeSword`, `CrystalSword` ou `VoidSword`.
+
+Para usar modelos reais da vila, crie:
+
+```text
+ServerStorage/MVPAssets/Village/Buildings
+ServerStorage/MVPAssets/Village/Villagers
+```
+
+Sem esses modelos, o sistema gera automaticamente casas, mercador e espadas de
+exemplo por codigo. Antes da publicacao, troque os IDs de animacao de exemplo por
+assets publicados pelo proprietario ou grupo da experiencia.
+
+## Teste no Studio
+
+Habilite **Game Settings > Security > Enable Studio Access to API Services**
+apenas no ambiente de teste apropriado para validar o DataStore. Teste compra,
+equipamento, morte, respawn e nova entrada antes de publicar.

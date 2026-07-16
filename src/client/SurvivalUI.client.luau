@@ -1,220 +1,207 @@
---[[
-	SurvivalUI - Client Script (Optimized)
-	Displays water level, score, height, and survival info.
-	Receives updates at throttled intervals from server.
-]]
+-- SkyDungeon - HUD responsiva para computador, controle e celular.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 local waterEvent = ReplicatedStorage:WaitForChild("WaterEvent")
 
--- ========================
--- CREATE UI
--- ========================
-
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "SurvivalUI"
 screenGui.ResetOnSpawn = false
-screenGui.IgnoreGuiInset = true
+screenGui.IgnoreGuiInset = false
+screenGui.DisplayOrder = 5
 screenGui.Parent = playerGui
 
--- HUD container (top center)
-local hudFrame = Instance.new("Frame")
-hudFrame.Name = "HUD"
-hudFrame.Size = UDim2.new(0, 320, 0, 100)
-hudFrame.Position = UDim2.new(0.5, -160, 0, 15)
-hudFrame.BackgroundColor3 = Color3.fromRGB(15, 25, 40)
-hudFrame.BackgroundTransparency = 0.15
-hudFrame.BorderSizePixel = 0
-hudFrame.Parent = screenGui
-
+local hud = Instance.new("Frame")
+hud.Name = "HUD"
+hud.AnchorPoint = Vector2.new(0.5, 0)
+hud.Position = UDim2.new(0.5, 0, 0, 12)
+hud.Size = UDim2.fromOffset(470, 142)
+hud.BackgroundColor3 = Color3.fromRGB(14, 20, 32)
+hud.BackgroundTransparency = 0.10
+hud.BorderSizePixel = 0
+hud.Parent = screenGui
+local hudScale = Instance.new("UIScale")
+hudScale.Parent = hud
 local hudCorner = Instance.new("UICorner")
-hudCorner.CornerRadius = UDim.new(0, 12)
-hudCorner.Parent = hudFrame
+hudCorner.CornerRadius = UDim.new(0, 15)
+hudCorner.Parent = hud
+local hudStroke = Instance.new("UIStroke")
+hudStroke.Color = Color3.fromRGB(68, 121, 173)
+hudStroke.Transparency = 0.25
+hudStroke.Parent = hud
 
--- Score label
-local scoreLabel = Instance.new("TextLabel")
-scoreLabel.Name = "ScoreLabel"
-scoreLabel.Size = UDim2.new(0.5, -10, 0, 30)
-scoreLabel.Position = UDim2.new(0, 10, 0, 8)
-scoreLabel.BackgroundTransparency = 1
-scoreLabel.Text = "Score: 0"
-scoreLabel.TextColor3 = Color3.fromRGB(255, 215, 0)
-scoreLabel.Font = Enum.Font.GothamBold
-scoreLabel.TextScaled = true
-scoreLabel.Parent = hudFrame
+local function label(name, position, size, text, color, font, textSize, alignment)
+	local item = Instance.new("TextLabel")
+	item.Name = name
+	item.Position = position
+	item.Size = size
+	item.BackgroundTransparency = 1
+	item.Text = text
+	item.TextColor3 = color
+	item.Font = font or Enum.Font.GothamBold
+	item.TextSize = textSize or 17
+	item.TextXAlignment = alignment or Enum.TextXAlignment.Left
+	item.TextTruncate = Enum.TextTruncate.AtEnd
+	item.Parent = hud
+	return item
+end
 
--- Height label
-local heightLabel = Instance.new("TextLabel")
-heightLabel.Name = "HeightLabel"
-heightLabel.Size = UDim2.new(0.5, -10, 0, 30)
-heightLabel.Position = UDim2.new(0.5, 0, 0, 8)
-heightLabel.BackgroundTransparency = 1
-heightLabel.Text = "Altura: 0m"
-heightLabel.TextColor3 = Color3.fromRGB(100, 255, 150)
-heightLabel.Font = Enum.Font.GothamBold
-heightLabel.TextScaled = true
-heightLabel.Parent = hudFrame
+local scoreLabel = label("Score", UDim2.fromOffset(14, 8), UDim2.fromOffset(210, 28), "Pontos: 0", Color3.fromRGB(255, 218, 82), Enum.Font.GothamBlack, 19)
+local runLabel = label("RunScore", UDim2.fromOffset(246, 8), UDim2.fromOffset(210, 28), "Tentativa: 0", Color3.fromRGB(125, 225, 255), Enum.Font.GothamBold, 17, Enum.TextXAlignment.Right)
+local heightLabel = label("Height", UDim2.fromOffset(14, 38), UDim2.fromOffset(150, 24), "Altura: 0m", Color3.fromRGB(110, 255, 155), Enum.Font.GothamBold, 16)
+local swordLabel = label("Sword", UDim2.fromOffset(164, 38), UDim2.fromOffset(292, 24), "Espada: Classica • 1.00x", Color3.fromRGB(218, 184, 255), Enum.Font.GothamBold, 15, Enum.TextXAlignment.Right)
 
--- Water level bar
-local waterBarLabel = Instance.new("TextLabel")
-waterBarLabel.Name = "WaterBarLabel"
-waterBarLabel.Size = UDim2.new(1, -20, 0, 16)
-waterBarLabel.Position = UDim2.new(0, 10, 0, 42)
-waterBarLabel.BackgroundTransparency = 1
-waterBarLabel.Text = "Nivel da Agua"
-waterBarLabel.TextColor3 = Color3.fromRGB(150, 200, 255)
-waterBarLabel.Font = Enum.Font.Gotham
-waterBarLabel.TextScaled = true
-waterBarLabel.Parent = hudFrame
-
-local waterBarContainer = Instance.new("Frame")
-waterBarContainer.Name = "WaterBar"
-waterBarContainer.Size = UDim2.new(1, -20, 0, 14)
-waterBarContainer.Position = UDim2.new(0, 10, 0, 62)
-waterBarContainer.BackgroundColor3 = Color3.fromRGB(40, 50, 70)
-waterBarContainer.BorderSizePixel = 0
-waterBarContainer.Parent = hudFrame
-
+local waterText = label("Water", UDim2.fromOffset(14, 68), UDim2.fromOffset(442, 22), "Agua: -15m • 0.00/s", Color3.fromRGB(125, 196, 255), Enum.Font.GothamMedium, 15)
+local barBackground = Instance.new("Frame")
+barBackground.Name = "WaterDanger"
+barBackground.Position = UDim2.fromOffset(14, 94)
+barBackground.Size = UDim2.fromOffset(442, 18)
+barBackground.BackgroundColor3 = Color3.fromRGB(38, 49, 67)
+barBackground.BorderSizePixel = 0
+barBackground.Parent = hud
 local barCorner = Instance.new("UICorner")
 barCorner.CornerRadius = UDim.new(1, 0)
-barCorner.Parent = waterBarContainer
-
-local waterBarFill = Instance.new("Frame")
-waterBarFill.Name = "Fill"
-waterBarFill.Size = UDim2.new(0, 0, 1, 0)
-waterBarFill.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
-waterBarFill.BorderSizePixel = 0
-waterBarFill.Parent = waterBarContainer
-
+barCorner.Parent = barBackground
+local barFill = Instance.new("Frame")
+barFill.Name = "Fill"
+barFill.Size = UDim2.new(0, 0, 1, 0)
+barFill.BackgroundColor3 = Color3.fromRGB(55, 165, 255)
+barFill.BorderSizePixel = 0
+barFill.Parent = barBackground
 local fillCorner = Instance.new("UICorner")
 fillCorner.CornerRadius = UDim.new(1, 0)
-fillCorner.Parent = waterBarFill
+fillCorner.Parent = barFill
+local modeLabel = label("Mode", UDim2.fromOffset(14, 116), UDim2.fromOffset(442, 20), "A agua esta se adaptando ao grupo", Color3.fromRGB(170, 183, 202), Enum.Font.Gotham, 13, Enum.TextXAlignment.Center)
 
--- Water level value
-local waterYLabel = Instance.new("TextLabel")
-waterYLabel.Name = "WaterYLabel"
-waterYLabel.Size = UDim2.new(1, -20, 0, 16)
-waterYLabel.Position = UDim2.new(0, 10, 0, 80)
-waterYLabel.BackgroundTransparency = 1
-waterYLabel.Text = "Agua: 0m"
-waterYLabel.TextColor3 = Color3.fromRGB(100, 180, 255)
-waterYLabel.Font = Enum.Font.Gotham
-waterYLabel.TextScaled = true
-waterYLabel.Parent = hudFrame
+local warning = Instance.new("TextLabel")
+warning.Name = "Warning"
+warning.AnchorPoint = Vector2.new(0.5, 0)
+warning.Position = UDim2.new(0.5, 0, 0, 162)
+warning.Size = UDim2.fromOffset(520, 42)
+warning.BackgroundColor3 = Color3.fromRGB(90, 24, 30)
+warning.BackgroundTransparency = 0.18
+warning.Text = ""
+warning.TextColor3 = Color3.new(1, 1, 1)
+warning.Font = Enum.Font.GothamBlack
+warning.TextSize = 20
+warning.Visible = false
+warning.Parent = screenGui
+local warningCorner = Instance.new("UICorner")
+warningCorner.CornerRadius = UDim.new(0, 12)
+warningCorner.Parent = warning
 
--- Warning label (below HUD)
-local warningLabel = Instance.new("TextLabel")
-warningLabel.Name = "WarningLabel"
-warningLabel.Size = UDim2.new(0, 400, 0, 30)
-warningLabel.Position = UDim2.new(0.5, -200, 0, 125)
-warningLabel.BackgroundTransparency = 1
-warningLabel.Text = ""
-warningLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
-warningLabel.Font = Enum.Font.GothamBold
-warningLabel.TextScaled = true
-warningLabel.Parent = screenGui
-
--- Instructions (bottom left)
 local instructions = Instance.new("TextLabel")
-instructions.Name = "Instructions"
-instructions.Size = UDim2.new(0, 280, 0, 70)
-instructions.Position = UDim2.new(0, 10, 1, -80)
-instructions.BackgroundColor3 = Color3.fromRGB(15, 25, 40)
-instructions.BackgroundTransparency = 0.3
-instructions.Text = "SUBA para nao se afogar!\nA agua sobe sem parar.\nSobreviva para ganhar pontos!"
-instructions.TextColor3 = Color3.fromRGB(255, 255, 255)
-instructions.Font = Enum.Font.Gotham
-instructions.TextScaled = true
+instructions.AnchorPoint = Vector2.new(0, 1)
+instructions.Position = UDim2.new(0, 12, 1, -12)
+instructions.Size = UDim2.fromOffset(300, 58)
+instructions.BackgroundColor3 = Color3.fromRGB(14, 20, 32)
+instructions.BackgroundTransparency = 0.22
+instructions.Text = UserInputService.TouchEnabled
+	and "SUBA E FUJA DA AGUA\nEquipe a espada e toque em ATACAR"
+	or "SUBA E FUJA DA AGUA\nClique ou pressione F/R2 para atacar"
+instructions.TextColor3 = Color3.fromRGB(232, 238, 248)
+instructions.Font = Enum.Font.GothamBold
+instructions.TextSize = 14
 instructions.Parent = screenGui
+local instructionsCorner = Instance.new("UICorner")
+instructionsCorner.CornerRadius = UDim.new(0, 10)
+instructionsCorner.Parent = instructions
 
-local instCorner = Instance.new("UICorner")
-instCorner.CornerRadius = UDim.new(0, 10)
-instCorner.Parent = instructions
-
--- Death overlay
 local deathFrame = Instance.new("Frame")
-deathFrame.Name = "DeathFrame"
-deathFrame.Size = UDim2.new(1, 0, 1, 0)
-deathFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+deathFrame.Size = UDim2.fromScale(1, 1)
+deathFrame.BackgroundColor3 = Color3.new(0, 0, 0)
 deathFrame.BackgroundTransparency = 1
-deathFrame.BorderSizePixel = 0
-deathFrame.ZIndex = 10
+deathFrame.Visible = false
+deathFrame.ZIndex = 30
 deathFrame.Parent = screenGui
-
 local deathText = Instance.new("TextLabel")
-deathText.Size = UDim2.new(0, 500, 0, 120)
-deathText.Position = UDim2.new(0.5, -250, 0.4, 0)
+deathText.AnchorPoint = Vector2.new(0.5, 0.5)
+deathText.Position = UDim2.fromScale(0.5, 0.46)
+deathText.Size = UDim2.new(0.8, 0, 0, 150)
 deathText.BackgroundTransparency = 1
 deathText.Text = ""
-deathText.TextColor3 = Color3.fromRGB(255, 50, 50)
+deathText.TextColor3 = Color3.fromRGB(255, 92, 92)
 deathText.Font = Enum.Font.GothamBlack
 deathText.TextScaled = true
-deathText.ZIndex = 11
+deathText.TextWrapped = true
+deathText.ZIndex = 31
 deathText.Parent = deathFrame
+local deathConstraint = Instance.new("UITextSizeConstraint")
+deathConstraint.MaxTextSize = 44
+deathConstraint.MinTextSize = 22
+deathConstraint.Parent = deathText
 
--- ========================
--- STATE
--- ========================
-local lastWaterY = -100
+local function updateScale()
+	local camera = workspace.CurrentCamera
+	local viewport = camera and camera.ViewportSize or Vector2.new(1280, 720)
+	hudScale.Scale = math.clamp(viewport.X / 900, 0.62, 1)
+	warning.Size = UDim2.fromOffset(math.min(520, viewport.X - 30), 42)
+end
+updateScale()
+if workspace.CurrentCamera then
+	workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale)
+end
+
+local modeText = {
+	Waiting = "A agua espera jogadores",
+	Warmup = "Aquecimento: prepare-se para subir",
+	Mercy = "A agua desacelerou: o grupo esta em perigo",
+	Recovery = "A agua esta recuperando o ritmo",
+	Normal = "Ritmo normal da agua",
+	Hunting = "O grupo esta muito adiantado: a agua acelerou!",
+}
+
 local wasAlive = true
-
--- ========================
--- HANDLE SERVER UPDATES
--- ========================
-
 waterEvent.OnClientEvent:Connect(function(data)
-	local waterY = data.waterY or 0
-	local score = data.score or 0
-	local height = data.height or 0
-	local alive = data.alive
-	
-	-- Update score and height
-	scoreLabel.Text = "Score: " .. tostring(score)
+	local waterY = tonumber(data.waterY) or 0
+	local height = tonumber(data.height) or 0
+	local gap = height - waterY
+	local speed = tonumber(data.waterSpeed) or 0
+	local multiplier = tonumber(data.scoreMultiplier) or 1
+	local alive = data.alive ~= false
+
+	scoreLabel.Text = "Pontos: " .. tostring(data.score or 0)
+	runLabel.Text = "Tentativa: " .. tostring(data.runScore or 0)
 	heightLabel.Text = "Altura: " .. tostring(height) .. "m"
-	waterYLabel.Text = "Agua: " .. tostring(waterY) .. "m"
-	
-	-- Update water bar (relative to player height)
-	local barPercent = 0
-	if height > 0 then
-		barPercent = math.clamp(waterY / (height + 50), 0, 1)
+	swordLabel.Text = string.format("%s • %.2fx", player:GetAttribute("EquippedSwordName") or "Espada Classica", multiplier)
+	waterText.Text = string.format("Agua: %dm  •  %.2f studs/s  •  distancia %dm", waterY, speed, math.floor(gap))
+	modeLabel.Text = modeText[data.waterMode] or "A agua esta se adaptando ao grupo"
+
+	local danger = 1 - math.clamp(gap / 80, 0, 1)
+	barFill.BackgroundColor3 = Color3.fromRGB(55 + math.floor(200 * danger), 165 - math.floor(100 * danger), 255 - math.floor(170 * danger))
+	TweenService:Create(barFill, TweenInfo.new(0.30), { Size = UDim2.new(danger, 0, 1, 0) }):Play()
+
+	if alive and gap <= 0 then
+		warning.Visible = true
+		warning.Text = "VOCE ESTA NA AGUA! SUBA!"
+	elseif alive and gap < 18 then
+		warning.Visible = true
+		warning.Text = "A AGUA ESTA CHEGANDO!"
+	elseif alive and data.waterMode == "Hunting" then
+		warning.Visible = true
+		warning.Text = "A AGUA ACELEROU PORQUE O GRUPO ESTA ADIANTADO"
+	else
+		warning.Visible = false
 	end
-	TweenService:Create(waterBarFill, TweenInfo.new(0.5), {
-		Size = UDim2.new(barPercent, 0, 1, 0)
-	}):Play()
-	
-	-- Warning when water is close or above player
-	local diff = height - waterY
-	if alive and diff <= 0 then
-		warningLabel.Text = "💀 VOCE ESTA NA AGUA! SUBA! 💀"
-		warningLabel.TextColor3 = Color3.fromRGB(255, 0, 0)
-	elseif alive and diff > 0 and diff < 15 then
-		warningLabel.Text = "⚠ A AGUA ESTA CHEGANDO! SUBA! ⚠"
-		warningLabel.TextColor3 = Color3.fromRGB(255, 50, 50)
-	elseif alive and diff >= 15 and diff < 30 then
-		warningLabel.Text = "Cuidado, a agua esta subindo!"
-		warningLabel.TextColor3 = Color3.fromRGB(255, 200, 50)
-	elseif alive then
-		warningLabel.Text = ""
-	end
-	
-	-- Death/respawn handling
+
 	if not alive and wasAlive then
 		wasAlive = false
-		deathText.Text = "VOCE SE AFOGOU!\nScore: " .. tostring(score)
-		TweenService:Create(deathFrame, TweenInfo.new(0.5), {
-			BackgroundTransparency = 0.5
-		}):Play()
+		deathFrame.Visible = true
+		deathText.Text = string.format("VOCE SE AFOGOU!\nTentativa: %s pontos", tostring(data.runScore or 0))
+		TweenService:Create(deathFrame, TweenInfo.new(0.35), { BackgroundTransparency = 0.35 }):Play()
 	elseif alive and not wasAlive then
 		wasAlive = true
-		TweenService:Create(deathFrame, TweenInfo.new(0.5), {
-			BackgroundTransparency = 1
-		}):Play()
+		local tween = TweenService:Create(deathFrame, TweenInfo.new(0.25), { BackgroundTransparency = 1 })
+		tween:Play()
+		tween.Completed:Once(function()
+			if wasAlive then
+				deathFrame.Visible = false
+			end
+		end)
 	end
-	
-	lastWaterY = waterY
 end)

@@ -1,386 +1,311 @@
---[[
-	VillagerUI.client.lua
-
-	Interface de loja de aldeoes.
-	- Mostra prompt "Pressione E" quando proximo de um aldeao
-	- Abre painel de loja com itens, precos e estoque
-	- Envia compras para o servidor via VillagerEvent
-]]
+-- SkyDungeon - interface responsiva da loja de espadas.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local SoundService = game:GetService("SoundService")
 local UserInputService = game:GetService("UserInputService")
-local TweenService = game:GetService("TweenService")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
-
 local villagerEvent = ReplicatedStorage:WaitForChild("VillagerEvent")
+local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 
--- ============================================================
--- UI: PROMPT DE INTERACAO
--- ============================================================
+local gui = Instance.new("ScreenGui")
+gui.Name = "SwordShopUI"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = false
+gui.DisplayOrder = 20
+gui.Parent = playerGui
 
-local promptGui = Instance.new("ScreenGui")
-promptGui.Name = "VillagerPromptGui"
-promptGui.ResetOnSpawn = false
-promptGui.Parent = playerGui
-
-local promptFrame = Instance.new("Frame")
-promptFrame.Size = UDim2.fromOffset(260, 60)
-promptFrame.Position = UDim2.new(0.5, -130, 0.75, -30)
-promptFrame.BackgroundColor3 = Color3.fromRGB(20, 24, 28)
-promptFrame.BackgroundTransparency = 0.1
-promptFrame.Visible = false
-promptFrame.Parent = promptGui
-
-local promptCorner = Instance.new("UICorner")
-promptCorner.CornerRadius = UDim.new(0, 10)
-promptCorner.Parent = promptFrame
-
-local promptStroke = Instance.new("UIStroke")
-promptStroke.Color = Color3.fromRGB(60, 200, 80)
-promptStroke.Thickness = 2
-promptStroke.Parent = promptFrame
-
-local promptLabel = Instance.new("TextLabel")
-promptLabel.Size = UDim2.fromScale(1, 1)
-promptLabel.BackgroundTransparency = 1
-promptLabel.TextColor3 = Color3.fromRGB(240, 240, 240)
-promptLabel.Text = "Pressione [E] para abrir a Loja"
-promptLabel.TextScaled = true
-promptLabel.Font = Enum.Font.GothamBold
-promptLabel.Parent = promptFrame
-
-local promptUICorner2 = Instance.new("UICorner")
-promptUICorner2.CornerRadius = UDim.new(0, 10)
-promptUICorner2.Parent = promptLabel
-
--- ============================================================
--- UI: PAINEL DA LOJA
--- ============================================================
-
-local shopGui = Instance.new("ScreenGui")
-shopGui.Name = "VillagerShopGui"
-shopGui.ResetOnSpawn = false
-shopGui.Parent = playerGui
-
--- Fundo escuro
-local backdrop = Instance.new("Frame")
+local backdrop = Instance.new("TextButton")
+backdrop.Name = "Backdrop"
 backdrop.Size = UDim2.fromScale(1, 1)
-backdrop.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-backdrop.BackgroundTransparency = 0.5
+backdrop.BackgroundColor3 = Color3.fromRGB(5, 7, 12)
+backdrop.BackgroundTransparency = 0.30
+backdrop.Text = ""
+backdrop.AutoButtonColor = false
 backdrop.Visible = false
-backdrop.Parent = shopGui
+backdrop.Parent = gui
 
--- Painel principal
-local shopFrame = Instance.new("Frame")
-shopFrame.Size = UDim2.fromOffset(480, 420)
-shopFrame.Position = UDim2.new(0.5, -240, 0.5, -210)
-shopFrame.BackgroundColor3 = Color3.fromRGB(22, 26, 32)
-shopFrame.BackgroundTransparency = 0.05
-shopFrame.Visible = false
-shopFrame.Parent = shopGui
+local panel = Instance.new("Frame")
+panel.Name = "Panel"
+panel.AnchorPoint = Vector2.new(0.5, 0.5)
+panel.Position = UDim2.fromScale(0.5, 0.5)
+panel.Size = UDim2.fromOffset(720, 540)
+panel.BackgroundColor3 = Color3.fromRGB(22, 25, 36)
+panel.BorderSizePixel = 0
+panel.Visible = false
+panel.Parent = gui
 
-local shopCorner = Instance.new("UICorner")
-shopCorner.CornerRadius = UDim.new(0, 14)
-shopCorner.Parent = shopFrame
+local scale = Instance.new("UIScale")
+scale.Parent = panel
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 18)
+corner.Parent = panel
+local stroke = Instance.new("UIStroke")
+stroke.Color = Color3.fromRGB(142, 92, 235)
+stroke.Thickness = 2
+stroke.Parent = panel
 
-local shopStroke = Instance.new("UIStroke")
-shopStroke.Color = Color3.fromRGB(60, 200, 80)
-shopStroke.Thickness = 2
-shopStroke.Parent = shopFrame
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, -150, 0, 52)
+title.Position = UDim2.fromOffset(22, 12)
+title.BackgroundTransparency = 1
+title.Text = "⚔ LOJA DE ESPADAS"
+title.TextColor3 = Color3.fromRGB(255, 226, 120)
+title.Font = Enum.Font.GothamBlack
+title.TextSize = 26
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = panel
 
--- Titulo
-local titleLabel = Instance.new("TextLabel")
-titleLabel.Size = UDim2.new(1, -30, 0, 50)
-titleLabel.Position = UDim2.fromOffset(15, 12)
-titleLabel.BackgroundTransparency = 1
-titleLabel.TextColor3 = Color3.fromRGB(240, 240, 240)
-titleLabel.Text = "Loja do Aldeao"
-titleLabel.TextScaled = true
-titleLabel.Font = Enum.Font.GothamBold
-titleLabel.TextXAlignment = Enum.TextXAlignment.Left
-titleLabel.Parent = shopFrame
-
--- Score atual
 local scoreLabel = Instance.new("TextLabel")
-scoreLabel.Size = UDim2.fromOffset(160, 30)
-scoreLabel.Position = UDim2.new(1, -175, 0, 22)
-scoreLabel.BackgroundColor3 = Color3.fromRGB(30, 36, 42)
-scoreLabel.BackgroundTransparency = 0.2
-scoreLabel.TextColor3 = Color3.fromRGB(255, 200, 80)
+scoreLabel.AnchorPoint = Vector2.new(1, 0)
+scoreLabel.Position = UDim2.new(1, -74, 0, 18)
+scoreLabel.Size = UDim2.fromOffset(190, 36)
+scoreLabel.BackgroundTransparency = 1
 scoreLabel.Text = "Pontos: 0"
-scoreLabel.TextScaled = true
+scoreLabel.TextColor3 = Color3.fromRGB(115, 225, 255)
 scoreLabel.Font = Enum.Font.GothamBold
-scoreLabel.Parent = shopFrame
+scoreLabel.TextSize = 19
+scoreLabel.TextXAlignment = Enum.TextXAlignment.Right
+scoreLabel.Parent = panel
 
-local scoreCorner = Instance.new("UICorner")
-scoreCorner.CornerRadius = UDim.new(0, 8)
-scoreCorner.Parent = scoreLabel
-
--- Container de itens (scrolling)
-local scrollFrame = Instance.new("ScrollingFrame")
-scrollFrame.Size = UDim2.new(1, -30, 1, -110)
-scrollFrame.Position = UDim2.fromOffset(15, 70)
-scrollFrame.BackgroundTransparency = 1
-scrollFrame.ScrollBarThickness = 6
-scrollFrame.ScrollBarImageColor3 = Color3.fromRGB(100, 100, 100)
-scrollFrame.CanvasSize = UDim2.new(0, 0, 0, 0)
-scrollFrame.AutomaticCanvasSize = Enum.AutomaticSize.Y
-scrollFrame.Parent = shopFrame
-
-local itemList = Instance.new("UIListLayout")
-itemList.Padding = UDim.new(0, 8)
-itemList.Parent = scrollFrame
-
--- Botao Fechar
 local closeButton = Instance.new("TextButton")
-closeButton.Size = UDim2.fromOffset(80, 36)
-closeButton.Position = UDim2.new(0.5, -40, 1, -48)
-closeButton.BackgroundColor3 = Color3.fromRGB(70, 40, 40)
-closeButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-closeButton.Text = "Fechar"
-closeButton.TextScaled = true
+closeButton.AnchorPoint = Vector2.new(1, 0)
+closeButton.Position = UDim2.new(1, -14, 0, 14)
+closeButton.Size = UDim2.fromOffset(46, 42)
+closeButton.BackgroundColor3 = Color3.fromRGB(142, 55, 70)
+closeButton.Text = "✕"
+closeButton.TextColor3 = Color3.new(1, 1, 1)
 closeButton.Font = Enum.Font.GothamBold
-closeButton.Parent = shopFrame
-
+closeButton.TextSize = 22
+closeButton.Parent = panel
 local closeCorner = Instance.new("UICorner")
-closeCorner.CornerRadius = UDim.new(0, 8)
+closeCorner.CornerRadius = UDim.new(0, 10)
 closeCorner.Parent = closeButton
 
--- Mensagem de feedback
-local feedbackLabel = Instance.new("TextLabel")
-feedbackLabel.Size = UDim2.fromOffset(300, 40)
-feedbackLabel.Position = UDim2.new(0.5, -150, 0.15, 0)
-feedbackLabel.BackgroundColor3 = Color3.fromRGB(30, 36, 42)
-feedbackLabel.BackgroundTransparency = 0.1
-feedbackLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
-feedbackLabel.Text = ""
-feedbackLabel.TextScaled = true
-feedbackLabel.Font = Enum.Font.GothamBold
-feedbackLabel.Visible = false
-feedbackLabel.ZIndex = 10
-feedbackLabel.Parent = shopGui
+local feedback = Instance.new("TextLabel")
+feedback.Position = UDim2.fromOffset(22, 65)
+feedback.Size = UDim2.new(1, -44, 0, 30)
+feedback.BackgroundTransparency = 1
+feedback.Text = "Escolha uma espada para comprar ou equipar."
+feedback.TextColor3 = Color3.fromRGB(185, 190, 205)
+feedback.Font = Enum.Font.Gotham
+feedback.TextSize = 16
+feedback.TextXAlignment = Enum.TextXAlignment.Left
+feedback.Parent = panel
 
-local feedbackCorner = Instance.new("UICorner")
-feedbackCorner.CornerRadius = UDim.new(0, 8)
-feedbackCorner.Parent = feedbackLabel
-
--- ============================================================
--- LOGICA
--- ============================================================
+local scroll = Instance.new("ScrollingFrame")
+scroll.Name = "Items"
+scroll.Position = UDim2.fromOffset(18, 104)
+scroll.Size = UDim2.new(1, -36, 1, -122)
+scroll.BackgroundColor3 = Color3.fromRGB(14, 17, 25)
+scroll.BackgroundTransparency = 0.20
+scroll.BorderSizePixel = 0
+scroll.ScrollBarThickness = 8
+scroll.ScrollBarImageColor3 = Color3.fromRGB(142, 92, 235)
+scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+scroll.CanvasSize = UDim2.new()
+scroll.Parent = panel
+local scrollCorner = Instance.new("UICorner")
+scrollCorner.CornerRadius = UDim.new(0, 12)
+scrollCorner.Parent = scroll
+local padding = Instance.new("UIPadding")
+padding.PaddingTop = UDim.new(0, 10)
+padding.PaddingBottom = UDim.new(0, 10)
+padding.PaddingLeft = UDim.new(0, 10)
+padding.PaddingRight = UDim.new(0, 10)
+padding.Parent = scroll
+local list = Instance.new("UIListLayout")
+list.Padding = UDim.new(0, 9)
+list.SortOrder = Enum.SortOrder.LayoutOrder
+list.Parent = scroll
 
 local shopOpen = false
-local currentRarityColor = Color3.fromRGB(60, 200, 80)
 
-local function showFeedback(text, color)
-	feedbackLabel.Text = text
-	feedbackLabel.TextColor3 = color or Color3.fromRGB(100, 255, 100)
-	feedbackLabel.Visible = true
-	feedbackLabel.TextTransparency = 0
+local function updateScale()
+	local camera = workspace.CurrentCamera
+	local viewport = camera and camera.ViewportSize or Vector2.new(1280, 720)
+	scale.Scale = math.clamp(math.min(viewport.X / 820, viewport.Y / 630), 0.58, 1)
+end
+updateScale()
+if workspace.CurrentCamera then
+	workspace.CurrentCamera:GetPropertyChangedSignal("ViewportSize"):Connect(updateScale)
+end
 
-	TweenService:Create(feedbackLabel, TweenInfo.new(0.3), { TextTransparency = 0 }):Play()
-
-	task.delay(2, function()
-		local tween = TweenService:Create(feedbackLabel, TweenInfo.new(0.5), { TextTransparency = 1 })
-		tween:Play()
-		tween.Completed:Connect(function()
-			feedbackLabel.Visible = false
-		end)
+local function playPurchaseSound()
+	local sound = Instance.new("Sound")
+	sound.SoundId = MVPConfig.ExampleAssets.Sounds.Purchase
+	sound.Volume = 0.45
+	sound.Parent = SoundService
+	sound:Play()
+	sound.Ended:Once(function()
+		sound:Destroy()
+	end)
+	task.delay(3, function()
+		if sound.Parent then
+			sound:Destroy()
+		end
 	end)
 end
 
-local function clearItems()
-	for _, child in scrollFrame:GetChildren() do
+local function closeShop()
+	if not shopOpen then
+		return
+	end
+	shopOpen = false
+	panel.Visible = false
+	backdrop.Visible = false
+	villagerEvent:FireServer({ action = "closeShop" })
+end
+
+local function clearRows()
+	for _, child in ipairs(scroll:GetChildren()) do
 		if child:IsA("Frame") then
 			child:Destroy()
 		end
 	end
 end
 
-local function createItemRow(item, index)
+local function createRow(item, index)
 	local row = Instance.new("Frame")
-	row.Size = UDim2.new(1, 0, 0, 72)
-	row.BackgroundColor3 = Color3.fromRGB(30, 36, 42)
-	row.BackgroundTransparency = 0.15
-	row.Parent = scrollFrame
-
+	row.Name = item.SwordId or ("Sword_" .. index)
+	row.LayoutOrder = index
+	row.Size = UDim2.new(1, -4, 0, 112)
+	row.BackgroundColor3 = item.Color or Color3.fromRGB(65, 70, 88)
+	row.BackgroundTransparency = 0.78
+	row.BorderSizePixel = 0
+	row.Parent = scroll
 	local rowCorner = Instance.new("UICorner")
-	rowCorner.CornerRadius = UDim.new(0, 8)
+	rowCorner.CornerRadius = UDim.new(0, 12)
 	rowCorner.Parent = row
-
 	local rowStroke = Instance.new("UIStroke")
-	rowStroke.Color = currentRarityColor:Lerp(Color3.fromRGB(50, 50, 50), 0.5)
-	rowStroke.Thickness = 1
+	rowStroke.Color = item.Equipped and Color3.fromRGB(105, 255, 145) or (item.Color or Color3.fromRGB(100, 100, 115))
+	rowStroke.Thickness = item.Equipped and 3 or 1
 	rowStroke.Parent = row
 
-	-- Label do item
-	local itemLabel = Instance.new("TextLabel")
-	itemLabel.Size = UDim2.new(0.55, 0, 1, 0)
-	itemLabel.BackgroundTransparency = 1
-	itemLabel.TextColor3 = Color3.fromRGB(240, 240, 240)
-	itemLabel.Text = item.label
-	itemLabel.TextScaled = true
-	itemLabel.Font = Enum.Font.GothamBold
-	itemLabel.TextXAlignment = Enum.TextXAlignment.Left
-	itemLabel.Parent = row
+	local swatch = Instance.new("Frame")
+	swatch.Position = UDim2.fromOffset(12, 12)
+	swatch.Size = UDim2.fromOffset(12, 88)
+	swatch.BackgroundColor3 = item.Color or Color3.new(1, 1, 1)
+	swatch.BorderSizePixel = 0
+	swatch.Parent = row
+	local swatchCorner = Instance.new("UICorner")
+	swatchCorner.CornerRadius = UDim.new(1, 0)
+	swatchCorner.Parent = swatch
 
-	-- Preco
-	local priceLabel = Instance.new("TextLabel")
-	priceLabel.Size = UDim2.fromOffset(70, 1)
-	priceLabel.Position = UDim2.new(0.55, 0, 0, 0)
-	priceLabel.BackgroundTransparency = 1
-	priceLabel.TextColor3 = Color3.fromRGB(255, 200, 80)
-	priceLabel.Text = tostring(item.price)
-	priceLabel.TextScaled = true
-	priceLabel.Font = Enum.Font.GothamBold
-	priceLabel.Parent = row
+	local name = Instance.new("TextLabel")
+	name.Position = UDim2.fromOffset(36, 9)
+	name.Size = UDim2.new(1, -250, 0, 30)
+	name.BackgroundTransparency = 1
+	name.Text = item.DisplayName or item.SwordId
+	name.TextColor3 = Color3.new(1, 1, 1)
+	name.Font = Enum.Font.GothamBold
+	name.TextSize = 20
+	name.TextXAlignment = Enum.TextXAlignment.Left
+	name.Parent = row
 
-	-- Estoque
-	local stockLabel = Instance.new("TextLabel")
-	stockLabel.Size = UDim2.fromOffset(50, 1)
-	stockLabel.Position = UDim2.new(0.72, 0, 0, 0)
-	stockLabel.BackgroundTransparency = 1
-	stockLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
-	stockLabel.Text = "x" .. tostring(item.stock)
-	stockLabel.TextScaled = true
-	stockLabel.Font = Enum.Font.Gotham
-	stockLabel.Parent = row
+	local description = Instance.new("TextLabel")
+	description.Position = UDim2.fromOffset(36, 38)
+	description.Size = UDim2.new(1, -250, 0, 24)
+	description.BackgroundTransparency = 1
+	description.Text = item.Description or ""
+	description.TextColor3 = Color3.fromRGB(188, 193, 207)
+	description.Font = Enum.Font.Gotham
+	description.TextSize = 14
+	description.TextXAlignment = Enum.TextXAlignment.Left
+	description.TextTruncate = Enum.TextTruncate.AtEnd
+	description.Parent = row
 
-	-- Botao Comprar
-	local buyButton = Instance.new("TextButton")
-	buyButton.Size = UDim2.fromOffset(70, 1)
-	buyButton.Position = UDim2.new(0.85, 0, 0, 0)
-	buyButton.BackgroundColor3 = currentRarityColor
-	buyButton.BackgroundTransparency = 0.2
-	buyButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-	buyButton.Text = "Comprar"
-	buyButton.TextScaled = true
-	buyButton.Font = Enum.Font.GothamBold
-	buyButton.Parent = row
+	local stats = Instance.new("TextLabel")
+	stats.Position = UDim2.fromOffset(36, 66)
+	stats.Size = UDim2.new(1, -250, 0, 32)
+	stats.BackgroundTransparency = 1
+	stats.Text = string.format(
+		"Dano %d  •  Velocidade %.2fx  •  Pontos %.2fx",
+		item.BaseDamage or 0,
+		item.AttackSpeed or 1,
+		item.ScoreMultiplier or 1
+	)
+	stats.TextColor3 = Color3.fromRGB(115, 225, 255)
+	stats.Font = Enum.Font.GothamMedium
+	stats.TextSize = 14
+	stats.TextXAlignment = Enum.TextXAlignment.Left
+	stats.Parent = row
 
-	local buyCorner = Instance.new("UICorner")
-	buyCorner.CornerRadius = UDim.new(0, 6)
-	buyCorner.Parent = buyButton
+	local button = Instance.new("TextButton")
+	button.AnchorPoint = Vector2.new(1, 0.5)
+	button.Position = UDim2.new(1, -14, 0.5, 0)
+	button.Size = UDim2.fromOffset(190, 64)
+	button.TextColor3 = Color3.new(1, 1, 1)
+	button.Font = Enum.Font.GothamBold
+	button.TextSize = 17
+	button.Parent = row
+	local buttonCorner = Instance.new("UICorner")
+	buttonCorner.CornerRadius = UDim.new(0, 11)
+	buttonCorner.Parent = button
 
-	if item.stock <= 0 then
-		buyButton.Text = "Esgotado"
-		buyButton.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-		buyButton.TextColor3 = Color3.fromRGB(120, 120, 120)
-		buyButton.Active = false
-		buyButton.AutoButtonColor = false
+	if item.Equipped then
+		button.Text = "EQUIPADA"
+		button.BackgroundColor3 = Color3.fromRGB(50, 135, 83)
+		button.Active = false
+		button.AutoButtonColor = false
+	elseif item.Owned then
+		button.Text = "EQUIPAR"
+		button.BackgroundColor3 = Color3.fromRGB(77, 105, 185)
+		button.MouseButton1Click:Connect(function()
+			button.Active = false
+			villagerEvent:FireServer({ action = "equipSword", swordId = item.SwordId })
+		end)
+	else
+		button.Text = string.format("COMPRAR\n%d pontos", item.Price or 0)
+		button.BackgroundColor3 = Color3.fromRGB(135, 82, 170)
+		button.MouseButton1Click:Connect(function()
+			button.Active = false
+			villagerEvent:FireServer({ action = "purchaseSword", swordId = item.SwordId })
+		end)
 	end
-
-	buyButton.MouseButton1Click:Connect(function()
-		if item.stock <= 0 then return end
-		villagerEvent:FireServer({ action = "buy", itemIndex = index })
-	end)
-
-	return row, stockLabel, buyButton
 end
 
-local function openShop(data)
+local function showShop(data)
 	shopOpen = true
-	currentRarityColor = data.rarityColor or Color3.fromRGB(60, 200, 80)
-
-	-- Atualizar borda com cor da raridade
-	shopStroke.Color = currentRarityColor
-	titleLabel.Text = "Loja do Aldeao " .. (data.rarity or "")
-	scoreLabel.Text = "Pontos: " .. tostring(data.score or 0)
-
-	clearItems()
-
-	for i, item in ipairs(data.inventory) do
-		createItemRow(item, i)
-	end
-
+	panel.Visible = true
 	backdrop.Visible = true
-	shopFrame.Visible = true
+	scoreLabel.Text = "Pontos: " .. tostring(data.score or 0)
+	if data.message then
+		feedback.Text = data.message
+		feedback.TextColor3 = data.success and Color3.fromRGB(105, 255, 145) or Color3.fromRGB(255, 120, 120)
+		if data.success then
+			playPurchaseSound()
+		end
+	else
+		feedback.Text = "Escolha uma espada para comprar ou equipar."
+		feedback.TextColor3 = Color3.fromRGB(185, 190, 205)
+	end
+	clearRows()
+	for index, item in ipairs(data.inventory or {}) do
+		createRow(item, index)
+	end
 end
-
-local function closeShop()
-	shopOpen = false
-	backdrop.Visible = false
-	shopFrame.Visible = false
-	villagerEvent:FireServer({ action = "closeShop" })
-end
-
--- ============================================================
--- EVENTOS
--- ============================================================
 
 closeButton.MouseButton1Click:Connect(closeShop)
-backdrop.InputBegan:Connect(function(input)
-	if input.UserInputType == Enum.UserInputType.MouseButton1 then
+backdrop.MouseButton1Click:Connect(closeShop)
+UserInputService.InputBegan:Connect(function(input, processed)
+	if not processed and shopOpen and (input.KeyCode == Enum.KeyCode.Escape or input.KeyCode == Enum.KeyCode.ButtonB) then
 		closeShop()
 	end
 end)
 
--- Tecla E para abrir loja
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-	if gameProcessed then return end
-	if input.KeyCode == Enum.KeyCode.E then
-		if not shopOpen and promptFrame.Visible then
-			villagerEvent:FireServer({ action = "openShop" })
-		end
-	end
-	if input.KeyCode == Enum.KeyCode.Escape and shopOpen then
-		closeShop()
-	end
-end)
-
--- Receber mensagens do servidor
 villagerEvent.OnClientEvent:Connect(function(data)
-	if not data or not data.action then return end
-
-	if data.action == "showPrompt" then
-		promptFrame.Visible = true
-		promptStroke.Color = data.rarityColor or Color3.fromRGB(60, 200, 80)
-		promptLabel.Text = "Pressione [E] - Loja " .. (data.rarity or "")
-
-	elseif data.action == "hidePrompt" then
-		promptFrame.Visible = false
-
-	elseif data.action == "showShop" then
-		openShop(data)
-
-	elseif data.action == "purchaseSuccess" then
-		scoreLabel.Text = "Pontos: " .. tostring(data.newScore or 0)
-		showFeedback("Comprou: " .. (data.itemLabel or "Item"), Color3.fromRGB(100, 255, 100))
-
-		-- Atualizar estoque do item comprado
-		local rows = scrollFrame:GetChildren()
-		local rowIndex = 0
-		for _, child in scrollFrame:GetChildren() do
-			if child:IsA("Frame") then
-				rowIndex += 1
-				if rowIndex == data.itemIndex then
-					-- Atualizar texto de estoque e botao
-					for _, gui in child:GetChildren() do
-						if gui:IsA("TextLabel") and gui.Text:sub(1, 1) == "x" then
-							gui.Text = "x" .. tostring(data.newStock)
-						end
-						if gui:IsA("TextButton") then
-							if data.newStock <= 0 then
-								gui.Text = "Esgotado"
-								gui.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-								gui.TextColor3 = Color3.fromRGB(120, 120, 120)
-								gui.Active = false
-								gui.AutoButtonColor = false
-							end
-						end
-					end
-				end
-			end
-		end
-
-	elseif data.action == "purchaseFailed" then
-		showFeedback(data.reason or "Falha na compra", Color3.fromRGB(255, 80, 80))
-
-	elseif data.action == "shopEmpty" then
-		showFeedback("Todos os itens esgotaram!", Color3.fromRGB(255, 180, 60))
-		task.wait(1.5)
+	if type(data) ~= "table" then
+		return
+	end
+	if data.action == "showShop" then
+		showShop(data)
+	elseif data.action == "closeShop" then
 		closeShop()
+	elseif data.action == "shopError" then
+		feedback.Text = data.message or "Loja indisponivel."
+		feedback.TextColor3 = Color3.fromRGB(255, 120, 120)
 	end
 end)

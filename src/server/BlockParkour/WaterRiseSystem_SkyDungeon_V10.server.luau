@@ -10,6 +10,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local MapConfig = require(script.Parent.Config_SkyDungeon_V10)
+local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 local ChunkManager = require(script.Parent.ChunkManager_SkyDungeon_V10)
 local ScoreService = require(script.Parent.ScoreService_SkyDungeon_V10)
 local CollectibleService = require(script.Parent.Parent:FindFirstChild("MVPSystems"):FindFirstChild("CollectibleService"))
@@ -23,16 +24,22 @@ if not waterEvent then
 end
 
 local CONFIG = {
-	WATER_START_SURFACE_Y = -15,
-	WATER_RISE_SPEED = 0,
-	WATER_SPEEDUP_START_GAP = 80,
-	WATER_SPEEDUP_FULL_GAP = 180,
-	WATER_MAX_SPEED_MULTIPLIER = 2.25,
+	WATER_START_SURFACE_Y = MVPConfig.Water.StartSurfaceY,
+	WATER_RISE_SPEED = MVPConfig.Water.BaseSpeed,
+	WATER_MIN_SPEED_MULTIPLIER = MVPConfig.Water.MinimumSpeedMultiplier,
+	WATER_MAX_SPEED_MULTIPLIER = MVPConfig.Water.MaximumSpeedMultiplier,
+	WATER_DANGER_GAP = MVPConfig.Water.DangerGap,
+	WATER_TARGET_GAP = MVPConfig.Water.TargetGap,
+	WATER_FAST_GAP = MVPConfig.Water.FastGap,
+	WATER_WARMUP_SECONDS = MVPConfig.Water.WarmupSeconds,
+	WATER_DIFFICULTY_MINUTES = MVPConfig.Water.DifficultyMinutesToMaximum,
+	WATER_MAX_DIFFICULTY_MULTIPLIER = MVPConfig.Water.MaximumDifficultyMultiplier,
+	WATER_SPEED_SMOOTHING = MVPConfig.Water.SpeedSmoothing,
 	WATER_UPDATE_RATE = 0.1,
 	UI_UPDATE_RATE = 0.5,
-	DAMAGE_PER_SECOND = 8,
-	SCORE_PER_SECOND = 1,
-	HEIGHT_BONUS_STUDS = 10,
+	DAMAGE_PER_SECOND = MVPConfig.Water.DamagePerSecond,
+	SCORE_PER_SECOND = MVPConfig.Water.ScorePerSecond,
+	HEIGHT_BONUS_STUDS = MVPConfig.Water.HeightBonusStuds,
 	RESPAWN_HEIGHT = 5,
 
 	-- O mapa nasce por rounds conforme a agua consome o buffer seguro.
@@ -76,28 +83,60 @@ if not water then
 end
 
 local currentWaterY = CONFIG.WATER_START_SURFACE_Y
-local currentWaterSpeed = CONFIG.WATER_RISE_SPEED
+local currentWaterSpeed = 0
+local systemStartedAt = os.clock()
 local waterHalfHeight = water.Size.Y / 2
 water.Position = Vector3.new(MapConfig.CENTER_WORLD.X, currentWaterY - waterHalfHeight, MapConfig.CENTER_WORLD.Z)
 water:SetAttribute("SurfaceY", currentWaterY)
 water:SetAttribute("GenerationUnit", "Round")
 water:SetAttribute("RiseSpeed", currentWaterSpeed)
 
-local function calculateWaterSpeed()
+local function calculateTargetWaterSpeed()
+	if #Players:GetPlayers() == 0 then
+		return 0, "Waiting", 0
+	end
+
+	local elapsedSeconds = os.clock() - systemStartedAt
+	if elapsedSeconds < CONFIG.WATER_WARMUP_SECONDS then
+		local warmupAlpha = math.clamp(elapsedSeconds / math.max(1, CONFIG.WATER_WARMUP_SECONDS), 0, 1)
+		return CONFIG.WATER_RISE_SPEED * CONFIG.WATER_MIN_SPEED_MULTIPLIER * warmupAlpha, "Warmup", 0
+	end
+
 	local groupProgressY = ChunkManager.GetGroupProgressY()
 	if not groupProgressY then
-		return CONFIG.WATER_RISE_SPEED
+		return CONFIG.WATER_RISE_SPEED, "Normal", 0
 	end
 
 	local gap = groupProgressY - currentWaterY
-	if gap <= CONFIG.WATER_SPEEDUP_START_GAP then
-		return CONFIG.WATER_RISE_SPEED
+	local speedMultiplier
+	local mode
+	if gap <= CONFIG.WATER_DANGER_GAP then
+		speedMultiplier = CONFIG.WATER_MIN_SPEED_MULTIPLIER
+		mode = "Mercy"
+	elseif gap < CONFIG.WATER_TARGET_GAP then
+		local alpha = (gap - CONFIG.WATER_DANGER_GAP)
+			/ math.max(1, CONFIG.WATER_TARGET_GAP - CONFIG.WATER_DANGER_GAP)
+		speedMultiplier = CONFIG.WATER_MIN_SPEED_MULTIPLIER
+			+ (1 - CONFIG.WATER_MIN_SPEED_MULTIPLIER) * alpha
+		mode = "Recovery"
+	else
+		local alpha = math.clamp(
+			(gap - CONFIG.WATER_TARGET_GAP) / math.max(1, CONFIG.WATER_FAST_GAP - CONFIG.WATER_TARGET_GAP),
+			0,
+			1
+		)
+		speedMultiplier = 1 + (CONFIG.WATER_MAX_SPEED_MULTIPLIER - 1) * alpha
+		mode = alpha > 0.55 and "Hunting" or "Normal"
 	end
 
-	local range = math.max(1, CONFIG.WATER_SPEEDUP_FULL_GAP - CONFIG.WATER_SPEEDUP_START_GAP)
-	local alpha = math.clamp((gap - CONFIG.WATER_SPEEDUP_START_GAP) / range, 0, 1)
-	local multiplier = 1 + (CONFIG.WATER_MAX_SPEED_MULTIPLIER - 1) * alpha
-	return CONFIG.WATER_RISE_SPEED * multiplier
+	local difficultyAlpha = math.clamp(
+		elapsedSeconds / math.max(60, CONFIG.WATER_DIFFICULTY_MINUTES * 60),
+		0,
+		1
+	)
+	local difficultyMultiplier = 1
+		+ (CONFIG.WATER_MAX_DIFFICULTY_MULTIPLIER - 1) * difficultyAlpha
+	return CONFIG.WATER_RISE_SPEED * speedMultiplier * difficultyMultiplier, mode, gap
 end
 
 local function findSafeRoutePart()
@@ -190,11 +229,17 @@ local lastUIUpdate = 0
 local lastScoreUpdate = 0
 local lastRoundGenerationCheck = 0
 local lastChunkCleanup = 0
+local currentWaterMode = "Waiting"
+local currentProgressGap = 0
 
 while true do
 	local elapsed = task.wait(CONFIG.WATER_UPDATE_RATE)
 	local dt = math.min(elapsed, 0.5)
-	currentWaterSpeed = calculateWaterSpeed()
+	local targetSpeed, mode, progressGap = calculateTargetWaterSpeed()
+	local smoothingAlpha = 1 - math.exp(-CONFIG.WATER_SPEED_SMOOTHING * dt)
+	currentWaterSpeed += (targetSpeed - currentWaterSpeed) * smoothingAlpha
+	currentWaterMode = mode
+	currentProgressGap = progressGap
 	currentWaterY += currentWaterSpeed * dt
 	water.Position = Vector3.new(MapConfig.CENTER_WORLD.X, currentWaterY - waterHalfHeight, MapConfig.CENTER_WORLD.Z)
 
@@ -242,6 +287,9 @@ while true do
 		lastUIUpdate = now
 		water:SetAttribute("SurfaceY", currentWaterY)
 		water:SetAttribute("RiseSpeed", currentWaterSpeed)
+		water:SetAttribute("TargetRiseSpeed", targetSpeed)
+		water:SetAttribute("AdaptiveMode", currentWaterMode)
+		water:SetAttribute("ProgressGap", currentProgressGap)
 		local waterRoundStatus = ChunkManager.GetRoundStatus(currentWaterY)
 		water:SetAttribute("GeneratedRounds", waterRoundStatus.GeneratedRounds)
 		water:SetAttribute("SafeRoundsAhead", waterRoundStatus.SafeRoundsAhead)
@@ -254,7 +302,10 @@ while true do
 			waterEvent:FireClient(player, {
 				waterY = math.floor(currentWaterY),
 				waterSpeed = currentWaterSpeed,
+				waterMode = currentWaterMode,
+				waterGap = math.floor(currentProgressGap),
 				score = ScoreService.GetScore(player),
+				runScore = ScoreService.GetRunScore(player),
 				bestScore = ScoreService.GetBestScore(player),
 				scoreMultiplier = ScoreService.GetMultiplier(player),
 				height = height,

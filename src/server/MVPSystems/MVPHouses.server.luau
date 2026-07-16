@@ -1,448 +1,295 @@
 --[[
-	Block Parkour MVP - edificios e villagers em um unico Script
+	SkyDungeon - Vila procedural do MVP
 
-	Instale como Script normal em ServerScriptService.
-	Os modelos sao clonados destas pastas:
-	- ServerStorage/MVPBuildings
-	- ServerStorage/MVPVillagers
-
-	Deixe os atributos SelectedBuilding e SelectedVillager vazios (ou "Random")
-	para sortear modelos. Use o nome exato de um Model para forcar uma escolha.
+	Cria uma pequena vila deterministica em MainHalls medias/grandes. Aceita
+	modelos reais em ServerStorage/MVPAssets/Village e usa modelos de exemplo
+	por codigo quando as pastas estiverem vazias.
 ]]
 
-local Debris = game:GetService("Debris")
-local Players = game:GetService("Players")
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
 
-local HOUSE_CHANCE = 0.30
-local RANDOM_SALT = 73428767
-local CAPE_PRICE = 15
-
+local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
+local VILLAGE_CONFIG = MVPConfig.Village
 local processedIslands = setmetatable({}, { __mode = "k" })
-
-local warned = {}
-
-local function warnOnce(key, message)
-	if warned[key] then
-		return
-	end
-	warned[key] = true
-	warn(message)
-end
 
 local function isTerrainIsland(instance)
 	return instance:IsA("Model")
-		and string.match(instance.Name, "^Terrain_") ~= nil
-		and instance.Parent ~= nil
-		and instance.Parent.Name == "TerrainAreas"
+		and instance:GetAttribute("IsSkyIsland") == true
 end
 
-local function getFreeTerrainParts(island)
-	local parts = {}
-	for _, descendant in ipairs(island:GetDescendants()) do
-		if
-			descendant:IsA("BasePart")
-			and descendant:GetAttribute("BlockType") == "Terrain"
-			and descendant:GetAttribute("MVPReserved") == nil
-		then
-			table.insert(parts, descendant)
-		end
+local function getPreferredFolder(category)
+	local assets = ServerStorage:FindFirstChild("MVPAssets")
+	local village = assets and assets:FindFirstChild("Village")
+	local preferred = village and village:FindFirstChild(category)
+	if preferred and #preferred:GetChildren() > 0 then
+		return preferred
 	end
-	table.sort(parts, function(left, right)
-		local leftKey = string.format(
-			"%s,%s,%s",
-			tostring(left:GetAttribute("GridX")),
-			tostring(left:GetAttribute("GridY")),
-			tostring(left:GetAttribute("GridZ"))
-		)
-		local rightKey = string.format(
-			"%s,%s,%s",
-			tostring(right:GetAttribute("GridX")),
-			tostring(right:GetAttribute("GridY")),
-			tostring(right:GetAttribute("GridZ"))
-		)
-		return leftKey < rightKey
-	end)
-	return parts
+	local legacyName = category == "Buildings" and "MVPBuildings" or "MVPVillagers"
+	local legacy = ServerStorage:FindFirstChild(legacyName)
+	if legacy and #legacy:GetChildren() > 0 then
+		return legacy
+	end
+	return nil
 end
 
-local function removeCollectibleAbove(island, basePart)
-	local gridX = basePart:GetAttribute("GridX")
-	local gridY = basePart:GetAttribute("GridY")
-	local gridZ = basePart:GetAttribute("GridZ")
-	for _, descendant in ipairs(island:GetDescendants()) do
-		if
-			descendant:IsA("BasePart")
-			and descendant:GetAttribute("BaseGridX") == gridX
-			and descendant:GetAttribute("BaseGridY") == gridY
-			and descendant:GetAttribute("BaseGridZ") == gridZ
-		then
-			descendant:Destroy()
-		end
-	end
-end
-
-local function showMessage(player, text)
-	local playerGui = player:FindFirstChildOfClass("PlayerGui")
-	if not playerGui then
-		return
-	end
-	local old = playerGui:FindFirstChild("MVPVillagerMessage")
-	if old then
-		old:Destroy()
-	end
-
-	local gui = Instance.new("ScreenGui")
-	gui.Name = "MVPVillagerMessage"
-	gui.ResetOnSpawn = false
-	gui.Parent = playerGui
-
-	local label = Instance.new("TextLabel")
-	label.AnchorPoint = Vector2.new(0.5, 1)
-	label.Position = UDim2.fromScale(0.5, 0.9)
-	label.Size = UDim2.fromOffset(440, 72)
-	label.BackgroundColor3 = Color3.fromRGB(28, 24, 20)
-	label.BackgroundTransparency = 0.12
-	label.TextColor3 = Color3.fromRGB(255, 239, 184)
-	label.TextScaled = true
-	label.TextWrapped = true
-	label.Font = Enum.Font.GothamBold
-	label.Text = text
-	label.Parent = gui
-
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 12)
-	corner.Parent = label
-	Debris:AddItem(gui, 3.5)
-end
-
-local function ensureOwnedCape(player)
-	local folder = player:FindFirstChild("OwnedItems")
-	if not folder then
-		folder = Instance.new("Folder")
-		folder.Name = "OwnedItems"
-		folder.Parent = player
-	end
-	local owned = folder:FindFirstChild("GreenCape")
-	if not owned then
-		owned = Instance.new("BoolValue")
-		owned.Name = "GreenCape"
-		owned.Parent = folder
-	end
-	return owned
-end
-
-local function equipCape(player)
-	local character = player.Character
-	if not character or not ensureOwnedCape(player).Value then
-		return false
-	end
-	local torso = character:FindFirstChild("UpperTorso")
-		or character:FindFirstChild("Torso")
-		or character:FindFirstChild("HumanoidRootPart")
-	if not torso or not torso:IsA("BasePart") then
-		return false
-	end
-
-	local old = character:FindFirstChild("MVPEquipped_GreenCape")
-	if old then
-		old:Destroy()
-	end
-	local cape = Instance.new("Part")
-	cape.Name = "MVPEquipped_GreenCape"
-	cape.Size = Vector3.new(2.8, 3.5, 0.22)
-	cape.Color = Color3.fromRGB(52, 145, 73)
-	cape.Material = Enum.Material.Fabric
-	cape.CanCollide = false
-	cape.CanTouch = false
-	cape.Massless = true
-	cape.Anchored = false
-	cape.CFrame = torso.CFrame * CFrame.new(0, -0.45, 0.7)
-	cape.Parent = character
-	local weld = Instance.new("WeldConstraint")
-	weld.Part0 = torso
-	weld.Part1 = cape
-	weld.Parent = cape
-	return true
-end
-
-local function purchaseOrEquipCape(player)
-	local owned = ensureOwnedCape(player)
-	if not owned.Value then
-		local leaderstats = player:FindFirstChild("leaderstats")
-		local coins = leaderstats and leaderstats:FindFirstChild("Coins")
-		if not coins or not coins:IsA("IntValue") then
-			showMessage(player, "Alfaiate: Nao encontrei suas moedas.")
-			return
-		end
-		if coins.Value < CAPE_PRICE then
-			showMessage(
-				player,
-				string.format("Alfaiate: A capa custa %d moedas. Voce tem %d.", CAPE_PRICE, coins.Value)
-			)
-			return
-		end
-		coins.Value -= CAPE_PRICE
-		owned.Value = true
-		if equipCape(player) then
-			showMessage(player, "Compra concluida! Capa verde equipada.")
-		else
-			showMessage(player, "Capa comprada. Ela sera equipada no respawn.")
-		end
-		return
-	end
-
-	equipCape(player)
-	showMessage(player, "Capa verde equipada novamente.")
-end
-
-local function setupPlayer(player)
-	ensureOwnedCape(player)
-	player.CharacterAdded:Connect(function()
-		task.wait(0.25)
-		equipCape(player)
-	end)
-end
-
-local function getTemplates(folderName)
-	local templates = {}
-	local folder = ServerStorage:FindFirstChild(folderName)
-	if not folder or not folder:IsA("Folder") then
-		warnOnce(folderName, string.format("[MVP Village] Crie uma Folder chamada ServerStorage/%s.", folderName))
-		return templates
-	end
-	for _, child in ipairs(folder:GetChildren()) do
-		if
-			child:IsA("Model")
-			and child:GetAttribute("Enabled") ~= false
-			and child:FindFirstChildWhichIsA("BasePart", true)
-		then
-			table.insert(templates, child)
-		end
-	end
-	table.sort(templates, function(left, right)
-		return left.Name < right.Name
-	end)
-	return templates
-end
-
-local function chooseTemplate(templates, attributeName, random)
-	if #templates == 0 then
-		return nil
-	end
-
-	local selectedName = script:GetAttribute(attributeName)
-	if typeof(selectedName) == "string" and selectedName ~= "" and selectedName ~= "Random" then
-		for _, template in ipairs(templates) do
-			if template.Name == selectedName then
-				return template
+local function getTemplates(category)
+	local folder = getPreferredFolder(category)
+	local result = {}
+	if folder then
+		for _, child in ipairs(folder:GetChildren()) do
+			if child:IsA("Model") or child:IsA("BasePart") then
+				table.insert(result, child)
 			end
 		end
-		warnOnce(
-			attributeName .. selectedName,
-			string.format("[MVP Village] O Model '%s' definido em %s nao foi encontrado.", selectedName, attributeName)
-		)
 	end
-
-	return templates[random:NextInteger(1, #templates)]
+	table.sort(result, function(a, b)
+		return a.Name < b.Name
+	end)
+	return result
 end
 
-local function cloneAsset(parent, basePart, template, partsCanCollide)
-	local model = template:Clone()
-	model.Name = template.Name
-
-	-- O MVP usa somente a parte visual dos assets da Toolbox.
-	for _, descendant in ipairs(model:GetDescendants()) do
-		if descendant:IsA("Script") or descendant:IsA("LocalScript") or descendant:IsA("ModuleScript") then
-			descendant:Destroy()
-		elseif descendant:IsA("ProximityPrompt") then
+local function prepareStatic(instance)
+	for _, descendant in ipairs(instance:GetDescendants()) do
+		if descendant:IsA("BaseScript") then
 			descendant:Destroy()
 		elseif descendant:IsA("BasePart") then
 			descendant.Anchored = true
-			descendant.CanCollide = partsCanCollide
 			descendant.CanTouch = false
 		end
 	end
-
-	local root = model.PrimaryPart
-	if not root or not root:IsA("BasePart") then
-		root = model:FindFirstChild("HumanoidRootPart", true)
+	if instance:IsA("BasePart") then
+		instance.Anchored = true
+		instance.CanTouch = false
 	end
-	if not root or not root:IsA("BasePart") then
-		root = model:FindFirstChildWhichIsA("BasePart", true)
-	end
-	if not root or not root:IsA("BasePart") then
-		model:Destroy()
-		return nil
-	end
-	if not model.PrimaryPart then
-		model.PrimaryPart = root
-	end
-
-	local surfaceY = basePart.Position.Y + basePart.Size.Y / 2
-	local origin = Vector3.new(basePart.Position.X, surfaceY, basePart.Position.Z)
-	local originalPivot = model:GetPivot()
-	local originalRotation = originalPivot - originalPivot.Position
-	model:PivotTo(CFrame.new(origin) * originalRotation)
-	local boundingCFrame, boundingSize = model:GetBoundingBox()
-	local bottomY = boundingCFrame.Position.Y - boundingSize.Y / 2
-	local adjustment =
-		Vector3.new(origin.X - boundingCFrame.Position.X, surfaceY - bottomY, origin.Z - boundingCFrame.Position.Z)
-	model:PivotTo(model:GetPivot() + adjustment)
-	model:SetAttribute("SourceAsset", template.Name)
-	model.Parent = parent
-	return model, root
 end
 
-local function createBuilding(parent, basePart, random)
-	local templates = getTemplates("MVPBuildings")
-	local template = chooseTemplate(templates, "SelectedBuilding", random)
-	if not template then
-		warnOnce("NoBuildings", "[MVP Village] Adicione pelo menos um Model em ServerStorage/MVPBuildings.")
-		return nil
+local function alignToSurface(instance, position, yaw)
+	local model
+	if instance:IsA("Model") then
+		model = instance
+	else
+		model = Instance.new("Model")
+		instance.Parent = model
+		model.PrimaryPart = instance
 	end
-
-	local model = cloneAsset(parent, basePart, template, true)
-	if model then
-		model.Name = "Building_" .. template.Name
-		model:SetAttribute("BuildingId", template.Name)
-	end
+	prepareStatic(model)
+	model:PivotTo(CFrame.new(position) * CFrame.Angles(0, yaw, 0))
+	local boxCFrame, boxSize = model:GetBoundingBox()
+	local bottom = boxCFrame.Position.Y - boxSize.Y / 2
+	model:PivotTo(model:GetPivot() + Vector3.new(0, position.Y - bottom, 0))
 	return model
 end
 
-local function createVillagerFromAsset(parent, basePart, template)
-	local model, root = cloneAsset(parent, basePart, template, false)
-	if not model then
-		return nil
-	end
-	model.Name = "Villager_" .. template.Name
-
-	local displayName = template:GetAttribute("DisplayName")
-	if typeof(displayName) ~= "string" or displayName == "" then
-		displayName = template.Name
-	end
-	local villagerId = template:GetAttribute("VillagerId")
-	if typeof(villagerId) ~= "string" or villagerId == "" then
-		villagerId = template.Name
-	end
-	model:SetAttribute("VillagerId", villagerId)
-	model:SetAttribute("ShopId", "BasicClothes")
-	local head = model:FindFirstChild("Head", true)
-	if not head or not head:IsA("BasePart") then
-		head = root
-	end
-	return model, root, head, displayName, villagerId
+local function makePart(parent, name, size, cframe, color, material)
+	local part = Instance.new("Part")
+	part.Name = name
+	part.Size = size
+	part.CFrame = cframe
+	part.Color = color
+	part.Material = material
+	part.Anchored = true
+	part.CanTouch = false
+	part.TopSurface = Enum.SurfaceType.Smooth
+	part.BottomSurface = Enum.SurfaceType.Smooth
+	part.Parent = parent
+	return part
 end
 
-local function createVillager(parent, basePart, random)
-	local templates = getTemplates("MVPVillagers")
-	local template = chooseTemplate(templates, "SelectedVillager", random)
-	if not template then
-		warnOnce("NoVillagers", "[MVP Village] Adicione pelo menos um Model em ServerStorage/MVPVillagers.")
-		return nil
+local function createExampleBuilding(index, surfacePosition, yaw)
+	local model = Instance.new("Model")
+	model.Name = index == 1 and "ExampleSwordShop" or "ExampleVillageHouse"
+	local base = CFrame.new(surfacePosition) * CFrame.Angles(0, yaw, 0)
+	local wallColor = index == 1 and Color3.fromRGB(182, 132, 78) or Color3.fromRGB(151, 112, 72)
+	local floor = makePart(model, "Floor", Vector3.new(9, 0.8, 8), base * CFrame.new(0, 0.4, 0), Color3.fromRGB(100, 75, 52), Enum.Material.WoodPlanks)
+	makePart(model, "BackWall", Vector3.new(9, 5.5, 0.6), base * CFrame.new(0, 3.15, 3.7), wallColor, Enum.Material.WoodPlanks)
+	makePart(model, "LeftWall", Vector3.new(0.6, 5.5, 7.4), base * CFrame.new(-4.2, 3.15, 0), wallColor, Enum.Material.WoodPlanks)
+	makePart(model, "RightWall", Vector3.new(0.6, 5.5, 7.4), base * CFrame.new(4.2, 3.15, 0), wallColor, Enum.Material.WoodPlanks)
+	local roof = makePart(model, "Roof", Vector3.new(10, 0.75, 9), base * CFrame.new(0, 6.1, 0), Color3.fromRGB(78, 45, 38), Enum.Material.Slate)
+	roof.CFrame *= CFrame.Angles(0, 0, math.rad(index == 1 and 5 or -5))
+	local sign = makePart(model, "Sign", Vector3.new(4.6, 1.25, 0.3), base * CFrame.new(0, 4.7, -3.9), Color3.fromRGB(63, 42, 28), Enum.Material.Wood)
+	if index == 1 then
+		local gui = Instance.new("SurfaceGui")
+		gui.Face = Enum.NormalId.Front
+		gui.Parent = sign
+		local label = Instance.new("TextLabel")
+		label.Size = UDim2.fromScale(1, 1)
+		label.BackgroundTransparency = 1
+		label.Text = "ESPADAS"
+		label.TextColor3 = Color3.fromRGB(255, 225, 115)
+		label.Font = Enum.Font.GothamBold
+		label.TextScaled = true
+		label.Parent = gui
 	end
-	local model, root, head, displayName, villagerId = createVillagerFromAsset(parent, basePart, template)
-	if not model then
-		return nil
-	end
-
-	local nameGui = Instance.new("BillboardGui")
-	nameGui.Name = "NameGui"
-	nameGui.Size = UDim2.fromOffset(180, 38)
-	nameGui.StudsOffset = Vector3.new(0, 1.4, 0)
-	nameGui.AlwaysOnTop = true
-	nameGui.Parent = head
-	local nameLabel = Instance.new("TextLabel")
-	nameLabel.Size = UDim2.fromScale(1, 1)
-	nameLabel.BackgroundTransparency = 1
-	nameLabel.Text = displayName
-	nameLabel.TextColor3 = Color3.new(1, 1, 1)
-	nameLabel.TextStrokeTransparency = 0.3
-	nameLabel.TextScaled = true
-	nameLabel.Font = Enum.Font.GothamBold
-	nameLabel.Parent = nameGui
-
-	local prompt = Instance.new("ProximityPrompt")
-	prompt.ActionText = "Comprar/Equipar capa"
-	prompt.ObjectText = displayName
-	prompt.HoldDuration = 0
-	prompt.MaxActivationDistance = 8
-	prompt.RequiresLineOfSight = false
-	prompt.Parent = root
-	prompt.Triggered:Connect(function(player)
-		player:SetAttribute("LastVillagerId", villagerId)
-		purchaseOrEquipCape(player)
-	end)
+	model.PrimaryPart = floor
+	model:SetAttribute("ExampleModel", true)
 	return model
 end
 
-local function chooseNearestOtherPart(parts, selected)
-	local closest = nil
-	local closestDistance = math.huge
-	for _, part in ipairs(parts) do
-		if part ~= selected then
-			local distance = (part.Position - selected.Position).Magnitude
-			if distance < closestDistance then
-				closest = part
-				closestDistance = distance
+local function createExampleVillager(surfacePosition, yaw)
+	local model = Instance.new("Model")
+	model.Name = "ExampleSwordMerchant"
+	local root = makePart(model, "HumanoidRootPart", Vector3.new(1.6, 2.2, 1.2), CFrame.new(surfacePosition + Vector3.new(0, 1.1, 0)), Color3.fromRGB(65, 48, 38), Enum.Material.SmoothPlastic)
+	root.Transparency = 1
+	root.CanCollide = false
+	local base = CFrame.new(surfacePosition) * CFrame.Angles(0, yaw, 0)
+	makePart(model, "Body", Vector3.new(2.5, 3.2, 1.4), base * CFrame.new(0, 2.2, 0), Color3.fromRGB(60, 92, 145), Enum.Material.Fabric).CanCollide = false
+	local head = makePart(model, "Head", Vector3.new(1.8, 1.8, 1.8), base * CFrame.new(0, 4.7, 0), Color3.fromRGB(231, 190, 145), Enum.Material.SmoothPlastic)
+	head.Shape = Enum.PartType.Ball
+	head.CanCollide = false
+	makePart(model, "Hat", Vector3.new(2.5, 0.45, 2.5), base * CFrame.new(0, 5.65, 0), Color3.fromRGB(95, 50, 125), Enum.Material.Fabric).CanCollide = false
+	model.PrimaryPart = root
+	model:SetAttribute("ExampleModel", true)
+	return model
+end
+
+local function clearVillageArea(island, positions)
+	local content = island:FindFirstChild("MVPContent")
+	if not content then
+		return
+	end
+	for _, descendant in ipairs(content:GetDescendants()) do
+		if descendant:IsA("BasePart") then
+			for _, position in ipairs(positions) do
+				local flatDistance = (Vector2.new(descendant.Position.X, descendant.Position.Z) - Vector2.new(position.X, position.Z)).Magnitude
+				if flatDistance < 7 then
+					descendant:Destroy()
+					break
+				end
 			end
 		end
 	end
-	return closest
+end
+
+local function chooseTemplate(templates, random)
+	if #templates == 0 then
+		return nil
+	end
+	return templates[random:NextInteger(1, #templates)]
+end
+
+local function spawnBuilding(parent, templates, index, position, yaw, random)
+	local template = chooseTemplate(templates, random)
+	local model
+	if template then
+		model = alignToSurface(template:Clone(), position, yaw)
+	else
+		model = createExampleBuilding(index, position, yaw)
+	end
+	model.Name = string.format("Building_%02d_%s", index, model.Name)
+	model.Parent = parent
+	return model
+end
+
+local function spawnVillager(parent, templates, position, yaw, random)
+	local template = chooseTemplate(templates, random)
+	local model
+	if template then
+		model = alignToSurface(template:Clone(), position, yaw)
+	else
+		model = createExampleVillager(position, yaw)
+	end
+	model.Name = "SwordMerchant"
+	model:SetAttribute("IsVillager", true)
+	model:SetAttribute("ShopId", "SwordShop")
+	model.Parent = parent
+	CollectionService:AddTag(model, VILLAGE_CONFIG.ShopTag)
+	return model
+end
+
+local function shouldSpawnVillage(island, random)
+	local roundIndex = tonumber(island:GetAttribute("RoundIndex")) or 0
+	local size = island:GetAttribute("TerrainSize")
+	local role = island:GetAttribute("IslandRole")
+	if roundIndex < VILLAGE_CONFIG.MinimumRound or role ~= "MainHall" then
+		return false
+	end
+	if size ~= "Medium" and size ~= "Large" then
+		return false
+	end
+	if roundIndex % VILLAGE_CONFIG.GuaranteedEveryRounds == 0 then
+		return true
+	end
+	local chance = size == "Large" and VILLAGE_CONFIG.LargeChance or VILLAGE_CONFIG.MediumChance
+	return random:NextNumber() <= chance
+end
+
+local function removeRuntimeMonsters(island)
+	for _, descendant in ipairs(island:GetDescendants()) do
+		if descendant:IsA("Model") and (
+			descendant:GetAttribute("RuntimeMonster") == true
+			or CollectionService:HasTag(descendant, "CombatTarget")
+		) then
+			descendant:Destroy()
+		end
+	end
 end
 
 local function populateIsland(island)
 	if processedIslands[island] or not island.Parent then
 		return
 	end
+	local floor = island:FindFirstChild("IslandFloor")
+	local deadline = os.clock() + 2
+	while not floor and island.Parent and os.clock() < deadline do
+		task.wait()
+		floor = island:FindFirstChild("IslandFloor")
+	end
+	if not floor or not floor:IsA("BasePart") then
+		return
+	end
 	processedIslands[island] = true
 
-	local size = island:GetAttribute("TerrainSize")
-	if size ~= "Medium" and size ~= "Large" then
-		return
-	end
-	local chunk = island.Parent and island.Parent.Parent
-	local chunkSeed = chunk and chunk:GetAttribute("Seed") or 1
-	local terrainId = island:GetAttribute("TerrainId") or 1
-	local seed = (chunkSeed + terrainId * 17389 + RANDOM_SALT) % 2147483647
+	local seed = (tonumber(island:GetAttribute("IslandSeed")) or 1) + VILLAGE_CONFIG.RandomSalt
+	seed = math.floor(math.abs(seed)) % 2147483647
 	local random = Random.new(seed == 0 and 1 or seed)
-	if random:NextNumber() > HOUSE_CHANCE then
+	if not shouldSpawnVillage(island, random) then
 		return
 	end
 
-	local parts = getFreeTerrainParts(island)
-	local deadline = os.clock() + 2
-	while #parts < 2 and island.Parent and os.clock() < deadline do
-		task.wait(0.05)
-		parts = getFreeTerrainParts(island)
-	end
-	if #parts < 2 or not island.Parent then
-		return
-	end
-	if #getTemplates("MVPBuildings") == 0 or #getTemplates("MVPVillagers") == 0 then
-		warnOnce(
-			"MissingVillageAssets",
-			"[MVP Village] A geracao precisa de Models nas pastas MVPBuildings e MVPVillagers do ServerStorage."
-		)
-		return
-	end
+	island:SetAttribute("VillageSpawned", true)
+	island:SetAttribute("CanSpawnMonster", false)
+	island:SetAttribute("CanSpawnItem", false)
+	removeRuntimeMonsters(island)
 
-	local houseBase = parts[random:NextInteger(1, #parts)]
-	local villagerBase = chooseNearestOtherPart(parts, houseBase)
-	if not villagerBase then
-		return
+	local surfaceY = floor.Position.Y + floor.Size.Y / 2 + 0.05
+	local radius = math.clamp(math.min(floor.Size.X, floor.Size.Z) * 0.25, 8, 13)
+	local center = Vector3.new(floor.Position.X, surfaceY, floor.Position.Z)
+	local angle = random:NextNumber(0, math.pi * 2)
+	local buildingCount = random:NextInteger(VILLAGE_CONFIG.MinimumBuildingCount, VILLAGE_CONFIG.MaximumBuildingCount)
+	local positions = { center }
+	for index = 1, buildingCount do
+		local theta = angle + ((index - 1) / buildingCount) * math.pi * 2
+		table.insert(positions, center + Vector3.new(math.cos(theta) * radius, 0, math.sin(theta) * radius))
 	end
-	houseBase:SetAttribute("MVPReserved", "House")
-	villagerBase:SetAttribute("MVPReserved", "Villager")
-	removeCollectibleAbove(island, houseBase)
-	removeCollectibleAbove(island, villagerBase)
+	clearVillageArea(island, positions)
 
 	local village = Instance.new("Folder")
 	village.Name = "MVPVillage"
+	village:SetAttribute("ProceduralVillage", true)
+	village:SetAttribute("VillageSeed", seed)
 	village.Parent = island
-	createBuilding(village, houseBase, random)
-	createVillager(village, villagerBase, random)
-	print("[MVP Village] Casa e alfaiate criados em " .. island:GetFullName())
+
+	local buildings = getTemplates("Buildings")
+	local villagers = getTemplates("Villagers")
+	for index = 1, buildingCount do
+		local position = positions[index + 1]
+		local yaw = math.atan2(center.X - position.X, center.Z - position.Z)
+		spawnBuilding(village, buildings, index, position, yaw, random)
+	end
+	spawnVillager(village, villagers, center, angle, random)
+
+	local pad = makePart(
+		village,
+		"VillageSquare",
+		Vector3.new(math.min(12, radius), 0.35, math.min(12, radius)),
+		CFrame.new(center + Vector3.new(0, 0.175, 0)),
+		Color3.fromRGB(118, 118, 112),
+		Enum.Material.Cobblestone
+	)
+	pad.CanCollide = true
+	print(string.format("[MVP Village] Vila procedural criada em %s.", island:GetFullName()))
 end
 
 workspace.DescendantAdded:Connect(function(instance)
@@ -457,9 +304,4 @@ for _, descendant in ipairs(workspace:GetDescendants()) do
 	end
 end
 
-Players.PlayerAdded:Connect(setupPlayer)
-for _, player in ipairs(Players:GetPlayers()) do
-	setupPlayer(player)
-end
-
-print("[MVP Village] Sistema simples iniciado")
+print("[MVP Village] Gerador procedural iniciado; modelos de exemplo habilitados.")

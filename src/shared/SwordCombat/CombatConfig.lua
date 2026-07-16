@@ -2,6 +2,9 @@
 -- Valores compartilhados pelo cliente e pelo servidor.
 -- O servidor sempre limita atributos vindos das Tools aos limites abaixo.
 
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
+
 local Config = {}
 
 Config.ToolRemoteName = "SwordAttackRequest"
@@ -28,9 +31,8 @@ Config.MaxHitboxDimension = 14
 -- podem fazer o raycast tocar o piso antes do alvo. A hitbox curta ja limita o golpe.
 Config.RequireLineOfSight = false
 Config.FriendlyFire = false
--- Deixe ambos true no primeiro teste da V5. Mude para false antes de publicar.
-Config.DebugHitboxes = true
-Config.DebugCombat = true
+Config.DebugHitboxes = false
+Config.DebugCombat = false
 
 -- CFrame usa -Z como direção para frente.
 Config.Combo = {
@@ -86,11 +88,11 @@ Config.DefaultWeapon = {
 -- Substitua por animações publicadas pelo dono/grupo da experiência.
 -- Uma Tool também pode sobrescrever cada slot usando a pasta "Animations".
 Config.DefaultAnimationIds = {
-	Equip = "",
-	Idle = "",
-	Attack1 = "rbxassetid://522635514",
-	Attack2 = "rbxassetid://522638767",
-	Attack3 = "rbxassetid://522635514",
+	Equip = MVPConfig.ExampleAssets.Animations.Equip,
+	Idle = MVPConfig.ExampleAssets.Animations.Idle,
+	Attack1 = MVPConfig.ExampleAssets.Animations.Attack1,
+	Attack2 = MVPConfig.ExampleAssets.Animations.Attack2,
+	Attack3 = MVPConfig.ExampleAssets.Animations.Attack3,
 }
 
 Config.Visuals = {
@@ -111,10 +113,10 @@ Config.Visuals = {
 
 -- Conteúdo local que não precisa de upload de asset.
 Config.Sounds = {
-	Equip = "rbxasset://sounds/unsheath.wav",
-	Swing = "rbxasset://sounds/swordslash.wav",
-	HeavySwing = "rbxasset://sounds/swordlunge.wav",
-	Hit = "", -- Opcional: coloque um rbxassetid publicado aqui.
+	Equip = MVPConfig.ExampleAssets.Sounds.Equip,
+	Swing = MVPConfig.ExampleAssets.Sounds.Swing,
+	HeavySwing = MVPConfig.ExampleAssets.Sounds.HeavySwing,
+	Hit = MVPConfig.ExampleAssets.Sounds.Hit,
 }
 
 function Config.IsSword(tool)

@@ -61,13 +61,16 @@ local function createImpact(position, color, heavy)
 	Debris:AddItem(anchor, 0.30)
 end
 
-local function applyKnockback(attackerRoot, model, humanoid, root)
-	if root.Anchored then
-		return
+local function applyKnockback(attackerRoot, model, humanoid, root, attack)
+	-- Um unico membro ancorado prende toda a assembly. Mobs de combate precisam
+	-- estar fisicos para reagir enquanto vivos, nao apenas depois de morrer.
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant:IsA("BasePart") then
+			descendant.Anchored = false
+		end
 	end
 
-	-- Ensure server has authority over the mob's physics
-	root.Anchored = false
+	-- Garante autoridade do servidor durante o pequeno stun.
 	pcall(function()
 		root:SetNetworkOwner(nil)
 	end)
@@ -83,14 +86,9 @@ local function applyKnockback(attackerRoot, model, humanoid, root)
 	model:SetAttribute("CombatLastHitAt", now)
 	model:SetAttribute("CombatHitCount", hitCount)
 
-	local horizontalForce, upwardForce
-	if hitCount >= 3 then
-		horizontalForce, upwardForce = 35, 8
-	elseif hitCount == 2 then
-		horizontalForce, upwardForce = 22, 4
-	else
-		horizontalForce, upwardForce = 18, 3
-	end
+	local comboScale = 1 + math.min(2, hitCount - 1) * 0.18
+	local horizontalForce = math.max(12, tonumber(attack.Knockback) or 12) * 1.8 * comboScale
+	local upwardForce = math.max(2, tonumber(attack.UpwardKnockback) or 2) * comboScale
 
 	-- Direction: knock the mob away from the attacker
 	local direction = Vector3.new(
@@ -111,6 +109,7 @@ local function applyKnockback(attackerRoot, model, humanoid, root)
 	local stunTokenId = (model:GetAttribute("CombatStunTokenId") or 0) + 1
 	model:SetAttribute("CombatStunTokenId", stunTokenId)
 	model:SetAttribute("CombatStunned", true)
+	model:SetAttribute("CombatKnockbackUntil", workspace:GetServerTimeNow() + 0.22)
 
 	-- Store original walk speed before zeroing (only if not already stored
 	-- from a previous stun that hasn't been cleaned up yet)
@@ -164,6 +163,7 @@ local function applyKnockback(attackerRoot, model, humanoid, root)
 		end
 		model:SetAttribute("CombatStunned", nil)
 		model:SetAttribute("CombatStunTokenId", nil)
+		model:SetAttribute("CombatKnockbackUntil", nil)
 		if humanoid and humanoid.Parent then
 			local originalSpeed = model:GetAttribute("CombatOriginalWalkSpeed")
 			if originalSpeed then
@@ -211,7 +211,7 @@ function DamageService.ApplySwordHit(attacker, attackerRoot, target, attack)
 	model:SetAttribute("LastSwordHitAt", workspace:GetServerTimeNow())
 
 	humanoid:TakeDamage(attack.Damage)
-	applyKnockback(attackerRoot, model, humanoid, root)
+	applyKnockback(attackerRoot, model, humanoid, root, attack)
 	createImpact(
 		root.Position + Vector3.new(0, math.max(0.5, root.Size.Y * 0.35), 0),
 		attack.Heavy and Color3.fromRGB(255, 120, 55) or Color3.fromRGB(255, 235, 170),

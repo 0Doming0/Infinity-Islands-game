@@ -100,18 +100,13 @@ local function playAttackAnimation(tool, comboIndex, speed)
 end
 
 local function activate(tool)
-	print("[CLIENTE] Tool.Activated disparou")
-	print("[CLIENTE] Tool vinculada:", tool:GetFullName())
-
 	local character = player.Character
 	if not character or tool.Parent ~= character or not Config.IsSword(tool) then
-		print("[CLIENTE] Activate cancelado: tool nao esta no character ou nao e sword")
 		return
 	end
 
 	local now = os.clock()
 	if now < state.NextAttackAt then
-		print("[CLIENTE] Activate cancelado: cooldown ativo")
 		return
 	end
 	if now - state.LastAttackAt > Config.ComboResetTime then
@@ -127,14 +122,11 @@ local function activate(tool)
 	playAttackAnimation(tool, state.Combo, speed)
 
 	local request = tool:FindFirstChild(Config.ToolRemoteName) or tool:WaitForChild(Config.ToolRemoteName, 2)
-	print("[CLIENTE] Remote:", request, request and request:GetFullName())
 	if not request or not request:IsA("RemoteEvent") then
 		warn("[CLIENTE] SwordAttackRequest nao encontrado dentro de " .. tool:GetFullName())
 		return
 	end
-	print("[CLIENTE] Antes do FireServer")
 	request:FireServer()
-	print("[CLIENTE] Depois do FireServer")
 	if Config.DebugCombat then
 		print(string.format("[SwordInputV6] CLICK enviado combo=%d", state.Combo))
 	end
@@ -145,7 +137,6 @@ local function bindTool(tool)
 		return
 	end
 	boundTools[tool] = true
-	print("[CLIENTE] Tool vinculada:", tool:GetFullName(), "SwordInstanceId:", tool:GetAttribute("SwordInstanceId"))
 	tool.Activated:Connect(function()
 		activate(tool)
 	end)
@@ -205,5 +196,6 @@ if player.Character then
 	bindCharacter(player.Character)
 end
 
-print("[CLIENTE] SwordInputClient iniciou")
-print("[SwordInputV6] Cliente iniciado.")
+if Config.DebugCombat then
+	print("[SwordInputV6] Cliente iniciado.")
+end

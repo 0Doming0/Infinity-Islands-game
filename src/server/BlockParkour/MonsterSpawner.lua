@@ -33,6 +33,9 @@ local Debris = game:GetService("Debris")
 local Players = game:GetService("Players")
 local ServerStorage = game:GetService("ServerStorage")
 local CollectionService = game:GetService("CollectionService")
+local ScoreService = require(script.Parent.ScoreService_SkyDungeon_V10)
+
+ScoreService.Start()
 
 local MonsterSpawner = {}
 
@@ -267,23 +270,6 @@ local function selectSpawnCells(cells, amount, spacing, random)
 	return selected
 end
 
-local function ensureScore(player)
-	local leaderstats = player:FindFirstChild("leaderstats")
-	if not leaderstats then
-		leaderstats = Instance.new("Folder")
-		leaderstats.Name = "leaderstats"
-		leaderstats.Parent = player
-	end
-
-	local score = leaderstats:FindFirstChild("Score")
-	if not score then
-		score = Instance.new("IntValue")
-		score.Name = "Score"
-		score.Parent = leaderstats
-	end
-	return score
-end
-
 local function ensureMaterials(player)
 	local folder = player:FindFirstChild("Materials")
 	if not folder then
@@ -294,23 +280,11 @@ local function ensureMaterials(player)
 	return folder
 end
 
-local function getScoreMultiplier(player)
-	local character = player and player.Character
-	local tool = character and character:FindFirstChildWhichIsA("Tool")
-	if not tool then
-		return 1
-	end
-
-	local multiplier = tool:GetAttribute("ScoreMultiplier") or tool:GetAttribute("PointMultiplier")
-	return typeof(multiplier) == "number" and math.max(0, multiplier) or 1
-end
-
-local function awardScore(player, amount, multiplierOverride)
+local function awardScore(player, amount, _multiplierOverride)
 	if player and amount > 0 then
-		local multiplier = typeof(multiplierOverride) == "number"
-			and math.max(0, multiplierOverride)
-			or getScoreMultiplier(player)
-		ensureScore(player).Value += math.floor(amount * multiplier)
+		-- O multiplicador canonico fica no Player e e definido pela espada
+		-- selecionada. multiplierOverride e mantido apenas na assinatura antiga.
+		ScoreService.Award(player, amount, "Monster")
 	end
 end
 
@@ -548,7 +522,6 @@ local function containerHasDamageTool(container)
 end
 
 local function setupPlayer(player)
-	ensureScore(player)
 	ensureMaterials(player)
 end
 

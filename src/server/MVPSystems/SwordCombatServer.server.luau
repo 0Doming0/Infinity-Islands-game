@@ -389,6 +389,7 @@ local function executeHit(player, tool, comboIndex, token)
 	end
 
 	if hitCount > 0 then
+		playSound(tool, Config.Sounds.Hit, combo.Heavy and 0.62 or 0.45, combo.Heavy and 0.86 or 1.05)
 		state.HitSerial += 1
 		player:SetAttribute("SwordHitHeavy", combo.Heavy)
 		player:SetAttribute("SwordHitCount", hitCount)
@@ -634,19 +635,14 @@ local function bindTool(player, tool)
 		attackRequest.Name = Config.ToolRemoteName
 		attackRequest.Parent = tool
 	end
-	print("[SERVIDOR] Tool vinculada:", tool:GetFullName(), "SwordInstanceId:", tool:GetAttribute("SwordInstanceId"))
-	print("[SERVIDOR] Remote criado:", attackRequest:GetFullName())
+	if Config.DebugCombat then
+		print("[SwordCombatV6] Tool vinculada:", tool:GetFullName(), "Remote:", attackRequest:GetFullName())
+	end
 	if not attackRequest:IsA("RemoteEvent") then
 		warn("[SwordCombatV6] " .. Config.ToolRemoteName .. " existe, mas nao e RemoteEvent.")
 		return
 	end
 	attackRequest.OnServerEvent:Connect(function(requestingPlayer)
-		print("[SERVIDOR] OnServerEvent recebido de:", requestingPlayer.Name)
-		print("[SERVIDOR] Tool:", tool:GetFullName())
-		print("[SERVIDOR] Tool.Parent:", tool.Parent and tool.Parent:GetFullName() or "nil")
-		print("[SERVIDOR] Character:", player.Character and player.Character:GetFullName() or "nil")
-		print("[SERVIDOR] SwordInstanceId:", tool:GetAttribute("SwordInstanceId"))
-		printTools(player)
 		if requestingPlayer == player then
 			attack(player, tool)
 		end
@@ -725,5 +721,6 @@ Players.PlayerRemoving:Connect(function(player)
 	states[player] = nil
 end)
 
-print("[SERVIDOR] SwordCombatServer iniciou")
-print("[SwordCombatV6] Servidor iniciado; Remote individual por Tool.")
+if Config.DebugCombat then
+	print("[SwordCombatV6] Servidor iniciado; Remote individual por Tool.")
+end
