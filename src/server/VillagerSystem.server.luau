@@ -1,9 +1,9 @@
 --[[
-	SkyDungeon - Loja da vila
+	SkyDungeon - Comerciantes da vila
 
-	Usa ProximityPrompt nativo (teclado, controle e celular) e valida todas as
-	compras/equipamentos no servidor. A interface recebe somente o catalogo
-	sanitizado do SwordProgressionService.
+	Cada aldeao possui uma profissao e um catalogo proprio. ProximityPrompt
+	funciona em teclado, controle e celular; preco, distancia, catalogo e efeito
+	sao sempre validados no servidor.
 ]]
 
 local CollectionService = game:GetService("CollectionService")
@@ -11,6 +11,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
+local VillageShopCatalog = require(ReplicatedStorage:WaitForChild("VillageShopCatalog"))
 local SwordProgressionService = require(script.Parent.MVPSystems:WaitForChild("SwordProgressionService"))
 local ScoreService = require(script.Parent.BlockParkour:WaitForChild("ScoreService_SkyDungeon_V10"))
 
@@ -33,48 +34,105 @@ local function getRoot(model)
 		or model:FindFirstChild("HumanoidRootPart", true)
 		or model:FindFirstChild("Head", true)
 		or model:FindFirstChildWhichIsA("BasePart", true)
-	if root and root:IsA("BasePart") then
-		return root
-	end
-	return nil
+	return root and root:IsA("BasePart") and root or nil
 end
 
-local function ensureBillboard(model, root)
-	if model:FindFirstChild("SwordShopLabel", true) then
+local function getShop(model)
+	return model and VillageShopCatalog.GetShop(model:GetAttribute("ShopId")) or nil
+end
+
+local function ensureBillboard(model, root, shop)
+	if model:FindFirstChild("VillageShopLabel", true) then
 		return
 	end
 	local billboard = Instance.new("BillboardGui")
-	billboard.Name = "SwordShopLabel"
+	billboard.Name = "VillageShopLabel"
 	billboard.Adornee = root
-	billboard.Size = UDim2.fromOffset(180, 48)
+	billboard.Size = UDim2.fromOffset(190, 48)
 	billboard.StudsOffset = Vector3.new(0, 4.2, 0)
 	billboard.AlwaysOnTop = true
 	billboard.MaxDistance = 65
 	billboard.Parent = model
+
 	local label = Instance.new("TextLabel")
 	label.Size = UDim2.fromScale(1, 1)
 	label.BackgroundColor3 = Color3.fromRGB(24, 20, 34)
 	label.BackgroundTransparency = 0.12
-	label.Text = "⚔ LOJA DE ESPADAS"
-	label.TextColor3 = Color3.fromRGB(255, 225, 120)
+	label.Text = shop.Label
+	label.TextColor3 = shop.Color
 	label.TextScaled = true
 	label.Font = Enum.Font.GothamBold
 	label.Parent = billboard
+
 	local corner = Instance.new("UICorner")
 	corner.CornerRadius = UDim.new(0, 10)
 	corner.Parent = label
 	local stroke = Instance.new("UIStroke")
-	stroke.Color = Color3.fromRGB(160, 105, 255)
+	stroke.Color = shop.Color
 	stroke.Thickness = 2
 	stroke.Parent = label
 end
 
+local function buildInventory(player, shop)
+	local swordsById = {}
+	for _, sword in ipairs(SwordProgressionService.GetShopInventory(player)) do
+		swordsById[sword.SwordId] = sword
+	end
+
+	local inventory = {}
+	for _, offer in ipairs(shop.Items) do
+		if offer.ItemType == "Sword" then
+			local sword = swordsById[offer.ItemId]
+			if sword then
+				table.insert(inventory, {
+					ItemId = sword.SwordId,
+					ItemType = "Sword",
+					SwordId = sword.SwordId,
+					DisplayName = sword.DisplayName,
+					Description = sword.Description,
+					Price = sword.Price,
+					BaseDamage = sword.BaseDamage,
+					AttackSpeed = sword.AttackSpeed,
+					ScoreMultiplier = sword.ScoreMultiplier,
+					StatsText = string.format(
+						"Dano %d  -  Velocidade %.2fx  -  Pontos %.2fx",
+						sword.BaseDamage,
+						sword.AttackSpeed,
+						sword.ScoreMultiplier
+					),
+					Color = sword.Color,
+					Owned = sword.Owned,
+					Equipped = sword.Equipped,
+				})
+			end
+		else
+			table.insert(inventory, {
+				ItemId = offer.ItemId,
+				ItemType = offer.ItemType,
+				DisplayName = offer.DisplayName,
+				Description = offer.Description,
+				StatsText = offer.StatsText,
+				Price = offer.Price,
+				Color = offer.Color,
+			})
+		end
+	end
+	return inventory
+end
+
 local function sendShop(player, message, success)
+	local villager = playerSessions[player]
+	local shop = getShop(villager)
+	if not shop then
+		return
+	end
 	villagerEvent:FireClient(player, {
 		action = "showShop",
-		inventory = SwordProgressionService.GetShopInventory(player),
+		shopId = shop.ShopId,
+		shopTitle = shop.DisplayName,
+		shopColor = shop.Color,
+		inventory = buildInventory(player, shop),
 		score = ScoreService.GetScore(player),
-		equippedSword = player:GetAttribute("EquippedSword"),
 		message = message,
 		success = success,
 	})
@@ -82,7 +140,7 @@ end
 
 local function isSessionValid(player)
 	local villager = playerSessions[player]
-	if not villager or not villager.Parent or not activeVillagers[villager] then
+	if not villager or not villager.Parent or not activeVillagers[villager] or not getShop(villager) then
 		return false
 	end
 	local character = player.Character
@@ -93,24 +151,101 @@ local function isSessionValid(player)
 		and (playerRoot.Position - villagerRoot.Position).Magnitude <= MAX_SESSION_DISTANCE
 end
 
+local function getLivingHumanoid(player)
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if not character or not humanoid or humanoid.Health <= 0 then
+		return nil, nil
+	end
+	return humanoid, character
+end
+
+local function canApplyService(player, offer)
+	local humanoid = getLivingHumanoid(player)
+	if not humanoid then
+		return false, "Seu personagem precisa estar vivo."
+	end
+	if offer.Effect == "Heal" and humanoid.Health >= humanoid.MaxHealth then
+		return false, "Sua vida ja esta cheia."
+	elseif offer.Effect == "Vitality" and humanoid.MaxHealth >= offer.Maximum then
+		return false, "Voce atingiu o limite de vitalidade desta vida."
+	elseif offer.Effect == "Speed" and humanoid.WalkSpeed >= offer.Maximum then
+		return false, "Voce atingiu o limite de velocidade desta vida."
+	elseif offer.Effect == "Jump" then
+		local atLimit = humanoid.UseJumpPower and humanoid.JumpPower >= offer.Maximum
+			or not humanoid.UseJumpPower and humanoid.JumpHeight >= offer.HeightMaximum
+		if atLimit then
+			return false, "Voce atingiu o limite de salto desta vida."
+		end
+	end
+	return true
+end
+
+local function applyService(player, offer)
+	local humanoid = getLivingHumanoid(player)
+	if not humanoid then
+		return false
+	end
+	if offer.Effect == "Heal" then
+		humanoid.Health = math.min(humanoid.MaxHealth, humanoid.Health + offer.Amount)
+	elseif offer.Effect == "Vitality" then
+		humanoid.MaxHealth = math.min(offer.Maximum, humanoid.MaxHealth + offer.Amount)
+		humanoid.Health = math.min(humanoid.MaxHealth, humanoid.Health + offer.Amount)
+	elseif offer.Effect == "Speed" then
+		humanoid.WalkSpeed = math.min(offer.Maximum, humanoid.WalkSpeed + offer.Amount)
+	elseif offer.Effect == "Jump" then
+		if humanoid.UseJumpPower then
+			humanoid.JumpPower = math.min(offer.Maximum, humanoid.JumpPower + offer.Amount)
+		else
+			humanoid.JumpHeight = math.min(offer.HeightMaximum, humanoid.JumpHeight + offer.HeightAmount)
+		end
+	else
+		return false
+	end
+	player:SetAttribute("VillageServicesPurchased", (player:GetAttribute("VillageServicesPurchased") or 0) + 1)
+	player:SetAttribute("LastVillageService", offer.ItemId)
+	return true
+end
+
+local function purchaseService(player, itemId)
+	local shop = getShop(playerSessions[player])
+	local offer = shop and VillageShopCatalog.FindItem(shop.ShopId, itemId, "Service")
+	if not offer then
+		return false, "Este aldeao nao oferece esse servico."
+	end
+	local valid, validationMessage = canApplyService(player, offer)
+	if not valid then
+		return false, validationMessage
+	end
+	local paid = ScoreService.TrySpend(player, offer.Price)
+	if not paid then
+		return false, "Pontos insuficientes."
+	end
+	if not applyService(player, offer) then
+		return false, "Nao foi possivel aplicar o servico."
+	end
+	return true, offer.DisplayName .. " adquirido!"
+end
+
 local function registerVillager(model)
 	if not model:IsA("Model") or activeVillagers[model] then
 		return
 	end
 	local root = getRoot(model)
-	if not root then
-		warn("[VillageShop] Villager sem BasePart: " .. model:GetFullName())
+	local shop = getShop(model)
+	if not root or not shop then
+		warn("[VillageShop] Aldeao invalido ou sem ShopId: " .. model:GetFullName())
 		return
 	end
 	activeVillagers[model] = true
-	ensureBillboard(model, root)
+	model:SetAttribute("NoSwordDamage", true)
+	model:SetAttribute("Invulnerable", true)
+	ensureBillboard(model, root, shop)
 
-	local prompt = root:FindFirstChild("SwordShopPrompt")
+	local prompt = root:FindFirstChild("VillageShopPrompt") or root:FindFirstChild("SwordShopPrompt")
 	if not prompt then
 		prompt = Instance.new("ProximityPrompt")
-		prompt.Name = "SwordShopPrompt"
-		prompt.ActionText = "Abrir Loja"
-		prompt.ObjectText = "Mercador de Espadas"
+		prompt.Name = "VillageShopPrompt"
 		prompt.KeyboardKeyCode = Enum.KeyCode.E
 		prompt.GamepadKeyCode = Enum.KeyCode.ButtonX
 		prompt.HoldDuration = 0
@@ -118,13 +253,14 @@ local function registerVillager(model)
 		prompt.RequiresLineOfSight = false
 		prompt.Parent = root
 	end
+	prompt.ActionText = "Negociar"
+	prompt.ObjectText = shop.DisplayName
 
 	prompt.Triggered:Connect(function(player)
-		if player.Parent ~= Players then
-			return
+		if player.Parent == Players then
+			playerSessions[player] = model
+			sendShop(player)
 		end
-		playerSessions[player] = model
-		sendShop(player)
 	end)
 	model.Destroying:Connect(function()
 		activeVillagers[model] = nil
@@ -154,19 +290,30 @@ villagerEvent.OnServerEvent:Connect(function(player, data)
 	end
 	if not isSessionValid(player) then
 		playerSessions[player] = nil
-		villagerEvent:FireClient(player, {
-			action = "shopError",
-			message = "Aproxime-se novamente do mercador.",
-		})
+		villagerEvent:FireClient(player, { action = "shopError", message = "Aproxime-se novamente do aldeao." })
 		return
 	end
 
-	local swordId = type(data.swordId) == "string" and data.swordId or ""
+	local itemId = type(data.itemId) == "string" and data.itemId
+		or type(data.swordId) == "string" and data.swordId
+		or ""
+	local shop = getShop(playerSessions[player])
 	if data.action == "purchaseSword" then
-		local success, message = SwordProgressionService.Purchase(player, swordId)
+		if not VillageShopCatalog.FindItem(shop.ShopId, itemId, "Sword") then
+			sendShop(player, "Este aldeao nao vende essa espada.", false)
+			return
+		end
+		local success, message = SwordProgressionService.Purchase(player, itemId)
 		sendShop(player, message, success)
 	elseif data.action == "equipSword" then
-		local success, message = SwordProgressionService.Equip(player, swordId)
+		if not VillageShopCatalog.FindItem(shop.ShopId, itemId, "Sword") then
+			sendShop(player, "Fale com o comerciante correto para equipar esta espada.", false)
+			return
+		end
+		local success, message = SwordProgressionService.Equip(player, itemId)
+		sendShop(player, message, success)
+	elseif data.action == "purchaseService" then
+		local success, message = purchaseService(player, itemId)
 		sendShop(player, message, success)
 	elseif data.action == "refreshShop" then
 		sendShop(player)
@@ -177,4 +324,4 @@ Players.PlayerRemoving:Connect(function(player)
 	playerSessions[player] = nil
 end)
 
-print("[VillageShop] Loja de espadas iniciada com ProximityPrompt mobile.")
+print("[VillageShop] Comerciantes variados iniciados com validacao no servidor.")

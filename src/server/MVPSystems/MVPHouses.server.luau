@@ -11,6 +11,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
 
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
+local VillageShopCatalog = require(ReplicatedStorage:WaitForChild("VillageShopCatalog"))
 local VILLAGE_CONFIG = MVPConfig.Village
 local processedIslands = setmetatable({}, { __mode = "k" })
 
@@ -127,14 +128,14 @@ local function createExampleBuilding(index, surfacePosition, yaw)
 	return model
 end
 
-local function createExampleVillager(surfacePosition, yaw)
+local function createExampleVillager(surfacePosition, yaw, shop)
 	local model = Instance.new("Model")
-	model.Name = "ExampleSwordMerchant"
+	model.Name = "Example" .. shop.ShopId
 	local root = makePart(model, "HumanoidRootPart", Vector3.new(1.6, 2.2, 1.2), CFrame.new(surfacePosition + Vector3.new(0, 1.1, 0)), Color3.fromRGB(65, 48, 38), Enum.Material.SmoothPlastic)
 	root.Transparency = 1
 	root.CanCollide = false
 	local base = CFrame.new(surfacePosition) * CFrame.Angles(0, yaw, 0)
-	makePart(model, "Body", Vector3.new(2.5, 3.2, 1.4), base * CFrame.new(0, 2.2, 0), Color3.fromRGB(60, 92, 145), Enum.Material.Fabric).CanCollide = false
+	makePart(model, "Body", Vector3.new(2.5, 3.2, 1.4), base * CFrame.new(0, 2.2, 0), shop.Color, Enum.Material.Fabric).CanCollide = false
 	local head = makePart(model, "Head", Vector3.new(1.8, 1.8, 1.8), base * CFrame.new(0, 4.7, 0), Color3.fromRGB(231, 190, 145), Enum.Material.SmoothPlastic)
 	head.Shape = Enum.PartType.Ball
 	head.CanCollide = false
@@ -182,20 +183,31 @@ local function spawnBuilding(parent, templates, index, position, yaw, random)
 	return model
 end
 
-local function spawnVillager(parent, templates, position, yaw, random)
+local function spawnVillager(parent, templates, position, yaw, random, shop, index)
 	local template = chooseTemplate(templates, random)
 	local model
 	if template then
 		model = alignToSurface(template:Clone(), position, yaw)
 	else
-		model = createExampleVillager(position, yaw)
+		model = createExampleVillager(position, yaw, shop)
 	end
-	model.Name = "SwordMerchant"
+	model.Name = string.format("Villager_%02d_%s", index, shop.ShopId)
 	model:SetAttribute("IsVillager", true)
-	model:SetAttribute("ShopId", "SwordShop")
+	model:SetAttribute("ShopId", shop.ShopId)
+	model:SetAttribute("MerchantDisplayName", shop.DisplayName)
+	model:SetAttribute("NoSwordDamage", true)
+	model:SetAttribute("Invulnerable", true)
 	model.Parent = parent
 	CollectionService:AddTag(model, VILLAGE_CONFIG.ShopTag)
 	return model
+end
+
+local function shuffle(values, random)
+	for index = #values, 2, -1 do
+		local other = random:NextInteger(1, index)
+		values[index], values[other] = values[other], values[index]
+	end
+	return values
 end
 
 local function shouldSpawnVillage(island, random)
@@ -258,10 +270,33 @@ local function populateIsland(island)
 	local center = Vector3.new(floor.Position.X, surfaceY, floor.Position.Z)
 	local angle = random:NextNumber(0, math.pi * 2)
 	local buildingCount = random:NextInteger(VILLAGE_CONFIG.MinimumBuildingCount, VILLAGE_CONFIG.MaximumBuildingCount)
+	local shopIds = VillageShopCatalog.GetShopIds()
+	-- Toda vila mantem o ferreiro para nao bloquear a progressao principal.
+	-- As demais profissoes continuam aleatorias e nunca se repetem na vila.
+	for index, shopId in ipairs(shopIds) do
+		if shopId == "Blacksmith" then
+			table.remove(shopIds, index)
+			break
+		end
+	end
+	shuffle(shopIds, random)
+	table.insert(shopIds, 1, "Blacksmith")
+	local villagerCount = math.min(
+		random:NextInteger(VILLAGE_CONFIG.MinimumVillagerCount, VILLAGE_CONFIG.MaximumVillagerCount),
+		#shopIds
+	)
 	local positions = { center }
 	for index = 1, buildingCount do
 		local theta = angle + ((index - 1) / buildingCount) * math.pi * 2
 		table.insert(positions, center + Vector3.new(math.cos(theta) * radius, 0, math.sin(theta) * radius))
+	end
+	local villagerPositions = {}
+	local villagerRadius = math.clamp(radius * 0.32, 2.8, 4.2)
+	for index = 1, villagerCount do
+		local theta = angle + math.pi / 4 + ((index - 1) / villagerCount) * math.pi * 2
+		local position = center + Vector3.new(math.cos(theta) * villagerRadius, 0, math.sin(theta) * villagerRadius)
+		table.insert(villagerPositions, position)
+		table.insert(positions, position)
 	end
 	clearVillageArea(island, positions)
 
@@ -278,7 +313,12 @@ local function populateIsland(island)
 		local yaw = math.atan2(center.X - position.X, center.Z - position.Z)
 		spawnBuilding(village, buildings, index, position, yaw, random)
 	end
-	spawnVillager(village, villagers, center, angle, random)
+	for index = 1, villagerCount do
+		local shop = VillageShopCatalog.GetShop(shopIds[index])
+		local position = villagerPositions[index]
+		local yaw = math.atan2(center.X - position.X, center.Z - position.Z)
+		spawnVillager(village, villagers, position, yaw, random, shop, index)
+	end
 
 	local pad = makePart(
 		village,
@@ -289,7 +329,11 @@ local function populateIsland(island)
 		Enum.Material.Cobblestone
 	)
 	pad.CanCollide = true
-	print(string.format("[MVP Village] Vila procedural criada em %s.", island:GetFullName()))
+	print(string.format(
+		"[MVP Village] Vila procedural criada em %s com %d aldeoes.",
+		island:GetFullName(),
+		villagerCount
+	))
 end
 
 workspace.DescendantAdded:Connect(function(instance)

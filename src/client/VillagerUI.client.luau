@@ -1,4 +1,4 @@
--- SkyDungeon - interface responsiva da loja de espadas.
+-- SkyDungeon - interface responsiva dos comerciantes da vila.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -11,7 +11,7 @@ local villagerEvent = ReplicatedStorage:WaitForChild("VillagerEvent")
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 
 local gui = Instance.new("ScreenGui")
-gui.Name = "SwordShopUI"
+gui.Name = "VillageShopUI"
 gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = false
 gui.DisplayOrder = 20
@@ -51,7 +51,7 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -150, 0, 52)
 title.Position = UDim2.fromOffset(22, 12)
 title.BackgroundTransparency = 1
-title.Text = "⚔ LOJA DE ESPADAS"
+title.Text = "VILA"
 title.TextColor3 = Color3.fromRGB(255, 226, 120)
 title.Font = Enum.Font.GothamBlack
 title.TextSize = 26
@@ -88,7 +88,7 @@ local feedback = Instance.new("TextLabel")
 feedback.Position = UDim2.fromOffset(22, 65)
 feedback.Size = UDim2.new(1, -44, 0, 30)
 feedback.BackgroundTransparency = 1
-feedback.Text = "Escolha uma espada para comprar ou equipar."
+feedback.Text = "Escolha uma oferta."
 feedback.TextColor3 = Color3.fromRGB(185, 190, 205)
 feedback.Font = Enum.Font.Gotham
 feedback.TextSize = 16
@@ -169,7 +169,7 @@ end
 
 local function createRow(item, index)
 	local row = Instance.new("Frame")
-	row.Name = item.SwordId or ("Sword_" .. index)
+	row.Name = item.ItemId or item.SwordId or ("Offer_" .. index)
 	row.LayoutOrder = index
 	row.Size = UDim2.new(1, -4, 0, 112)
 	row.BackgroundColor3 = item.Color or Color3.fromRGB(65, 70, 88)
@@ -221,12 +221,7 @@ local function createRow(item, index)
 	stats.Position = UDim2.fromOffset(36, 66)
 	stats.Size = UDim2.new(1, -250, 0, 32)
 	stats.BackgroundTransparency = 1
-	stats.Text = string.format(
-		"Dano %d  •  Velocidade %.2fx  •  Pontos %.2fx",
-		item.BaseDamage or 0,
-		item.AttackSpeed or 1,
-		item.ScoreMultiplier or 1
-	)
+	stats.Text = item.StatsText or "Oferta da vila"
 	stats.TextColor3 = Color3.fromRGB(115, 225, 255)
 	stats.Font = Enum.Font.GothamMedium
 	stats.TextSize = 14
@@ -245,24 +240,27 @@ local function createRow(item, index)
 	buttonCorner.CornerRadius = UDim.new(0, 11)
 	buttonCorner.Parent = button
 
-	if item.Equipped then
+	if item.ItemType == "Sword" and item.Equipped then
 		button.Text = "EQUIPADA"
 		button.BackgroundColor3 = Color3.fromRGB(50, 135, 83)
 		button.Active = false
 		button.AutoButtonColor = false
-	elseif item.Owned then
+	elseif item.ItemType == "Sword" and item.Owned then
 		button.Text = "EQUIPAR"
 		button.BackgroundColor3 = Color3.fromRGB(77, 105, 185)
 		button.MouseButton1Click:Connect(function()
 			button.Active = false
-			villagerEvent:FireServer({ action = "equipSword", swordId = item.SwordId })
+			villagerEvent:FireServer({ action = "equipSword", itemId = item.ItemId })
 		end)
 	else
 		button.Text = string.format("COMPRAR\n%d pontos", item.Price or 0)
 		button.BackgroundColor3 = Color3.fromRGB(135, 82, 170)
 		button.MouseButton1Click:Connect(function()
 			button.Active = false
-			villagerEvent:FireServer({ action = "purchaseSword", swordId = item.SwordId })
+			villagerEvent:FireServer({
+				action = item.ItemType == "Sword" and "purchaseSword" or "purchaseService",
+				itemId = item.ItemId,
+			})
 		end)
 	end
 end
@@ -271,6 +269,11 @@ local function showShop(data)
 	shopOpen = true
 	panel.Visible = true
 	backdrop.Visible = true
+	title.Text = string.upper(data.shopTitle or "VILA")
+	if typeof(data.shopColor) == "Color3" then
+		title.TextColor3 = data.shopColor
+		stroke.Color = data.shopColor
+	end
 	scoreLabel.Text = "Pontos: " .. tostring(data.score or 0)
 	if data.message then
 		feedback.Text = data.message
@@ -279,7 +282,7 @@ local function showShop(data)
 			playPurchaseSound()
 		end
 	else
-		feedback.Text = "Escolha uma espada para comprar ou equipar."
+		feedback.Text = "Escolha uma oferta de " .. (data.shopTitle or "este aldeao") .. "."
 		feedback.TextColor3 = Color3.fromRGB(185, 190, 205)
 	end
 	clearRows()
