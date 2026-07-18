@@ -16,6 +16,8 @@ local ServerStorage = game:GetService("ServerStorage")
 
 local Config = require(script.Parent.Config_SkyDungeon_V10)
 local MonsterSpawner = require(script.Parent.MonsterSpawner)
+local IslandTypeService = require(script.Parent.IslandTypeService)
+local ChestService = require(script.Parent.ChestService)
 local Generator = {}
 local warnedMissingDecorationAssets = false
 local warnedMissingGrassAssets = false
@@ -1168,7 +1170,23 @@ function Generator.Generate(parent, options)
 		return (a:GetAttribute("TerrainId") or 0) < (b:GetAttribute("TerrainId") or 0)
 	end)
 	local monsterSpawnCount = 0
+	local chestSpawnCount = 0
 	for _, islandModel in ipairs(generatedIslands) do
+		IslandTypeService.Classify(islandModel, {
+			ChunkIndex = chunkIndex,
+			RoundIndex = chunkIndex,
+			RoundSeed = actualSeed,
+		})
+		local chestSuccess, chestsOrError = pcall(ChestService.PopulateIsland, islandModel, Generator.GetFreeCells(islandModel), {
+			ChunkIndex = chunkIndex,
+			RoundIndex = chunkIndex,
+			RoundSeed = actualSeed,
+		})
+		if chestSuccess then
+			chestSpawnCount += tonumber(chestsOrError) or 0
+		else
+			warn(string.format("[SkyDungeon] Falha ao criar baus em %s: %s", islandModel:GetFullName(), tostring(chestsOrError)))
+		end
 		if islandModel:IsA("Model") and islandModel:GetAttribute("CanSpawnMonster") == true then
 			local freeCells = Generator.GetFreeCells(islandModel)
 			local success, spawnedOrError = pcall(MonsterSpawner.PopulateIsland, islandModel, freeCells, {
@@ -1191,6 +1209,7 @@ function Generator.Generate(parent, options)
 		end
 	end
 	model:SetAttribute("MonsterSpawnCount", monsterSpawnCount)
+	model:SetAttribute("ChestSpawnCount", chestSpawnCount)
 
 	-- Publica o round somente depois de reservar e criar os monstros.
 	-- Assim, servicos externos (como coletaveis) ja enxergam MonsterSpawnPoints.
@@ -1273,6 +1292,17 @@ function Generator.GetFreeCells(islandModel)
 	local monsterSpawnPoints = islandModel:FindFirstChild("MonsterSpawnPoints")
 	if monsterSpawnPoints then
 		for _, marker in ipairs(monsterSpawnPoints:GetChildren()) do
+			local x = marker:GetAttribute("GridX")
+			local y = marker:GetAttribute("GridY")
+			local z = marker:GetAttribute("GridZ")
+			if x and y and z then
+				reserved[cellKey(Vector3.new(x, y, z))] = true
+			end
+		end
+	end
+	local chestSpawnPoints = islandModel:FindFirstChild("ChestSpawnPoints")
+	if chestSpawnPoints then
+		for _, marker in ipairs(chestSpawnPoints:GetChildren()) do
 			local x = marker:GetAttribute("GridX")
 			local y = marker:GetAttribute("GridY")
 			local z = marker:GetAttribute("GridZ")

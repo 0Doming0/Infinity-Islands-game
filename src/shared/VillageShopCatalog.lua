@@ -20,6 +20,7 @@ local SHOPS = {
 			{ ItemId = "ClassicSword", ItemType = "Sword" },
 			{ ItemId = "BronzeSword", ItemType = "Sword" },
 			{ ItemId = "CrystalSword", ItemType = "Sword" },
+			{ ItemId = "RoyalSword", ItemType = "Sword" },
 		},
 	},
 	RelicDealer = {
@@ -29,6 +30,7 @@ local SHOPS = {
 		Color = Color3.fromRGB(184, 102, 255),
 		Items = {
 			{ ItemId = "VoidSword", ItemType = "Sword" },
+			{ ItemId = "DragonSword", ItemType = "Sword" },
 		},
 	},
 	Healer = {
@@ -37,6 +39,8 @@ local SHOPS = {
 		Label = "CURANDEIRA",
 		Color = Color3.fromRGB(94, 225, 151),
 		Items = {
+			{ ItemId = "HealthPotion", ItemType = "Item" },
+			{ ItemId = "GreaterHealthPotion", ItemType = "Item" },
 			{
 				ItemId = "FullHeal",
 				ItemType = "Service",
@@ -44,7 +48,7 @@ local SHOPS = {
 				DisplayName = "Cura Restauradora",
 				Description = "Recupera ate 60 pontos de vida.",
 				StatsText = "+60 de vida nesta tentativa",
-				Price = 150,
+				Price = 45,
 				Amount = 60,
 				Color = Color3.fromRGB(90, 235, 135),
 			},
@@ -55,7 +59,7 @@ local SHOPS = {
 				DisplayName = "Bencao de Vitalidade",
 				Description = "Aumenta a vida maxima e tambem cura.",
 				StatsText = "+20 de vida maxima (limite 180)",
-				Price = 500,
+				Price = 180,
 				Amount = 20,
 				Maximum = 180,
 				Color = Color3.fromRGB(245, 105, 125),
@@ -68,6 +72,8 @@ local SHOPS = {
 		Label = "EXPLORADOR",
 		Color = Color3.fromRGB(83, 196, 240),
 		Items = {
+			{ ItemId = "SpeedTonic", ItemType = "Item" },
+			{ ItemId = "JumpTonic", ItemType = "Item" },
 			{
 				ItemId = "SpeedTraining",
 				ItemType = "Service",
@@ -75,7 +81,7 @@ local SHOPS = {
 				DisplayName = "Treino de Agilidade",
 				Description = "Aumenta a velocidade durante esta vida.",
 				StatsText = "+2 de velocidade (limite 24)",
-				Price = 350,
+				Price = 120,
 				Amount = 2,
 				Maximum = 24,
 				Color = Color3.fromRGB(70, 220, 210),
@@ -87,7 +93,7 @@ local SHOPS = {
 				DisplayName = "Treino de Salto",
 				Description = "Melhora o salto durante esta vida.",
 				StatsText = "+5 JumpPower ou +1.25 JumpHeight",
-				Price = 350,
+				Price = 120,
 				Amount = 5,
 				HeightAmount = 1.25,
 				Maximum = 65,

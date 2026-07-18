@@ -38,8 +38,10 @@ local CONFIG = {
 	WATER_UPDATE_RATE = 0.1,
 	UI_UPDATE_RATE = 0.5,
 	DAMAGE_PER_SECOND = MVPConfig.Water.DamagePerSecond,
-	SCORE_PER_SECOND = MVPConfig.Water.ScorePerSecond,
-	HEIGHT_BONUS_STUDS = MVPConfig.Water.HeightBonusStuds,
+	SURVIVAL_SCORE_INTERVAL = MVPConfig.Progression.SurvivalScoreIntervalSeconds,
+	SURVIVAL_SCORE_AMOUNT = MVPConfig.Progression.SurvivalScorePerInterval,
+	HEIGHT_CHECKPOINT_STUDS = MVPConfig.Progression.HeightCheckpointStuds,
+	HEIGHT_CHECKPOINT_SCORE = MVPConfig.Progression.ScorePerHeightCheckpoint,
 	RESPAWN_HEIGHT = 5,
 
 	-- O mapa nasce por rounds conforme a agua consome o buffer seguro.
@@ -136,7 +138,8 @@ local function calculateTargetWaterSpeed()
 	)
 	local difficultyMultiplier = 1
 		+ (CONFIG.WATER_MAX_DIFFICULTY_MULTIPLIER - 1) * difficultyAlpha
-	return CONFIG.WATER_RISE_SPEED * speedMultiplier * difficultyMultiplier, mode, gap
+	local eventMultiplier = math.max(0.25, tonumber(workspace:GetAttribute(MVPConfig.Water.EventMultiplierAttribute)) or 1)
+	return CONFIG.WATER_RISE_SPEED * speedMultiplier * difficultyMultiplier * eventMultiplier, mode, gap
 end
 
 local function findSafeRoutePart()
@@ -186,14 +189,18 @@ end
 local playerData = {}
 
 local function onCharacterAdded(player, character)
-	playerData[player] = { alive = true, inWater = false }
+	playerData[player] = {
+		alive = true,
+		inWater = false,
+		highestHeightCheckpoint = 0,
+		nextSurvivalScoreAt = os.clock() + CONFIG.SURVIVAL_SCORE_INTERVAL,
+	}
 	ScoreService.ResetRun(player)
 
 	local humanoid = character:WaitForChild("Humanoid", 10)
 	local rootPart = character:WaitForChild("HumanoidRootPart", 10)
 	if humanoid then
 		humanoid.Died:Connect(function()
-			ScoreService.CommitBest(player)
 			if playerData[player] then
 				playerData[player].alive = false
 			end
@@ -208,7 +215,12 @@ local function onCharacterAdded(player, character)
 end
 
 local function onPlayerAdded(player)
-	playerData[player] = { alive = true, inWater = false }
+	playerData[player] = {
+		alive = true,
+		inWater = false,
+		highestHeightCheckpoint = 0,
+		nextSurvivalScoreAt = os.clock() + CONFIG.SURVIVAL_SCORE_INTERVAL,
+	}
 	player.CharacterAdded:Connect(function(character)
 		onCharacterAdded(player, character)
 	end)
@@ -226,7 +238,6 @@ for _, player in ipairs(Players:GetPlayers()) do
 end
 
 local lastUIUpdate = 0
-local lastScoreUpdate = 0
 local lastRoundGenerationCheck = 0
 local lastChunkCleanup = 0
 local currentWaterMode = "Waiting"
@@ -273,14 +284,17 @@ while true do
 			data.inWater = false
 		end
 
-		if now - lastScoreUpdate >= 1 then
-			local height = math.max(0, playerY - 0.5)
-			local baseReward = CONFIG.SCORE_PER_SECOND + math.floor(height / CONFIG.HEIGHT_BONUS_STUDS)
-			ScoreService.Award(player, baseReward, "Survival")
+		if now >= data.nextSurvivalScoreAt then
+			data.nextSurvivalScoreAt = now + CONFIG.SURVIVAL_SCORE_INTERVAL
+			ScoreService.Award(player, CONFIG.SURVIVAL_SCORE_AMOUNT, "SurvivalTime")
 		end
-	end
-	if now - lastScoreUpdate >= 1 then
-		lastScoreUpdate = now
+		local height = math.max(0, playerY - 0.5)
+		local checkpoint = math.floor(height / CONFIG.HEIGHT_CHECKPOINT_STUDS)
+		if checkpoint > data.highestHeightCheckpoint then
+			local crossed = checkpoint - data.highestHeightCheckpoint
+			data.highestHeightCheckpoint = checkpoint
+			ScoreService.Award(player, crossed * CONFIG.HEIGHT_CHECKPOINT_SCORE, "HeightCheckpoint")
+		end
 	end
 
 	if now - lastUIUpdate >= CONFIG.UI_UPDATE_RATE then
@@ -307,6 +321,9 @@ while true do
 				score = ScoreService.GetScore(player),
 				runScore = ScoreService.GetRunScore(player),
 				bestScore = ScoreService.GetBestScore(player),
+				coins = ScoreService.GetCoins(player),
+				lastDeathRunScore = player:GetAttribute("LastDeathRunScore") or 0,
+				lastDeathCoinsLost = player:GetAttribute("LastDeathCoinsLost") or 0,
 				scoreMultiplier = ScoreService.GetMultiplier(player),
 				height = height,
 				alive = data.alive,
@@ -315,6 +332,7 @@ while true do
 				generatedRounds = waterRoundStatus.GeneratedRounds,
 				safeRoundsAhead = waterRoundStatus.SafeRoundsAhead,
 				groupProgressY = math.floor(waterRoundStatus.GroupProgressY or 0),
+				worldEvent = workspace:GetAttribute("ActiveWorldEvent"),
 			})
 		end
 	end

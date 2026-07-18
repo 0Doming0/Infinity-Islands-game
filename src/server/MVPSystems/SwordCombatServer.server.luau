@@ -419,6 +419,9 @@ local function executeHit(player, tool, comboIndex, token)
 end
 
 local function attack(player, tool)
+	if player:GetAttribute("ShopOpen") == true then
+		return
+	end
 	if not Config.IsSword(tool) then
 		warn(
 			"[REJEITADO] Config.IsSword falso",

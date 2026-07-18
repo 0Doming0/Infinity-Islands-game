@@ -16,7 +16,9 @@
 	MonsterId           String   "GreenSlime"
 	DisplayName         String   "Slime Verde"
 	MaxHealth           Number   50
-	ScoreValue          Number   25
+	ScoreValue          Number   3
+	CoinValue           Number   5
+	AttackDamage        Number   8
 	SpawnChance         Number   1
 	SpawnWeight         Number   10
 	MinimumIslandSize   String   "Small", "Medium" ou "Large"
@@ -26,28 +28,35 @@
 	GroupSpacing        Number   5
 	DropChance          Number   0
 	DropItemId          String   ""
-	Peaceful            Boolean  true
+	Peaceful            Boolean  false
+	UseCentralAI        Boolean  true
 ]]
 
 local Debris = game:GetService("Debris")
 local Players = game:GetService("Players")
 local ServerStorage = game:GetService("ServerStorage")
 local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ScoreService = require(script.Parent.ScoreService_SkyDungeon_V10)
+local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
+local InventoryService = require(script.Parent.Parent.MVPSystems:WaitForChild("InventoryService"))
 
 ScoreService.Start()
+InventoryService.Start()
 
 local MonsterSpawner = {}
 
 local CONFIG = {
 	MAX_MONSTERS = 45,
-	DEFAULT_SPAWN_CHANCE = 1,
+	DEFAULT_SPAWN_CHANCE = 0.72,
 	DEFAULT_SPAWN_WEIGHT = 10,
 	DEFAULT_GROUP_MIN = 2,
 	DEFAULT_GROUP_MAX = 4,
 	DEFAULT_GROUP_SPACING = 5,
 	DEFAULT_MAX_HEALTH = 50,
-	DEFAULT_SCORE_VALUE = 25,
+	DEFAULT_SCORE_VALUE = 3,
+	DEFAULT_COIN_VALUE = 5,
+	DEFAULT_ATTACK_DAMAGE = 8,
 	DEFAULT_DROP_CHANCE = 0,
 	DEFAULT_MINIMUM_ISLAND_SIZE = "Small",
 
@@ -106,12 +115,63 @@ end
 
 local function getMonsterFolder()
 	local assets = ServerStorage:FindFirstChild("MVPAssets")
-	local folder = assets and assets:FindFirstChild("Monsters")
-	if not folder or not folder:IsA("Folder") then
-		warn("[MonsterSpawner] ServerStorage/MVPAssets/Monsters ausente ou invalido.")
-		return nil
+	if not assets then
+		assets = Instance.new("Folder")
+		assets.Name = "MVPAssets"
+		assets.Parent = ServerStorage
+	end
+	local folder = assets:FindFirstChild("Monsters")
+	if not folder then
+		folder = Instance.new("Folder")
+		folder.Name = "Monsters"
+		folder.Parent = assets
 	end
 	return folder
+end
+
+local function createPrototypeMonster(folder)
+	local model = Instance.new("Model")
+	model.Name = "PrototypeSlime"
+	model:SetAttribute("MonsterId", "PrototypeSlime")
+	model:SetAttribute("DisplayName", "Slime de Prototipo")
+	model:SetAttribute("Enabled", true)
+	model:SetAttribute("MaxHealth", 45)
+	model:SetAttribute("ScoreValue", 3)
+	model:SetAttribute("CoinValue", 5)
+	model:SetAttribute("AttackDamage", 8)
+	model:SetAttribute("SpawnChance", 0.72)
+	model:SetAttribute("SpawnWeight", 10)
+	model:SetAttribute("MinimumIslandSize", "Small")
+	model:SetAttribute("SpawnMode", "Group")
+	model:SetAttribute("GroupMin", 2)
+	model:SetAttribute("GroupMax", 3)
+	model:SetAttribute("GroupSpacing", 5)
+	model:SetAttribute("Peaceful", false)
+	model:SetAttribute("UseCentralAI", true)
+	model:SetAttribute("PrototypeModel", true)
+
+	local root = Instance.new("Part")
+	root.Name = "HumanoidRootPart"
+	root.Size = Vector3.new(2.8, 2.2, 2.8)
+	root.Shape = Enum.PartType.Ball
+	root.Material = Enum.Material.SmoothPlastic
+	root.Color = Color3.fromRGB(80, 205, 92)
+	root.Anchored = false
+	root.CanCollide = true
+	root.Parent = model
+	local face = Instance.new("Decal")
+	face.Name = "PrototypeFace"
+	face.Face = Enum.NormalId.Front
+	face.Texture = "rbxasset://textures/face.png"
+	face.Parent = root
+	local humanoid = Instance.new("Humanoid")
+	local animator = Instance.new("Animator")
+	animator.Parent = humanoid
+	humanoid.Parent = model
+	model.PrimaryPart = root
+	model.Parent = folder
+	warn("[MonsterSpawner] Nenhum modelo encontrado. PrototypeSlime criado; substitua em ServerStorage/MVPAssets/Monsters.")
+	return model
 end
 
 local function validateTemplate(template)
@@ -143,10 +203,6 @@ end
 
 local function getTemplates()
 	local folder = getMonsterFolder()
-	if not folder then
-		return {}
-	end
-
 	local templates = {}
 	for _, template in ipairs(folder:GetChildren()) do
 		local valid, reason = validateTemplate(template)
@@ -159,6 +215,9 @@ local function getTemplates()
 	table.sort(templates, function(a, b)
 		return a.Name < b.Name
 	end)
+	if #templates == 0 then
+		table.insert(templates, createPrototypeMonster(folder))
+	end
 	return templates
 end
 
@@ -280,11 +339,9 @@ local function ensureMaterials(player)
 	return folder
 end
 
-local function awardScore(player, amount, _multiplierOverride)
-	if player and amount > 0 then
-		-- O multiplicador canonico fica no Player e e definido pela espada
-		-- selecionada. multiplierOverride e mantido apenas na assinatura antiga.
-		ScoreService.Award(player, amount, "Monster")
+local function awardRewards(player, scoreAmount, coinAmount)
+	if player then
+		ScoreService.AwardRewards(player, scoreAmount, coinAmount, "Monster")
 	end
 end
 
@@ -383,18 +440,59 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 	local displayName = template:GetAttribute("DisplayName") or monsterId
 	local maxHealth = math.max(1, numberAttribute(template, "MaxHealth", CONFIG.DEFAULT_MAX_HEALTH))
 	local scoreValue = math.max(0, numberAttribute(template, "ScoreValue", CONFIG.DEFAULT_SCORE_VALUE))
+	if template:GetAttribute("RewardScaleVersion") ~= 2 and scoreValue > 10 then
+		scoreValue = math.max(1, math.floor(scoreValue / 10))
+	end
+	local coinValue = math.max(0, numberAttribute(template, "CoinValue", CONFIG.DEFAULT_COIN_VALUE))
+	local attackDamage = math.max(0, numberAttribute(template, "AttackDamage", CONFIG.DEFAULT_ATTACK_DAMAGE))
+	local roundIndex = tonumber(island:GetAttribute("RoundIndex")) or 1
+	local difficultyTier = math.clamp(
+		math.floor((roundIndex - 1) / MVPConfig.Difficulty.RoundsPerTier) + 1,
+		1,
+		MVPConfig.Difficulty.MaximumTier
+	)
+	local elite = island:GetAttribute("IslandType") == "Elite"
+	local healthMultiplier = 1 + (difficultyTier - 1) * MVPConfig.Difficulty.HealthPerTier
+	local damageMultiplier = 1 + (difficultyTier - 1) * MVPConfig.Difficulty.DamagePerTier
+	local rewardMultiplier = 1 + (difficultyTier - 1) * MVPConfig.Difficulty.RewardPerTier
+	if elite then
+		healthMultiplier *= MVPConfig.Difficulty.EliteHealthMultiplier
+		damageMultiplier *= MVPConfig.Difficulty.EliteDamageMultiplier
+		rewardMultiplier *= MVPConfig.Difficulty.EliteRewardMultiplier
+	end
+	maxHealth = math.floor(maxHealth * healthMultiplier)
+	attackDamage = math.floor(attackDamage * damageMultiplier)
+	scoreValue = math.max(1, math.floor(scoreValue * rewardMultiplier))
+	coinValue = math.max(1, math.floor(coinValue * rewardMultiplier))
+	if elite then
+		scoreValue = math.max(15, scoreValue)
+		coinValue = math.max(25, coinValue)
+	end
 
 	humanoid.MaxHealth = maxHealth
 	humanoid.Health = maxHealth
 	humanoid.DisplayName = displayName
 	humanoid.BreakJointsOnDeath = false
+	humanoid.WalkSpeed = math.clamp(
+		numberAttribute(template, "WalkSpeed", humanoid.WalkSpeed) * (elite and 1.08 or 1),
+		4,
+		24
+	)
 
 	clone.Name = "Monster_" .. monsterId
 	clone:SetAttribute("RuntimeMonster", true)
 	clone:SetAttribute("MonsterId", monsterId)
 	clone:SetAttribute("SpawnMode", spawnMode)
 	clone:SetAttribute("ScoreValue", scoreValue)
-	clone:SetAttribute("Peaceful", template:GetAttribute("Peaceful") ~= false)
+	clone:SetAttribute("CoinValue", coinValue)
+	clone:SetAttribute("AttackDamage", attackDamage)
+	clone:SetAttribute("DifficultyTier", difficultyTier)
+	clone:SetAttribute("IsElite", elite)
+	clone:SetAttribute("HomePosition", cellRecord.SurfacePosition)
+	clone:SetAttribute("Peaceful", not elite and template:GetAttribute("Peaceful") == true)
+	local useCentralAI = template:GetAttribute("UseCentralAI") == true
+		or (elite and template:GetAttribute("UseCustomAI") ~= true)
+	clone:SetAttribute("UseCentralAI", useCentralAI)
 	clone:SetAttribute("SpawnSurfacePosition", cellRecord.SurfacePosition)
 	clone:SetAttribute("SpawnGridX", cellRecord.Cell.X)
 	clone:SetAttribute("SpawnGridY", cellRecord.Cell.Y)
@@ -402,8 +500,13 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 	CollectionService:AddTag(clone, "CombatTarget")
 
 	for _, descendant in ipairs(clone:GetDescendants()) do
-		if descendant:IsA("BasePart") then
+		if descendant:IsA("BaseScript") and useCentralAI then
+			descendant.Disabled = true
+		elseif descendant:IsA("BasePart") then
 			descendant.Anchored = false
+			pcall(function()
+				descendant.CollisionGroup = "MVPMonsters"
+			end)
 			-- Necessario para GetPartBoundsInBox detectar o corpo do mob.
 			descendant.CanQuery = true
 		end
@@ -427,6 +530,7 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 		Island = island,
 		Marker = marker,
 		ScoreValue = scoreValue,
+		CoinValue = coinValue,
 		DropChance = math.clamp(numberAttribute(template, "DropChance", CONFIG.DEFAULT_DROP_CHANCE), 0, 1),
 		DropItemId = template:GetAttribute("DropItemId") or "",
 		DeathParticleColor = template:GetAttribute("DeathParticleColor"),
@@ -440,10 +544,21 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 			return
 		end
 		unregisterMonster(clone)
+		for _, descendant in ipairs(clone:GetDescendants()) do
+			if descendant:IsA("BasePart") then
+				descendant.CanCollide = false
+				descendant.CanTouch = false
+				descendant.AssemblyLinearVelocity = Vector3.zero
+				descendant.AssemblyAngularVelocity = Vector3.zero
+			end
+		end
 
 		local damager = getRecordedDamager(entry, clone, humanoid)
 		if damager then
-			awardScore(damager, entry.ScoreValue, clone:GetAttribute("LastSwordScoreMultiplier"))
+			awardRewards(damager, entry.ScoreValue, entry.CoinValue)
+			if clone:GetAttribute("IsElite") == true and random:NextNumber() <= 0.25 then
+				InventoryService.GrantItem(damager, "HealthPotion", 1)
+			end
 		end
 		if root.Parent then
 			createDeathParticles(root, entry.DeathParticleColor)
@@ -547,14 +662,19 @@ local function lootPass()
 			then
 				pickup:SetAttribute("Claimed", true)
 				activeLoot[pickup] = nil
-				local materials = ensureMaterials(player)
-				local value = materials:FindFirstChild(entry.ItemId)
-				if not value then
-					value = Instance.new("IntValue")
-					value.Name = entry.ItemId
-					value.Parent = materials
+				local granted = InventoryService.GrantItem(player, entry.ItemId, 1)
+				if not granted then
+					-- Compatibilidade para materiais de assets antigos ainda nao
+					-- cadastrados como consumiveis no ItemCatalog.
+					local materials = ensureMaterials(player)
+					local value = materials:FindFirstChild(entry.ItemId)
+					if not value then
+						value = Instance.new("IntValue")
+						value.Name = entry.ItemId
+						value.Parent = materials
+					end
+					value.Value += 1
 				end
-				value.Value += 1
 				pickup:Destroy()
 				break
 			end
@@ -610,17 +730,27 @@ function MonsterSpawner.PopulateIsland(island, freeCells, context)
 	local baseSeed = typeof(islandSeed) == "number" and islandSeed or (context.RoundSeed or 1)
 	local seed = normalizedSeed(baseSeed + terrainId * 7907 + CONFIG.RANDOM_SALT)
 	local random = Random.new(seed)
+	local eliteIsland = island:GetAttribute("IslandType") == "Elite"
 	local template = chooseWeightedTemplate(random, templates, islandSize)
+	if not template and eliteIsland then
+		-- Uma ilha Elite nunca deve ficar vazia apenas porque todos os modelos
+		-- cadastrados pedem uma ilha maior.
+		template = templates[random:NextInteger(1, #templates)]
+	end
 	if not template then
 		return 0
 	end
 
-	local spawnChance = math.clamp(numberAttribute(template, "SpawnChance", CONFIG.DEFAULT_SPAWN_CHANCE), 0, 1)
+	local spawnChance = eliteIsland and 1
+		or math.clamp(numberAttribute(template, "SpawnChance", CONFIG.DEFAULT_SPAWN_CHANCE), 0, 1)
 	if random:NextNumber() > spawnChance then
 		return 0
 	end
 
 	local amount, spawnMode, groupMinimum = getSpawnAmount(template, random)
+	if eliteIsland then
+		amount, spawnMode, groupMinimum = 1, "Elite", 1
+	end
 	amount = math.min(amount, CONFIG.MAX_MONSTERS - monsterCount)
 	local spacing = spawnMode == "Group"
 		and math.max(0, numberAttribute(template, "GroupSpacing", CONFIG.DEFAULT_GROUP_SPACING))

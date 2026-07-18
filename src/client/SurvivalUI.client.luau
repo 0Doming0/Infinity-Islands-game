@@ -53,11 +53,22 @@ end
 local scoreLabel = createLabel(
 	"Score",
 	UDim2.fromOffset(12, 7),
-	UDim2.fromOffset(206, 25),
-	"PONTOS  0",
+	UDim2.fromOffset(112, 25),
+	"PONTOS 0",
 	Color3.fromRGB(255, 220, 102),
 	Enum.Font.GothamBold,
 	16
+)
+
+local coinLabel = createLabel(
+	"Coins",
+	UDim2.fromOffset(122, 7),
+	UDim2.fromOffset(96, 25),
+	"MOEDAS 0",
+	Color3.fromRGB(255, 196, 66),
+	Enum.Font.GothamBold,
+	13,
+	Enum.TextXAlignment.Right
 )
 
 local waterLabel = createLabel(
@@ -184,7 +195,8 @@ waterEvent.OnClientEvent:Connect(function(data)
 	local gap = height - waterY
 	local alive = data.alive ~= false
 
-	scoreLabel.Text = "PONTOS  " .. tostring(data.score or 0)
+	scoreLabel.Text = "PONTOS " .. tostring(data.runScore or data.score or 0)
+	coinLabel.Text = "MOEDAS " .. tostring(data.coins or 0)
 	updateWaterDisplay(gap)
 
 	if alive and gap <= 0 then
@@ -200,7 +212,13 @@ waterEvent.OnClientEvent:Connect(function(data)
 	if not alive and wasAlive then
 		wasAlive = false
 		warning.Visible = false
-		resultText.Text = string.format("VOCE SE AFOGOU\nTentativa: %s pontos", tostring(data.runScore or 0))
+		local cause = data.inWater and "VOCE SE AFOGOU" or "VOCE MORREU"
+		resultText.Text = string.format(
+			"%s\n%d pontos perdidos - %d moedas perdidas",
+			cause,
+			tonumber(data.lastDeathRunScore) or 0,
+			tonumber(data.lastDeathCoinsLost) or 0
+		)
 		resultCard.BackgroundTransparency = 1
 		resultCard.Visible = true
 		TweenService:Create(resultCard, TweenInfo.new(0.2), { BackgroundTransparency = 0.12 }):Play()

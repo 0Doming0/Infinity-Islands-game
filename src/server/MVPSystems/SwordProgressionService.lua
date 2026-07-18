@@ -266,9 +266,9 @@ function SwordProgressionService.Purchase(player, swordId)
 	if PlayerDataService.HasSword(player, swordId) then
 		return false, "Voce ja possui esta espada."
 	end
-	local paid, remaining = ScoreService.TrySpend(player, definition.Price)
+	local paid, remaining = ScoreService.TrySpendCoins(player, definition.Price)
 	if not paid then
-		return false, "Pontos insuficientes.", remaining
+		return false, "Moedas insuficientes.", remaining
 	end
 	PlayerDataService.GrantSword(player, swordId)
 	task.spawn(PlayerDataService.Save, player, false)

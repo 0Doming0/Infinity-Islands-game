@@ -1,9 +1,7 @@
 --[[
 	Sky Dungeon - CollectibleService
 
-	Gera coletaveis de pontuacao nas celulas internas das ilhas e tambem nos
-	blocos das rotas. Nao cria moedas. Toda recompensa passa pelo ScoreService e
-	recebe o multiplicador da espada equipada.
+	Gera coletaveis pequenos de pontuacao e moeda nas ilhas e rotas.
 ]]
 
 local CollectionService = game:GetService("CollectionService")
@@ -54,7 +52,8 @@ local DEFINITIONS = {
 		Color = Color3.fromRGB(48, 170, 255),
 		Size = Vector3.new(2.2, 2.8, 2.2),
 		Shape = Enum.PartType.Block,
-		Score = 25,
+		Score = 1,
+		Coins = 1,
 		Weight = 55,
 	},
 	{
@@ -62,7 +61,8 @@ local DEFINITIONS = {
 		Color = Color3.fromRGB(255, 196, 45),
 		Size = Vector3.new(2.5, 2.5, 2.5),
 		Shape = Enum.PartType.Ball,
-		Score = 50,
+		Score = 2,
+		Coins = 2,
 		Weight = 30,
 	},
 	{
@@ -70,7 +70,8 @@ local DEFINITIONS = {
 		Color = Color3.fromRGB(235, 55, 92),
 		Size = Vector3.new(1.6, 3.2, 1.6),
 		Shape = Enum.PartType.Block,
-		Score = 100,
+		Score = 3,
+		Coins = 4,
 		Weight = 15,
 	},
 }
@@ -165,6 +166,7 @@ local function createCollectible(parent, surfacePosition, definition, sourceName
 	part:SetAttribute("IsScoreCollectible", true)
 	part:SetAttribute("CollectibleId", definition.Id)
 	part:SetAttribute("ScoreValue", definition.Score)
+	part:SetAttribute("CoinValue", definition.Coins)
 	part:SetAttribute("CollectibleSource", sourceName)
 	part:SetAttribute("Claimed", false)
 	part.Parent = parent
@@ -338,8 +340,13 @@ local function tryClaim(part, entry, player)
 	end
 	entry.Claimed = true
 	part:SetAttribute("Claimed", true)
-	local awarded = ScoreService.Award(player, entry.Definition.Score, "Collectible:" .. entry.Definition.Id)
-	if awarded <= 0 then
+	local scoreAwarded, coinsAwarded = ScoreService.AwardRewards(
+		player,
+		entry.Definition.Score,
+		entry.Definition.Coins,
+		"Collectible:" .. entry.Definition.Id
+	)
+	if scoreAwarded <= 0 and coinsAwarded <= 0 then
 		entry.Claimed = false
 		part:SetAttribute("Claimed", false)
 		return

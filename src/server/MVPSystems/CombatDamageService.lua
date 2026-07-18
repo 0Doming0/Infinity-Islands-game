@@ -176,13 +176,10 @@ local function applyKnockback(attackerRoot, model, humanoid, root, attack)
 end
 
 function DamageService.IsFriendly(attacker, targetModel, friendlyFire)
-	if friendlyFire then
-		return false
-	end
 	local targetPlayer = Players:GetPlayerFromCharacter(targetModel)
+	-- O MVP e cooperativo. FriendlyFire permanece na assinatura apenas para
+	-- compatibilidade; nenhum personagem de jogador recebe dano ou knockback.
 	return targetPlayer ~= nil
-		and attacker.Team ~= nil
-		and attacker.Team == targetPlayer.Team
 end
 
 function DamageService.ApplySwordHit(attacker, attackerRoot, target, attack)
@@ -206,6 +203,9 @@ function DamageService.ApplySwordHit(attacker, attackerRoot, target, attack)
 		return false, false
 	end
 	if model:GetAttribute("Invulnerable") == true or model:GetAttribute("NoSwordDamage") == true then
+		return false, false
+	end
+	if Players:GetPlayerFromCharacter(model) then
 		return false, false
 	end
 

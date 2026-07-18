@@ -24,6 +24,7 @@ backdrop.BackgroundColor3 = Color3.fromRGB(5, 7, 12)
 backdrop.BackgroundTransparency = 0.30
 backdrop.Text = ""
 backdrop.AutoButtonColor = false
+backdrop.Modal = true
 backdrop.Visible = false
 backdrop.Parent = gui
 
@@ -58,17 +59,17 @@ title.TextSize = 26
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Parent = panel
 
-local scoreLabel = Instance.new("TextLabel")
-scoreLabel.AnchorPoint = Vector2.new(1, 0)
-scoreLabel.Position = UDim2.new(1, -74, 0, 18)
-scoreLabel.Size = UDim2.fromOffset(190, 36)
-scoreLabel.BackgroundTransparency = 1
-scoreLabel.Text = "Pontos: 0"
-scoreLabel.TextColor3 = Color3.fromRGB(115, 225, 255)
-scoreLabel.Font = Enum.Font.GothamBold
-scoreLabel.TextSize = 19
-scoreLabel.TextXAlignment = Enum.TextXAlignment.Right
-scoreLabel.Parent = panel
+local coinLabel = Instance.new("TextLabel")
+coinLabel.AnchorPoint = Vector2.new(1, 0)
+coinLabel.Position = UDim2.new(1, -74, 0, 18)
+coinLabel.Size = UDim2.fromOffset(190, 36)
+coinLabel.BackgroundTransparency = 1
+coinLabel.Text = "Moedas: 0"
+coinLabel.TextColor3 = Color3.fromRGB(255, 220, 93)
+coinLabel.Font = Enum.Font.GothamBold
+coinLabel.TextSize = 19
+coinLabel.TextXAlignment = Enum.TextXAlignment.Right
+coinLabel.Parent = panel
 
 local closeButton = Instance.new("TextButton")
 closeButton.AnchorPoint = Vector2.new(1, 0)
@@ -122,11 +123,43 @@ list.SortOrder = Enum.SortOrder.LayoutOrder
 list.Parent = scroll
 
 local shopOpen = false
+local cameraState
+
+local function releaseFirstPerson()
+	if cameraState then
+		return
+	end
+	cameraState = {
+		CameraMode = player.CameraMode,
+		MinimumZoom = player.CameraMinZoomDistance,
+		MaximumZoom = player.CameraMaxZoomDistance,
+		MouseBehavior = UserInputService.MouseBehavior,
+		MouseIconEnabled = UserInputService.MouseIconEnabled,
+	}
+	player.CameraMode = Enum.CameraMode.Classic
+	player.CameraMinZoomDistance = 6
+	player.CameraMaxZoomDistance = math.max(8, cameraState.MaximumZoom)
+	UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+	UserInputService.MouseIconEnabled = true
+end
+
+local function restoreCamera()
+	local state = cameraState
+	if not state then
+		return
+	end
+	cameraState = nil
+	player.CameraMinZoomDistance = state.MinimumZoom
+	player.CameraMaxZoomDistance = state.MaximumZoom
+	player.CameraMode = state.CameraMode
+	UserInputService.MouseBehavior = state.MouseBehavior
+	UserInputService.MouseIconEnabled = state.MouseIconEnabled
+end
 
 local function updateScale()
 	local camera = workspace.CurrentCamera
 	local viewport = camera and camera.ViewportSize or Vector2.new(1280, 720)
-	scale.Scale = math.clamp(math.min(viewport.X / 820, viewport.Y / 630), 0.58, 1)
+	scale.Scale = math.clamp(math.min(viewport.X / 820, viewport.Y / 630), 0.38, 1)
 end
 updateScale()
 if workspace.CurrentCamera then
@@ -156,6 +189,7 @@ local function closeShop()
 	shopOpen = false
 	panel.Visible = false
 	backdrop.Visible = false
+	restoreCamera()
 	villagerEvent:FireServer({ action = "closeShop" })
 end
 
@@ -253,12 +287,14 @@ local function createRow(item, index)
 			villagerEvent:FireServer({ action = "equipSword", itemId = item.ItemId })
 		end)
 	else
-		button.Text = string.format("COMPRAR\n%d pontos", item.Price or 0)
+		button.Text = string.format("COMPRAR\n%d moedas", item.Price or 0)
 		button.BackgroundColor3 = Color3.fromRGB(135, 82, 170)
 		button.MouseButton1Click:Connect(function()
 			button.Active = false
 			villagerEvent:FireServer({
-				action = item.ItemType == "Sword" and "purchaseSword" or "purchaseService",
+				action = item.ItemType == "Sword" and "purchaseSword"
+					or item.ItemType == "Item" and "purchaseItem"
+					or "purchaseService",
 				itemId = item.ItemId,
 			})
 		end)
@@ -267,6 +303,7 @@ end
 
 local function showShop(data)
 	shopOpen = true
+	releaseFirstPerson()
 	panel.Visible = true
 	backdrop.Visible = true
 	title.Text = string.upper(data.shopTitle or "VILA")
@@ -274,7 +311,7 @@ local function showShop(data)
 		title.TextColor3 = data.shopColor
 		stroke.Color = data.shopColor
 	end
-	scoreLabel.Text = "Pontos: " .. tostring(data.score or 0)
+	coinLabel.Text = "Moedas: " .. tostring(data.coins or 0)
 	if data.message then
 		feedback.Text = data.message
 		feedback.TextColor3 = data.success and Color3.fromRGB(105, 255, 145) or Color3.fromRGB(255, 120, 120)
@@ -293,6 +330,11 @@ end
 
 closeButton.MouseButton1Click:Connect(closeShop)
 backdrop.MouseButton1Click:Connect(closeShop)
+player.CharacterAdded:Connect(function()
+	if shopOpen then
+		closeShop()
+	end
+end)
 UserInputService.InputBegan:Connect(function(input, processed)
 	if not processed and shopOpen and (input.KeyCode == Enum.KeyCode.Escape or input.KeyCode == Enum.KeyCode.ButtonB) then
 		closeShop()

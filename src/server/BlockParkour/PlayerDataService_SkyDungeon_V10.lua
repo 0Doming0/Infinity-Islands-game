@@ -1,22 +1,27 @@
 --[[
-	SkyDungeon - PlayerDataService canonico
+	SkyDungeon - dados persistentes canonicos
 
-	Persiste o progresso do MVP em um unico registro: pontos totais, melhor
-	tentativa, espadas possuidas e espada equipada. O schema e compativel com os
-	registros V10 antigos que continham apenas BestScore.
+	Pontuacao da tentativa nunca e moeda. Este registro persiste apenas recorde,
+	moedas, inventario e equipamento. Registros V10 antigos sao migrados uma vez;
+	TotalScore antigo nao vira saldo para evitar economias com milhoes de moedas.
 ]]
 
 local DataStoreService = game:GetService("DataStoreService")
 local HttpService = game:GetService("HttpService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 
 local DATASTORE_NAME = "SkyDungeonPlayerData_V10"
-local SCHEMA_VERSION = 2
+local LEGACY_MVP_DATASTORE_NAME = "BlockParkour_PlayerData_v1"
+local SCHEMA_VERSION = 3
 local STARTER_SWORD_ID = "ClassicSword"
 local LOAD_RETRIES = 4
 local SAVE_RETRIES = 4
 local RETRY_DELAY_SECONDS = 1.5
 
 local store = DataStoreService:GetDataStore(DATASTORE_NAME)
+local legacyMvpStore = DataStoreService:GetDataStore(LEGACY_MVP_DATASTORE_NAME)
 local sessions = {}
 local loadingSignals = {}
 
@@ -30,12 +35,14 @@ end
 local function defaultData()
 	return {
 		SchemaVersion = SCHEMA_VERSION,
-		TotalScore = 0,
+		Coins = 0,
 		BestScore = 0,
 		OwnedSwords = {
 			[STARTER_SWORD_ID] = true,
 		},
 		EquippedSword = STARTER_SWORD_ID,
+		Inventory = {},
+		LegacyMVPMigrated = false,
 	}
 end
 
@@ -56,15 +63,45 @@ local function sanitizeOwnedSwords(raw)
 	return owned
 end
 
+local function sanitizeInventory(raw)
+	local inventory = {}
+	if type(raw) ~= "table" then
+		return inventory
+	end
+	for itemId, amount in pairs(raw) do
+		local cleanAmount = math.floor(tonumber(amount) or 0)
+		if type(itemId) == "string" and itemId ~= "" and cleanAmount > 0 then
+			inventory[itemId] = math.min(cleanAmount, 9999)
+		end
+	end
+	return inventory
+end
+
+local function migrateBestScore(raw, sourceVersion)
+	local previous = math.max(0, math.floor(tonumber(raw.BestScore) or 0))
+	if sourceVersion >= SCHEMA_VERSION then
+		return previous
+	end
+	if previous == 0 then
+		return 0
+	end
+	-- A escala V10 concedia pontos a cada segundo e pela altura inteira.
+	-- A divisao preserva parte do recorde sem manter valores multimilionarios.
+	return math.max(1, math.floor(previous / math.max(1, MVPConfig.Progression.LegacyScoreDivisor)))
+end
+
 local function sanitize(raw)
 	local data = defaultData()
 	if type(raw) ~= "table" then
 		return data
 	end
 
-	data.TotalScore = math.max(0, math.floor(tonumber(raw.TotalScore or raw.Score) or 0))
-	data.BestScore = math.max(0, math.floor(tonumber(raw.BestScore) or 0))
+	local sourceVersion = math.floor(tonumber(raw.SchemaVersion or raw.DataVersion) or 1)
+	data.Coins = math.max(0, math.floor(tonumber(raw.Coins) or 0))
+	data.BestScore = migrateBestScore(raw, sourceVersion)
 	data.OwnedSwords = sanitizeOwnedSwords(raw.OwnedSwords)
+	data.Inventory = sanitizeInventory(raw.Inventory or raw.OwnedItems)
+	data.LegacyMVPMigrated = raw.LegacyMVPMigrated == true
 
 	local equipped = type(raw.EquippedSword) == "string" and raw.EquippedSword or STARTER_SWORD_ID
 	if data.OwnedSwords[equipped] then
@@ -73,20 +110,24 @@ local function sanitize(raw)
 	return data
 end
 
-local function cloneData(data)
-	local result = {
-		SchemaVersion = SCHEMA_VERSION,
-		TotalScore = data.TotalScore,
-		BestScore = data.BestScore,
-		OwnedSwords = {},
-		EquippedSword = data.EquippedSword,
-	}
-	for swordId, owned in pairs(data.OwnedSwords) do
-		if owned then
-			result.OwnedSwords[swordId] = true
-		end
+local function cloneDictionary(source)
+	local result = {}
+	for key, value in pairs(source) do
+		result[key] = value
 	end
 	return result
+end
+
+local function cloneData(data)
+	return {
+		SchemaVersion = SCHEMA_VERSION,
+		Coins = data.Coins,
+		BestScore = data.BestScore,
+		OwnedSwords = cloneDictionary(data.OwnedSwords),
+		EquippedSword = data.EquippedSword,
+		Inventory = cloneDictionary(data.Inventory),
+		LegacyMVPMigrated = data.LegacyMVPMigrated == true,
+	}
 end
 
 local function keyFor(player)
@@ -123,17 +164,36 @@ function PlayerDataService.Load(player)
 
 	local signal = Instance.new("BindableEvent")
 	loadingSignals[player] = signal
-
 	local success, raw = retry("Load " .. player.Name, LOAD_RETRIES, function()
 		return store:GetAsync(keyFor(player))
 	end)
 	local data = sanitize(success and raw or nil)
+	local migrationDirty = success
+		and type(raw) == "table"
+		and math.floor(tonumber(raw.SchemaVersion) or 1) < SCHEMA_VERSION
+	if success and not data.LegacyMVPMigrated then
+		local legacySuccess, legacyRaw = retry("LegacyMVP " .. player.Name, 2, function()
+			return legacyMvpStore:GetAsync(keyFor(player))
+		end)
+		if legacySuccess then
+			if type(legacyRaw) == "table" then
+				data.Coins = math.max(data.Coins, math.max(0, math.floor(tonumber(legacyRaw.Coins) or 0)))
+				data.BestScore = math.max(data.BestScore, migrateBestScore(legacyRaw, 1))
+				for itemId, amount in pairs(sanitizeInventory(legacyRaw.OwnedItems)) do
+					data.Inventory[itemId] = math.max(data.Inventory[itemId] or 0, amount)
+				end
+			end
+			data.LegacyMVPMigrated = true
+			migrationDirty = true
+		end
+	end
 	sessions[player] = {
 		Data = data,
 		CanSave = success,
-		Dirty = false,
+		Dirty = migrationDirty,
 		Revision = 0,
 		SessionId = HttpService:GenerateGUID(false),
+		Saving = false,
 	}
 
 	player:SetAttribute("PlayerDataLoaded", true)
@@ -157,33 +217,45 @@ function PlayerDataService.GetSnapshot(player)
 	return data and cloneData(data) or nil
 end
 
-function PlayerDataService.GetTotalScore(player)
+function PlayerDataService.GetCoins(player)
 	local data = PlayerDataService.Get(player)
-	return data and data.TotalScore or 0
+	return data and data.Coins or 0
 end
 
-function PlayerDataService.AddTotalScore(player, amount)
+function PlayerDataService.AddCoins(player, amount)
+	local session = sessions[player]
+	local clean = math.max(0, math.floor(tonumber(amount) or 0))
+	if not session or clean <= 0 then
+		return false, session and session.Data.Coins or 0
+	end
+	session.Data.Coins += clean
+	markDirty(session)
+	return true, session.Data.Coins
+end
+
+function PlayerDataService.TrySpendCoins(player, amount)
+	local session = sessions[player]
+	local clean = math.max(0, math.floor(tonumber(amount) or 0))
+	if not session or clean <= 0 or session.Data.Coins < clean then
+		return false, session and session.Data.Coins or 0
+	end
+	session.Data.Coins -= clean
+	markDirty(session)
+	return true, session.Data.Coins
+end
+
+function PlayerDataService.RemoveCoinsPercent(player, percent)
 	local session = sessions[player]
 	if not session then
-		return 0
+		return 0, 0
 	end
-	local clean = math.max(0, math.floor(tonumber(amount) or 0))
-	session.Data.TotalScore += clean
-	if clean > 0 then
+	local cleanPercent = math.clamp(tonumber(percent) or 0, 0, 1)
+	local lost = cleanPercent > 0 and math.ceil(session.Data.Coins * cleanPercent) or 0
+	if lost > 0 then
+		session.Data.Coins -= lost
 		markDirty(session)
 	end
-	return session.Data.TotalScore
-end
-
-function PlayerDataService.TrySpendScore(player, amount)
-	local session = sessions[player]
-	local clean = math.max(0, math.floor(tonumber(amount) or 0))
-	if not session or clean <= 0 or session.Data.TotalScore < clean then
-		return false, session and session.Data.TotalScore or 0
-	end
-	session.Data.TotalScore -= clean
-	markDirty(session)
-	return true, session.Data.TotalScore
+	return lost, session.Data.Coins
 end
 
 function PlayerDataService.SetBestScore(player, value)
@@ -197,6 +269,53 @@ function PlayerDataService.SetBestScore(player, value)
 		markDirty(session)
 	end
 	return nextValue
+end
+
+function PlayerDataService.GetItemAmount(player, itemId)
+	local data = PlayerDataService.Get(player)
+	return data and data.Inventory[itemId] or 0
+end
+
+function PlayerDataService.GetInventory(player)
+	local data = PlayerDataService.Get(player)
+	return data and cloneDictionary(data.Inventory) or {}
+end
+
+function PlayerDataService.AddItem(player, itemId, amount, maximumStack)
+	local session = sessions[player]
+	local clean = math.max(1, math.floor(tonumber(amount) or 1))
+	if not session or type(itemId) ~= "string" or itemId == "" then
+		return false, 0
+	end
+	local current = session.Data.Inventory[itemId] or 0
+	local maximum = math.max(1, math.floor(tonumber(maximumStack) or 9999))
+	if current >= maximum then
+		return false, current
+	end
+	local nextAmount = math.min(maximum, current + clean)
+	session.Data.Inventory[itemId] = nextAmount
+	markDirty(session)
+	return true, nextAmount
+end
+
+function PlayerDataService.RemoveItem(player, itemId, amount)
+	local session = sessions[player]
+	local clean = math.max(1, math.floor(tonumber(amount) or 1))
+	if not session or type(itemId) ~= "string" then
+		return false, 0
+	end
+	local current = session.Data.Inventory[itemId] or 0
+	if current < clean then
+		return false, current
+	end
+	local nextAmount = current - clean
+	if nextAmount == 0 then
+		session.Data.Inventory[itemId] = nil
+	else
+		session.Data.Inventory[itemId] = nextAmount
+	end
+	markDirty(session)
+	return true, nextAmount
 end
 
 function PlayerDataService.HasSword(player, swordId)
@@ -229,10 +348,30 @@ end
 
 function PlayerDataService.Save(player, force)
 	local session = sessions[player]
-	if not session or not session.CanSave or (not force and not session.Dirty) then
-		return session == nil or session.CanSave
+	if not session or not session.CanSave then
+		return session == nil
+	end
+	if session.Saving then
+		if not force then
+			return false
+		end
+		local deadline = os.clock() + 20
+		repeat
+			task.wait(0.05)
+			session = sessions[player]
+		until not session or not session.Saving or os.clock() >= deadline
+		if not session then
+			return true
+		end
+		if session.Saving then
+			return false
+		end
+	end
+	if not force and not session.Dirty then
+		return true
 	end
 
+	session.Saving = true
 	local snapshot = cloneData(session.Data)
 	local snapshotRevision = session.Revision
 	local success = retry("Save " .. player.Name, SAVE_RETRIES, function()
@@ -250,6 +389,7 @@ function PlayerDataService.Save(player, force)
 			return snapshot
 		end)
 	end)
+	session.Saving = false
 	if success and session.Revision == snapshotRevision then
 		session.Dirty = false
 	end

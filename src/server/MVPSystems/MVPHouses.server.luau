@@ -214,7 +214,10 @@ local function shouldSpawnVillage(island, random)
 	local roundIndex = tonumber(island:GetAttribute("RoundIndex")) or 0
 	local size = island:GetAttribute("TerrainSize")
 	local role = island:GetAttribute("IslandRole")
-	if roundIndex < VILLAGE_CONFIG.MinimumRound or role ~= "MainHall" then
+	if island:GetAttribute("IslandType") ~= "Normal"
+		or roundIndex < VILLAGE_CONFIG.MinimumRound
+		or role ~= "MainHall"
+	then
 		return false
 	end
 	if size ~= "Medium" and size ~= "Large" then
@@ -225,6 +228,16 @@ local function shouldSpawnVillage(island, random)
 	end
 	local chance = size == "Large" and VILLAGE_CONFIG.LargeChance or VILLAGE_CONFIG.MediumChance
 	return random:NextNumber() <= chance
+end
+
+local function shouldSpawnSoloMerchant(island, random)
+	local roundIndex = tonumber(island:GetAttribute("RoundIndex")) or 0
+	local role = tostring(island:GetAttribute("IslandRole") or "")
+	return island:GetAttribute("IslandType") == "Normal"
+		and (tonumber(island:GetAttribute("ChestCount")) or 0) == 0
+		and roundIndex >= 2
+		and string.find(role, "SideRoom", 1, true) ~= nil
+		and random:NextNumber() <= VILLAGE_CONFIG.SoloMerchantChance
 end
 
 local function removeRuntimeMonsters(island)
@@ -256,11 +269,14 @@ local function populateIsland(island)
 	local seed = (tonumber(island:GetAttribute("IslandSeed")) or 1) + VILLAGE_CONFIG.RandomSalt
 	seed = math.floor(math.abs(seed)) % 2147483647
 	local random = Random.new(seed == 0 and 1 or seed)
-	if not shouldSpawnVillage(island, random) then
+	local createVillage = shouldSpawnVillage(island, random)
+	local createSoloMerchant = not createVillage and shouldSpawnSoloMerchant(island, random)
+	if not createVillage and not createSoloMerchant then
 		return
 	end
 
-	island:SetAttribute("VillageSpawned", true)
+	island:SetAttribute("VillageSpawned", createVillage)
+	island:SetAttribute("SoloMerchantSpawned", createSoloMerchant)
 	island:SetAttribute("CanSpawnMonster", false)
 	island:SetAttribute("CanSpawnItem", false)
 	removeRuntimeMonsters(island)
@@ -269,6 +285,18 @@ local function populateIsland(island)
 	local radius = math.clamp(math.min(floor.Size.X, floor.Size.Z) * 0.25, 8, 13)
 	local center = Vector3.new(floor.Position.X, surfaceY, floor.Position.Z)
 	local angle = random:NextNumber(0, math.pi * 2)
+	if createSoloMerchant then
+		local folder = Instance.new("Folder")
+		folder.Name = "MVPSoloMerchant"
+		folder:SetAttribute("ProceduralSoloMerchant", true)
+		folder.Parent = island
+		local shopIds = VillageShopCatalog.GetShopIds()
+		local shop = VillageShopCatalog.GetShop(shopIds[random:NextInteger(1, #shopIds)])
+		local templates = getTemplates("Villagers")
+		spawnVillager(folder, templates, center, angle, random, shop, 1)
+		print(string.format("[MVP Village] Comerciante solitario criado em %s.", island:GetFullName()))
+		return
+	end
 	local buildingCount = random:NextInteger(VILLAGE_CONFIG.MinimumBuildingCount, VILLAGE_CONFIG.MaximumBuildingCount)
 	local shopIds = VillageShopCatalog.GetShopIds()
 	-- Toda vila mantem o ferreiro para nao bloquear a progressao principal.

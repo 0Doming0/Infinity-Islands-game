@@ -12,7 +12,9 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 local VillageShopCatalog = require(ReplicatedStorage:WaitForChild("VillageShopCatalog"))
+local ItemCatalog = require(ReplicatedStorage:WaitForChild("ItemCatalog"))
 local SwordProgressionService = require(script.Parent.MVPSystems:WaitForChild("SwordProgressionService"))
+local InventoryService = require(script.Parent.MVPSystems:WaitForChild("InventoryService"))
 local ScoreService = require(script.Parent.BlockParkour:WaitForChild("ScoreService_SkyDungeon_V10"))
 
 local SHOP_TAG = MVPConfig.Village.ShopTag
@@ -28,6 +30,7 @@ if not villagerEvent then
 end
 
 SwordProgressionService.Start()
+InventoryService.Start()
 
 local function getRoot(model)
 	local root = model.PrimaryPart
@@ -94,15 +97,23 @@ local function buildInventory(player, shop)
 					BaseDamage = sword.BaseDamage,
 					AttackSpeed = sword.AttackSpeed,
 					ScoreMultiplier = sword.ScoreMultiplier,
-					StatsText = string.format(
-						"Dano %d  -  Velocidade %.2fx  -  Pontos %.2fx",
-						sword.BaseDamage,
-						sword.AttackSpeed,
-						sword.ScoreMultiplier
-					),
+					StatsText = string.format("Dano %d  -  Velocidade %.2fx", sword.BaseDamage, sword.AttackSpeed),
 					Color = sword.Color,
 					Owned = sword.Owned,
 					Equipped = sword.Equipped,
+				})
+			end
+		elseif offer.ItemType == "Item" then
+			local item = ItemCatalog.Get(offer.ItemId)
+			if item then
+				table.insert(inventory, {
+					ItemId = item.ItemId,
+					ItemType = "Item",
+					DisplayName = item.DisplayName,
+					Description = item.Description,
+					StatsText = string.format("Consumivel - maximo %d", item.MaximumStack),
+					Price = item.Price,
+					Color = item.Color,
 				})
 			end
 		else
@@ -132,7 +143,7 @@ local function sendShop(player, message, success)
 		shopTitle = shop.DisplayName,
 		shopColor = shop.Color,
 		inventory = buildInventory(player, shop),
-		score = ScoreService.GetScore(player),
+		coins = ScoreService.GetCoins(player),
 		message = message,
 		success = success,
 	})
@@ -217,14 +228,35 @@ local function purchaseService(player, itemId)
 	if not valid then
 		return false, validationMessage
 	end
-	local paid = ScoreService.TrySpend(player, offer.Price)
+	local paid = ScoreService.TrySpendCoins(player, offer.Price)
 	if not paid then
-		return false, "Pontos insuficientes."
+		return false, "Moedas insuficientes."
 	end
 	if not applyService(player, offer) then
+		ScoreService.RefundCoins(player, offer.Price, "VillageServiceRefund")
 		return false, "Nao foi possivel aplicar o servico."
 	end
 	return true, offer.DisplayName .. " adquirido!"
+end
+
+local function purchaseItem(player, itemId)
+	local shop = getShop(playerSessions[player])
+	local offer = shop and VillageShopCatalog.FindItem(shop.ShopId, itemId, "Item")
+	local definition = offer and ItemCatalog.Get(itemId)
+	if not definition then
+		return false, "Este aldeao nao vende esse item."
+	end
+	local paid, remaining = ScoreService.TrySpendCoins(player, definition.Price)
+	if not paid then
+		return false, "Moedas insuficientes."
+	end
+	local granted, message = InventoryService.GrantItem(player, itemId, 1)
+	if not granted then
+		-- Reembolsa se o limite do inventario impediu a compra.
+		ScoreService.RefundCoins(player, definition.Price, "VillageRefund")
+		return false, message
+	end
+	return true, definition.DisplayName .. " comprado! Saldo: " .. tostring(remaining)
 end
 
 local function registerVillager(model)
@@ -259,6 +291,7 @@ local function registerVillager(model)
 	prompt.Triggered:Connect(function(player)
 		if player.Parent == Players then
 			playerSessions[player] = model
+			player:SetAttribute("ShopOpen", true)
 			sendShop(player)
 		end
 	end)
@@ -267,6 +300,7 @@ local function registerVillager(model)
 		for player, villager in pairs(playerSessions) do
 			if villager == model then
 				playerSessions[player] = nil
+				player:SetAttribute("ShopOpen", false)
 				villagerEvent:FireClient(player, { action = "closeShop" })
 			end
 		end
@@ -286,10 +320,12 @@ villagerEvent.OnServerEvent:Connect(function(player, data)
 	end
 	if data.action == "closeShop" then
 		playerSessions[player] = nil
+		player:SetAttribute("ShopOpen", false)
 		return
 	end
 	if not isSessionValid(player) then
 		playerSessions[player] = nil
+		player:SetAttribute("ShopOpen", false)
 		villagerEvent:FireClient(player, { action = "shopError", message = "Aproxime-se novamente do aldeao." })
 		return
 	end
@@ -314,6 +350,9 @@ villagerEvent.OnServerEvent:Connect(function(player, data)
 		sendShop(player, message, success)
 	elseif data.action == "purchaseService" then
 		local success, message = purchaseService(player, itemId)
+		sendShop(player, message, success)
+	elseif data.action == "purchaseItem" then
+		local success, message = purchaseItem(player, itemId)
 		sendShop(player, message, success)
 	elseif data.action == "refreshShop" then
 		sendShop(player)
