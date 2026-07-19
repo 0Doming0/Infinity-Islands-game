@@ -54,9 +54,9 @@ local scoreLabel = createLabel(
 	"Score",
 	UDim2.fromOffset(12, 7),
 	UDim2.fromOffset(112, 25),
-	"PONTOS 0",
+	"⭐ 0",
 	Color3.fromRGB(255, 220, 102),
-	Enum.Font.GothamBold,
+	Enum.Font.GothamMedium,
 	16
 )
 
@@ -64,9 +64,9 @@ local coinLabel = createLabel(
 	"Coins",
 	UDim2.fromOffset(122, 7),
 	UDim2.fromOffset(96, 25),
-	"MOEDAS 0",
+	"🪙 0",
 	Color3.fromRGB(255, 196, 66),
-	Enum.Font.GothamBold,
+	Enum.Font.GothamMedium,
 	13,
 	Enum.TextXAlignment.Right
 )
@@ -75,7 +75,7 @@ local waterLabel = createLabel(
 	"WaterDistance",
 	UDim2.fromOffset(12, 34),
 	UDim2.fromOffset(206, 22),
-	"AGUA  --m ABAIXO",
+	"🌊  --m abaixo",
 	Color3.fromRGB(139, 207, 255),
 	Enum.Font.GothamMedium,
 	13
@@ -164,11 +164,11 @@ local wasAlive = true
 local function updateWaterDisplay(gap)
 	local roundedGap = math.floor(gap)
 	if gap <= 0 then
-		waterLabel.Text = "NA AGUA - SUBA!"
+		waterLabel.Text = "🌊 SUBA!"
 	elseif gap < 18 then
-		waterLabel.Text = string.format("AGUA A %dm", roundedGap)
+		waterLabel.Text = string.format("🌊 %dm", roundedGap)
 	else
-		waterLabel.Text = string.format("AGUA  %dm ABAIXO", roundedGap)
+		waterLabel.Text = string.format("🌊 %dm abaixo", roundedGap)
 	end
 
 	local danger = 1 - math.clamp(gap / 80, 0, 1)
@@ -195,16 +195,16 @@ waterEvent.OnClientEvent:Connect(function(data)
 	local gap = height - waterY
 	local alive = data.alive ~= false
 
-	scoreLabel.Text = "PONTOS " .. tostring(data.runScore or data.score or 0)
-	coinLabel.Text = "MOEDAS " .. tostring(data.coins or 0)
+	scoreLabel.Text = "⭐ " .. tostring(data.runScore or data.score or 0)
+	coinLabel.Text = "🪙 " .. tostring(data.coins or 0)
 	updateWaterDisplay(gap)
 
 	if alive and gap <= 0 then
 		warning.Visible = true
-		warning.Text = "VOCE ESTA NA AGUA! SUBA!"
+		warning.Text = "🌊 VOCE ESTA NA AGUA! SUBA!"
 	elseif alive and gap < 18 then
 		warning.Visible = true
-		warning.Text = "A AGUA ESTA CHEGANDO"
+		warning.Text = "🌊 A AGUA ESTA CHEGANDO"
 	else
 		warning.Visible = false
 	end
@@ -214,7 +214,7 @@ waterEvent.OnClientEvent:Connect(function(data)
 		warning.Visible = false
 		local cause = data.inWater and "VOCE SE AFOGOU" or "VOCE MORREU"
 		resultText.Text = string.format(
-			"%s\n%d pontos perdidos - %d moedas perdidas",
+			"%s\n⭐ %d perdidos  •  🪙 %d perdidas",
 			cause,
 			tonumber(data.lastDeathRunScore) or 0,
 			tonumber(data.lastDeathCoinsLost) or 0

@@ -45,7 +45,8 @@ corner.CornerRadius = UDim.new(0, 18)
 corner.Parent = panel
 local stroke = Instance.new("UIStroke")
 stroke.Color = Color3.fromRGB(142, 92, 235)
-stroke.Thickness = 2
+stroke.Thickness = 1
+stroke.Transparency = 0.28
 stroke.Parent = panel
 
 local title = Instance.new("TextLabel")
@@ -54,7 +55,7 @@ title.Position = UDim2.fromOffset(22, 12)
 title.BackgroundTransparency = 1
 title.Text = "VILA"
 title.TextColor3 = Color3.fromRGB(255, 226, 120)
-title.Font = Enum.Font.GothamBlack
+title.Font = Enum.Font.GothamMedium
 title.TextSize = 26
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.Parent = panel
@@ -64,9 +65,9 @@ coinLabel.AnchorPoint = Vector2.new(1, 0)
 coinLabel.Position = UDim2.new(1, -74, 0, 18)
 coinLabel.Size = UDim2.fromOffset(190, 36)
 coinLabel.BackgroundTransparency = 1
-coinLabel.Text = "Moedas: 0"
+coinLabel.Text = "🪙 0"
 coinLabel.TextColor3 = Color3.fromRGB(255, 220, 93)
-coinLabel.Font = Enum.Font.GothamBold
+coinLabel.Font = Enum.Font.GothamMedium
 coinLabel.TextSize = 19
 coinLabel.TextXAlignment = Enum.TextXAlignment.Right
 coinLabel.Parent = panel
@@ -201,6 +202,21 @@ local function clearRows()
 	end
 end
 
+local function getOfferIcon(item)
+	if item.ItemType == "Sword" then
+		return "⚔️"
+	end
+	local itemId = tostring(item.ItemId or "")
+	if string.find(itemId, "Heal", 1, true) or string.find(itemId, "Health", 1, true) then
+		return "❤️"
+	elseif string.find(itemId, "Speed", 1, true) then
+		return "💨"
+	elseif string.find(itemId, "Jump", 1, true) then
+		return "⬆️"
+	end
+	return "🎒"
+end
+
 local function createRow(item, index)
 	local row = Instance.new("Frame")
 	row.Name = item.ItemId or item.SwordId or ("Offer_" .. index)
@@ -215,7 +231,8 @@ local function createRow(item, index)
 	rowCorner.Parent = row
 	local rowStroke = Instance.new("UIStroke")
 	rowStroke.Color = item.Equipped and Color3.fromRGB(105, 255, 145) or (item.Color or Color3.fromRGB(100, 100, 115))
-	rowStroke.Thickness = item.Equipped and 3 or 1
+	rowStroke.Thickness = item.Equipped and 1.5 or 1
+	rowStroke.Transparency = item.Equipped and 0.1 or 0.35
 	rowStroke.Parent = row
 
 	local swatch = Instance.new("Frame")
@@ -232,9 +249,9 @@ local function createRow(item, index)
 	name.Position = UDim2.fromOffset(36, 9)
 	name.Size = UDim2.new(1, -250, 0, 30)
 	name.BackgroundTransparency = 1
-	name.Text = item.DisplayName or item.SwordId
+	name.Text = string.format("%s  %s", getOfferIcon(item), item.DisplayName or item.SwordId)
 	name.TextColor3 = Color3.new(1, 1, 1)
-	name.Font = Enum.Font.GothamBold
+	name.Font = Enum.Font.GothamMedium
 	name.TextSize = 20
 	name.TextXAlignment = Enum.TextXAlignment.Left
 	name.Parent = row
@@ -267,7 +284,7 @@ local function createRow(item, index)
 	button.Position = UDim2.new(1, -14, 0.5, 0)
 	button.Size = UDim2.fromOffset(190, 64)
 	button.TextColor3 = Color3.new(1, 1, 1)
-	button.Font = Enum.Font.GothamBold
+	button.Font = Enum.Font.GothamMedium
 	button.TextSize = 17
 	button.Parent = row
 	local buttonCorner = Instance.new("UICorner")
@@ -287,7 +304,7 @@ local function createRow(item, index)
 			villagerEvent:FireServer({ action = "equipSword", itemId = item.ItemId })
 		end)
 	else
-		button.Text = string.format("COMPRAR\n%d moedas", item.Price or 0)
+		button.Text = string.format("COMPRAR  🪙 %d", item.Price or 0)
 		button.BackgroundColor3 = Color3.fromRGB(135, 82, 170)
 		button.MouseButton1Click:Connect(function()
 			button.Active = false
@@ -311,7 +328,7 @@ local function showShop(data)
 		title.TextColor3 = data.shopColor
 		stroke.Color = data.shopColor
 	end
-	coinLabel.Text = "Moedas: " .. tostring(data.coins or 0)
+	coinLabel.Text = "🪙 " .. tostring(data.coins or 0)
 	if data.message then
 		feedback.Text = data.message
 		feedback.TextColor3 = data.success and Color3.fromRGB(105, 255, 145) or Color3.fromRGB(255, 120, 120)

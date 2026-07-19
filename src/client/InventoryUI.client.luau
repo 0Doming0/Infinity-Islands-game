@@ -28,9 +28,9 @@ local toggle = Instance.new("TextButton")
 toggle.Size = UDim2.fromOffset(72, 40)
 toggle.Position = UDim2.fromOffset(6, 6)
 toggle.BackgroundColor3 = Color3.fromRGB(48, 61, 84)
-toggle.Text = "ITENS"
+toggle.Text = "🎒 ITENS"
 toggle.TextColor3 = Color3.fromRGB(225, 231, 242)
-toggle.Font = Enum.Font.GothamBold
+toggle.Font = Enum.Font.GothamMedium
 toggle.TextSize = 12
 toggle.Parent = panel
 Instance.new("UICorner", toggle).CornerRadius = UDim.new(0, 8)
@@ -77,6 +77,18 @@ layout.Parent = list
 
 local current = { Entries = {} }
 
+local function getItemIcon(entry)
+	local itemId = tostring(entry.ItemId or "")
+	if string.find(itemId, "Health", 1, true) then
+		return "❤️"
+	elseif string.find(itemId, "Speed", 1, true) then
+		return "💨"
+	elseif string.find(itemId, "Jump", 1, true) then
+		return "⬆️"
+	end
+	return "🎒"
+end
+
 local function render(snapshot)
 	current = snapshot or { Entries = {} }
 	for _, child in ipairs(list:GetChildren()) do
@@ -87,7 +99,7 @@ local function render(snapshot)
 	local pieces = {}
 	for index, entry in ipairs(current.Entries or {}) do
 		if index <= 2 then
-			table.insert(pieces, string.format("%s x%d", entry.DisplayName, entry.Amount))
+			table.insert(pieces, string.format("%s %s x%d", getItemIcon(entry), entry.DisplayName, entry.Amount))
 		end
 		local row = Instance.new("Frame")
 		row.LayoutOrder = index
@@ -102,7 +114,7 @@ local function render(snapshot)
 		label.Position = UDim2.fromOffset(10, 4)
 		label.Size = UDim2.new(1, -100, 1, -8)
 		label.BackgroundTransparency = 1
-		label.Text = string.format("%s  x%d\n%s", entry.DisplayName, entry.Amount, entry.Description or "")
+		label.Text = string.format("%s  %s x%d\n%s", getItemIcon(entry), entry.DisplayName, entry.Amount, entry.Description or "")
 		label.TextColor3 = Color3.fromRGB(240, 242, 247)
 		label.Font = Enum.Font.GothamMedium
 		label.TextSize = 12
@@ -117,7 +129,7 @@ local function render(snapshot)
 		use.BackgroundColor3 = Color3.fromRGB(65, 130, 92)
 		use.Text = "USAR"
 		use.TextColor3 = Color3.new(1, 1, 1)
-		use.Font = Enum.Font.GothamBold
+		use.Font = Enum.Font.GothamMedium
 		use.TextSize = 12
 		use.Parent = row
 		Instance.new("UICorner", use).CornerRadius = UDim.new(0, 8)

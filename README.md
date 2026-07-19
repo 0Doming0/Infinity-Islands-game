@@ -47,9 +47,31 @@ ServerStorage
     ├── Items
     └── Atmosphere
         ├── Sky [Sky, opcional]
-        ├── AmbientMusic [Sound]
+        ├── AmbientMusic [Folder]
+        │   ├── Track01 [Sound]
+        │   ├── Track02 [Sound]
+        │   └── outras faixas [Sound, opcionais]
+        ├── ForestAmbience [Folder]
+        │   ├── ForestLoop [Sound]
+        │   └── BirdCalls [Folder]
+        │       ├── Bird01 [Sound]
+        │       ├── Bird02 [Sound]
+        │       └── outros passaros [Sound, opcionais]
         └── DangerMusic [Sound, opcional]
 ```
+
+As faixas dentro de `AmbientMusic` sao embaralhadas e tocadas uma por vez,
+sem repeticao imediata. Depois que uma faixa termina, o jogo mantem de 12 a 25
+segundos de silencio antes da proxima, criando momentos de paz. Cada `Sound`
+pode ter seu proprio `Volume`; deixe `Looped` desativado, pois a playlist
+controla a troca. O formato antigo com um unico `Sound` chamado `AmbientMusic`
+continua funcionando. Os tempos ficam em `MVPConfig.Atmosphere`.
+
+`ForestLoop` toca continuamente em volume baixo, inclusive durante os momentos
+de silencio entre as musicas. Os sons dentro de `BirdCalls` sao chamados em
+intervalos aleatorios de 8 a 20 segundos, sem repetir o mesmo passaro de forma
+imediata. O volume individual vem de cada `Sound`; volume geral, intervalos,
+fade e reducao durante eventos perigosos ficam em `MVPConfig.Atmosphere`.
 
 O jogo cria prototipos em tempo de execucao quando um asset essencial nao
 existe. Um modelo real com o nome esperado sempre tem prioridade.

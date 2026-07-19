@@ -472,6 +472,10 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 	humanoid.MaxHealth = maxHealth
 	humanoid.Health = maxHealth
 	humanoid.DisplayName = displayName
+	humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.Viewer
+	humanoid.NameDisplayDistance = 18
+	humanoid.HealthDisplayDistance = 16
+	humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.DisplayWhenDamaged
 	humanoid.BreakJointsOnDeath = false
 	humanoid.WalkSpeed = math.clamp(
 		numberAttribute(template, "WalkSpeed", humanoid.WalkSpeed) * (elite and 1.08 or 1),

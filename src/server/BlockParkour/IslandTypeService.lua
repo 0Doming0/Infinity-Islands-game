@@ -16,24 +16,26 @@ local function addLabel(island, floor, text, color)
 	local billboard = Instance.new("BillboardGui")
 	billboard.Name = "SpecialIslandLabel"
 	billboard.Adornee = floor
-	billboard.Size = UDim2.fromOffset(220, 54)
-	billboard.StudsOffset = Vector3.new(0, 6, 0)
-	billboard.AlwaysOnTop = true
-	billboard.MaxDistance = 115
+	billboard.Size = UDim2.fromOffset(150, 32)
+	billboard.StudsOffset = Vector3.new(0, 4.6, 0)
+	billboard.AlwaysOnTop = false
+	billboard.MaxDistance = 28
 	billboard.Parent = island
 	local label = Instance.new("TextLabel")
 	label.Size = UDim2.fromScale(1, 1)
 	label.BackgroundColor3 = Color3.fromRGB(18, 18, 24)
-	label.BackgroundTransparency = 0.18
+	label.BackgroundTransparency = 0.38
+	label.BorderSizePixel = 0
 	label.Text = text
 	label.TextColor3 = color
-	label.Font = Enum.Font.GothamBlack
-	label.TextScaled = true
+	label.Font = Enum.Font.GothamMedium
+	label.TextSize = 14
 	label.Parent = billboard
-	Instance.new("UICorner", label).CornerRadius = UDim.new(0, 10)
+	Instance.new("UICorner", label).CornerRadius = UDim.new(0, 7)
 	local stroke = Instance.new("UIStroke")
 	stroke.Color = color
-	stroke.Thickness = 2
+	stroke.Thickness = 1
+	stroke.Transparency = 0.45
 	stroke.Parent = label
 end
 
@@ -47,7 +49,9 @@ local function styleIsland(island, islandType, tier)
 		if grass and grass:IsA("BasePart") then
 			grass.Color = Color3.fromRGB(108, 54, 56)
 		end
-		addLabel(island, floor, string.format("ILHA ELITE  -  NIVEL %d", tier), Color3.fromRGB(255, 96, 78))
+		-- Evita emojis compostos neste BillboardGui. Em alguns dispositivos eles
+		-- sao renderizados como um quadrado branco em vez do icone esperado.
+		addLabel(island, floor, string.format("ELITE  |  NIVEL %d", tier), Color3.fromRGB(255, 96, 78))
 	elseif islandType == "Treasure" then
 		if grass and grass:IsA("BasePart") then
 			grass.Color = Color3.fromRGB(154, 126, 52)

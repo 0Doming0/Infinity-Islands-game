@@ -158,6 +158,10 @@ function MimicAI.Activate(model, options)
 	humanoid.MaxHealth = math.floor((tonumber(model:GetAttribute("MaxHealth")) or 90) * (1 + (tier - 1) * 0.20))
 	humanoid.Health = humanoid.MaxHealth
 	humanoid.DisplayName = "Bau Mimico"
+	humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.Viewer
+	humanoid.NameDisplayDistance = 18
+	humanoid.HealthDisplayDistance = 16
+	humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.DisplayWhenDamaged
 	humanoid.BreakJointsOnDeath = false
 
 	local state = {

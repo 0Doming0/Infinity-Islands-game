@@ -65,27 +65,283 @@ if skyTemplate and skyTemplate:IsA("Sky") then
 	skyTemplate:Clone().Parent = Lighting
 end
 
-local musicTemplate = folder:FindFirstChild(MVPConfig.Atmosphere.AmbientMusicName)
-if not musicTemplate then
-	musicTemplate = Instance.new("Sound")
-	musicTemplate.Name = MVPConfig.Atmosphere.AmbientMusicName
-	musicTemplate.Looped = true
-	musicTemplate.Volume = 0.30
-	musicTemplate:SetAttribute("PrototypeAsset", true)
-	musicTemplate.Parent = folder
-	warn("[Atmosphere] Adicione um Sound licenciado em ServerStorage/MVPAssets/Atmosphere/AmbientMusic.")
-end
-local ambientMusic
-if musicTemplate:IsA("Sound") and musicTemplate.SoundId ~= "" then
-	local music = SoundService:FindFirstChild("SkyDungeonAmbientMusic") or musicTemplate:Clone()
-	music.Name = "SkyDungeonAmbientMusic"
-	music.Looped = true
-	music.Parent = SoundService
-	if not music.Playing then
-		music:Play()
+local musicContainer = folder:FindFirstChild(MVPConfig.Atmosphere.AmbientMusicName)
+if not musicContainer then
+	musicContainer = Instance.new("Folder")
+	musicContainer.Name = MVPConfig.Atmosphere.AmbientMusicName
+	musicContainer.Parent = folder
+	for index = 1, 2 do
+		local placeholder = Instance.new("Sound")
+		placeholder.Name = string.format("Track%02d", index)
+		placeholder.Volume = 0.30
+		placeholder:SetAttribute("PrototypeAsset", true)
+		placeholder.Parent = musicContainer
 	end
-	ambientMusic = music
+	warn("[Atmosphere] Adicione Sounds licenciados em ServerStorage/MVPAssets/Atmosphere/AmbientMusic.")
 end
+
+local function getAmbientTracks()
+	local tracks = {}
+	-- Compatibilidade com o formato antigo: AmbientMusic podia ser um unico Sound.
+	if musicContainer:IsA("Sound") then
+		if musicContainer.SoundId ~= "" then
+			table.insert(tracks, musicContainer)
+		end
+	elseif musicContainer:IsA("Folder") then
+		for _, child in ipairs(musicContainer:GetChildren()) do
+			if child:IsA("Sound") and child.SoundId ~= "" then
+				table.insert(tracks, child)
+			end
+		end
+	end
+	table.sort(tracks, function(left, right)
+		return left.Name < right.Name
+	end)
+	return tracks
+end
+
+for _, child in ipairs(SoundService:GetChildren()) do
+	if child:IsA("Sound")
+		and (child.Name == "SkyDungeonAmbientMusic"
+			or child.Name == "SkyDungeonForestLoop"
+			or string.find(child.Name, "SkyDungeonAmbient_", 1, true) == 1
+			or string.find(child.Name, "SkyDungeonBird_", 1, true) == 1)
+	then
+		child:Destroy()
+	end
+end
+
+local function isDangerousWorldEvent()
+	return workspace:GetAttribute("ActiveWorldEvent") == "RisingTide"
+		or workspace:GetAttribute("ActiveWorldEvent") == "MonsterHunt"
+end
+
+local ambientMusic
+local ambientDangerous = isDangerousWorldEvent()
+local lastTrack
+local random = Random.new()
+
+local forestContainer = folder:FindFirstChild(MVPConfig.Atmosphere.ForestAmbienceName)
+if not forestContainer then
+	forestContainer = Instance.new("Folder")
+	forestContainer.Name = MVPConfig.Atmosphere.ForestAmbienceName
+	forestContainer.Parent = folder
+
+	local forestPlaceholder = Instance.new("Sound")
+	forestPlaceholder.Name = MVPConfig.Atmosphere.ForestLoopName
+	forestPlaceholder.Volume = 0.18
+	forestPlaceholder:SetAttribute("PrototypeAsset", true)
+	forestPlaceholder.Parent = forestContainer
+
+	local birdFolder = Instance.new("Folder")
+	birdFolder.Name = MVPConfig.Atmosphere.BirdCallsFolderName
+	birdFolder.Parent = forestContainer
+	for index = 1, 3 do
+		local birdPlaceholder = Instance.new("Sound")
+		birdPlaceholder.Name = string.format("Bird%02d", index)
+		birdPlaceholder.Volume = 0.22
+		birdPlaceholder:SetAttribute("PrototypeAsset", true)
+		birdPlaceholder.Parent = birdFolder
+	end
+	warn("[Atmosphere] Adicione ForestLoop e sons de passaros em MVPAssets/Atmosphere/ForestAmbience.")
+end
+
+local natureGroup = SoundService:FindFirstChild("SkyDungeonNature")
+if natureGroup and not natureGroup:IsA("SoundGroup") then
+	natureGroup:Destroy()
+	natureGroup = nil
+end
+if not natureGroup then
+	natureGroup = Instance.new("SoundGroup")
+	natureGroup.Name = "SkyDungeonNature"
+	natureGroup.Parent = SoundService
+end
+
+local function targetNatureVolume()
+	local master = math.clamp(tonumber(MVPConfig.Atmosphere.ForestMasterVolume) or 1, 0, 1)
+	if ambientDangerous then
+		return master * math.clamp(
+			tonumber(MVPConfig.Atmosphere.ForestDangerVolumeMultiplier) or 0.55,
+			0,
+			1
+		)
+	end
+	return master
+end
+
+local function tweenNatureVolume(duration)
+	TweenService:Create(natureGroup, TweenInfo.new(duration), {
+		Volume = targetNatureVolume(),
+	}):Play()
+end
+
+local function startForestLoop()
+	if not MVPConfig.Atmosphere.ForestAmbienceEnabled or not forestContainer:IsA("Folder") then
+		return
+	end
+	local template = forestContainer:FindFirstChild(MVPConfig.Atmosphere.ForestLoopName)
+	if not template or not template:IsA("Sound") or template.SoundId == "" then
+		return
+	end
+	local sound = template:Clone()
+	sound.Name = "SkyDungeonForestLoop"
+	sound.Looped = true
+	sound.SoundGroup = natureGroup
+	sound.Parent = SoundService
+	sound:Play()
+end
+
+local function getBirdTemplates()
+	local templates = {}
+	if not forestContainer:IsA("Folder") then
+		return templates
+	end
+	local birdFolder = forestContainer:FindFirstChild(MVPConfig.Atmosphere.BirdCallsFolderName)
+	if not birdFolder or not birdFolder:IsA("Folder") then
+		return templates
+	end
+	for _, child in ipairs(birdFolder:GetChildren()) do
+		if child:IsA("Sound") and child.SoundId ~= "" then
+			table.insert(templates, child)
+		end
+	end
+	table.sort(templates, function(left, right)
+		return left.Name < right.Name
+	end)
+	return templates
+end
+
+local lastBirdTemplate
+local function playRandomBirdCall()
+	local templates = getBirdTemplates()
+	if #templates == 0 then
+		return
+	end
+	local template = templates[random:NextInteger(1, #templates)]
+	if #templates > 1 and template == lastBirdTemplate then
+		local currentIndex = table.find(templates, template) or 1
+		template = templates[currentIndex % #templates + 1]
+	end
+	lastBirdTemplate = template
+
+	local sound = template:Clone()
+	sound.Name = "SkyDungeonBird_" .. template.Name
+	sound.Looped = false
+	sound.SoundGroup = natureGroup
+	sound.Parent = SoundService
+	sound.Ended:Once(function()
+		if sound.Parent then
+			sound:Destroy()
+		end
+	end)
+	sound:Play()
+	task.delay(45, function()
+		if sound.Parent then
+			sound:Destroy()
+		end
+	end)
+end
+
+natureGroup.Volume = 0
+startForestLoop()
+tweenNatureVolume(MVPConfig.Atmosphere.ForestFadeSeconds)
+
+if MVPConfig.Atmosphere.ForestAmbienceEnabled then
+	task.spawn(function()
+		while true do
+			local minimum = math.max(
+				1,
+				tonumber(MVPConfig.Atmosphere.BirdCallMinimumIntervalSeconds) or 8
+			)
+			local maximum = math.max(
+				minimum,
+				tonumber(MVPConfig.Atmosphere.BirdCallMaximumIntervalSeconds) or minimum
+			)
+			task.wait(random:NextNumber(minimum, maximum))
+			playRandomBirdCall()
+		end
+	end)
+end
+
+local function targetAmbientVolume(sound)
+	local baseVolume = tonumber(sound:GetAttribute("BaseVolume")) or 0.30
+	return ambientDangerous and baseVolume * 0.4 or baseVolume
+end
+
+local function shuffleTracks(tracks)
+	for index = #tracks, 2, -1 do
+		local other = random:NextInteger(1, index)
+		tracks[index], tracks[other] = tracks[other], tracks[index]
+	end
+	if #tracks > 1 and tracks[1] == lastTrack then
+		tracks[1], tracks[2] = tracks[2], tracks[1]
+	end
+end
+
+local function playAmbientTrack(template)
+	if ambientMusic then
+		ambientMusic:Destroy()
+	end
+	local music = template:Clone()
+	music.Name = "SkyDungeonAmbient_" .. template.Name
+	music.Looped = false
+	music:SetAttribute("BaseVolume", math.clamp(template.Volume, 0, 1))
+	music.Volume = 0
+	music.Parent = SoundService
+	ambientMusic = music
+
+	local finished = false
+	local endedConnection = music.Ended:Connect(function()
+		finished = true
+	end)
+	music:Play()
+	TweenService:Create(
+		music,
+		TweenInfo.new(MVPConfig.Atmosphere.AmbientFadeSeconds),
+		{ Volume = targetAmbientVolume(music) }
+	):Play()
+
+	local startedAt = os.clock()
+	while music.Parent and not finished do
+		task.wait(0.5)
+		-- Um ID sem permissao ou indisponivel nao pode travar toda a playlist.
+		if not music.Playing and os.clock() - startedAt >= 10 then
+			break
+		end
+	end
+	endedConnection:Disconnect()
+	if ambientMusic == music then
+		ambientMusic = nil
+	end
+	music:Destroy()
+	return finished
+end
+
+task.spawn(function()
+	while true do
+		local tracks = getAmbientTracks()
+		if #tracks == 0 then
+			task.wait(MVPConfig.Atmosphere.AmbientRetrySeconds)
+		else
+			shuffleTracks(tracks)
+			for _, template in ipairs(tracks) do
+				lastTrack = template
+				local endedNormally = playAmbientTrack(template)
+				if endedNormally then
+					local minimum = math.max(
+						0,
+						tonumber(MVPConfig.Atmosphere.AmbientSilenceMinimumSeconds) or 0
+					)
+					local maximum = math.max(
+						minimum,
+						tonumber(MVPConfig.Atmosphere.AmbientSilenceMaximumSeconds) or minimum
+					)
+					task.wait(random:NextNumber(minimum, maximum))
+				end
+			end
+		end
+	end
+end)
 
 local dangerTemplate = folder:FindFirstChild(MVPConfig.Atmosphere.DangerMusicName)
 local dangerMusic
@@ -101,10 +357,13 @@ if dangerTemplate and dangerTemplate:IsA("Sound") and dangerTemplate.SoundId ~= 
 end
 
 workspace:GetAttributeChangedSignal("ActiveWorldEvent"):Connect(function()
-	local dangerous = workspace:GetAttribute("ActiveWorldEvent") == "RisingTide"
-		or workspace:GetAttribute("ActiveWorldEvent") == "MonsterHunt"
+	local dangerous = isDangerousWorldEvent()
+	ambientDangerous = dangerous
+	tweenNatureVolume(0.8)
 	if ambientMusic then
-		TweenService:Create(ambientMusic, TweenInfo.new(0.8), { Volume = dangerous and 0.12 or 0.30 }):Play()
+		TweenService:Create(ambientMusic, TweenInfo.new(0.8), {
+			Volume = targetAmbientVolume(ambientMusic),
+		}):Play()
 	end
 	if dangerMusic then
 		TweenService:Create(dangerMusic, TweenInfo.new(0.8), { Volume = dangerous and 0.34 or 0 }):Play()

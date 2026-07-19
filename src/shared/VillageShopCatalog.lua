@@ -14,7 +14,7 @@ local SHOPS = {
 	Blacksmith = {
 		ShopId = "Blacksmith",
 		DisplayName = "Ferreiro",
-		Label = "FERREIRO",
+		Label = "⚔️ FERREIRO",
 		Color = Color3.fromRGB(235, 155, 72),
 		Items = {
 			{ ItemId = "ClassicSword", ItemType = "Sword" },
@@ -26,7 +26,7 @@ local SHOPS = {
 	RelicDealer = {
 		ShopId = "RelicDealer",
 		DisplayName = "Mercador de Reliquias",
-		Label = "RELIQUIAS",
+		Label = "✨ RELIQUIAS",
 		Color = Color3.fromRGB(184, 102, 255),
 		Items = {
 			{ ItemId = "VoidSword", ItemType = "Sword" },
@@ -36,7 +36,7 @@ local SHOPS = {
 	Healer = {
 		ShopId = "Healer",
 		DisplayName = "Curandeira",
-		Label = "CURANDEIRA",
+		Label = "❤️ CURANDEIRA",
 		Color = Color3.fromRGB(94, 225, 151),
 		Items = {
 			{ ItemId = "HealthPotion", ItemType = "Item" },
@@ -69,7 +69,7 @@ local SHOPS = {
 	Explorer = {
 		ShopId = "Explorer",
 		DisplayName = "Explorador",
-		Label = "EXPLORADOR",
+		Label = "🧭 EXPLORADOR",
 		Color = Color3.fromRGB(83, 196, 240),
 		Items = {
 			{ ItemId = "SpeedTonic", ItemType = "Item" },

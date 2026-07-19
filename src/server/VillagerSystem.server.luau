@@ -51,20 +51,20 @@ local function ensureBillboard(model, root, shop)
 	local billboard = Instance.new("BillboardGui")
 	billboard.Name = "VillageShopLabel"
 	billboard.Adornee = root
-	billboard.Size = UDim2.fromOffset(190, 48)
-	billboard.StudsOffset = Vector3.new(0, 4.2, 0)
-	billboard.AlwaysOnTop = true
-	billboard.MaxDistance = 65
+	billboard.Size = UDim2.fromOffset(132, 30)
+	billboard.StudsOffset = Vector3.new(0, 3.35, 0)
+	billboard.AlwaysOnTop = false
+	billboard.MaxDistance = 22
 	billboard.Parent = model
 
 	local label = Instance.new("TextLabel")
 	label.Size = UDim2.fromScale(1, 1)
 	label.BackgroundColor3 = Color3.fromRGB(24, 20, 34)
-	label.BackgroundTransparency = 0.12
+	label.BackgroundTransparency = 0.38
 	label.Text = shop.Label
 	label.TextColor3 = shop.Color
-	label.TextScaled = true
-	label.Font = Enum.Font.GothamBold
+	label.TextSize = 13
+	label.Font = Enum.Font.GothamMedium
 	label.Parent = billboard
 
 	local corner = Instance.new("UICorner")
@@ -72,7 +72,8 @@ local function ensureBillboard(model, root, shop)
 	corner.Parent = label
 	local stroke = Instance.new("UIStroke")
 	stroke.Color = shop.Color
-	stroke.Thickness = 2
+	stroke.Thickness = 1
+	stroke.Transparency = 0.45
 	stroke.Parent = label
 end
 

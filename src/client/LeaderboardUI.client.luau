@@ -16,12 +16,12 @@ local button = Instance.new("TextButton")
 button.Name = "RankingButton"
 button.AnchorPoint = Vector2.new(1, 0)
 button.Position = UDim2.new(1, -12, 0, 12)
-button.Size = UDim2.fromOffset(110, 38)
+button.Size = UDim2.fromOffset(48, 38)
 button.BackgroundColor3 = Color3.fromRGB(23, 31, 48)
 button.BackgroundTransparency = 0.18
-button.Text = "RANKING"
+button.Text = "🏆"
 button.TextColor3 = Color3.fromRGB(255, 220, 93)
-button.Font = Enum.Font.GothamBold
+button.Font = Enum.Font.GothamMedium
 button.TextSize = 13
 button.Parent = gui
 Instance.new("UICorner", button).CornerRadius = UDim.new(0, 10)
@@ -42,9 +42,9 @@ local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -20, 0, 48)
 title.Position = UDim2.fromOffset(10, 2)
 title.BackgroundTransparency = 1
-title.Text = "MELHORES ESCALADORES"
+title.Text = "🏆 MELHORES ESCALADORES"
 title.TextColor3 = Color3.fromRGB(255, 220, 93)
-title.Font = Enum.Font.GothamBold
+title.Font = Enum.Font.GothamMedium
 title.TextSize = 16
 title.Parent = panel
 
@@ -66,9 +66,9 @@ personal.AnchorPoint = Vector2.new(0, 1)
 personal.Position = UDim2.new(0, 10, 1, -6)
 personal.Size = UDim2.new(1, -20, 0, 32)
 personal.BackgroundTransparency = 1
-personal.Text = "Seu recorde: 0"
+personal.Text = "⭐ Seu recorde: 0"
 personal.TextColor3 = Color3.fromRGB(135, 210, 255)
-personal.Font = Enum.Font.GothamBold
+personal.Font = Enum.Font.GothamMedium
 personal.TextSize = 14
 personal.Parent = panel
 
@@ -82,7 +82,7 @@ end
 
 local function render(data)
 	clearRows()
-	personal.Text = "Seu recorde: " .. tostring(data.PersonalBest or 0)
+	personal.Text = "⭐ Seu recorde: " .. tostring(data.PersonalBest or 0)
 	for _, entry in ipairs(data.Entries or {}) do
 		local row = Instance.new("TextLabel")
 		row.LayoutOrder = entry.Rank or 999
@@ -101,9 +101,9 @@ local function render(data)
 		score.Position = UDim2.new(1, -8, 0, 0)
 		score.Size = UDim2.fromOffset(75, 31)
 		score.BackgroundTransparency = 1
-		score.Text = tostring(entry.BestScore or 0)
+		score.Text = "⭐ " .. tostring(entry.BestScore or 0)
 		score.TextColor3 = Color3.fromRGB(255, 220, 93)
-		score.Font = Enum.Font.GothamBold
+		score.Font = Enum.Font.GothamMedium
 		score.TextSize = 13
 		score.TextXAlignment = Enum.TextXAlignment.Right
 		score.Parent = row
@@ -114,11 +114,11 @@ end
 button.MouseButton1Click:Connect(function()
 	panel.Visible = not panel.Visible
 	if panel.Visible then
-		title.Text = "CARREGANDO..."
+		title.Text = "⌛ CARREGANDO..."
 		local success, data = pcall(function()
 			return remote:InvokeServer()
 		end)
-		title.Text = "MELHORES ESCALADORES"
+		title.Text = "🏆 MELHORES ESCALADORES"
 		if success and type(data) == "table" then
 			render(data)
 		else

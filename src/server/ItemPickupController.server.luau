@@ -140,21 +140,21 @@ end
 local function createLabel(pickup, itemType)
 	local billboard = Instance.new("BillboardGui")
 	billboard.Name = "ItemLabel"
-	billboard.Size = UDim2.fromOffset(90, 28)
-	billboard.StudsOffset = Vector3.new(0, 1.7, 0)
-	billboard.AlwaysOnTop = true
-	billboard.MaxDistance = 42
+	billboard.Size = UDim2.fromOffset(76, 22)
+	billboard.StudsOffset = Vector3.new(0, 1.45, 0)
+	billboard.AlwaysOnTop = false
+	billboard.MaxDistance = 16
 	billboard.Parent = pickup
 
 	local label = Instance.new("TextLabel")
 	label.Name = "Text"
 	label.Size = UDim2.fromScale(1, 1)
 	label.BackgroundColor3 = Color3.fromRGB(20, 24, 28)
-	label.BackgroundTransparency = 0.18
+	label.BackgroundTransparency = 0.42
 	label.TextColor3 = itemType.Color
 	label.Text = itemType.Label
-	label.TextScaled = true
-	label.Font = Enum.Font.GothamBold
+	label.TextSize = 12
+	label.Font = Enum.Font.GothamMedium
 	label.Parent = billboard
 
 	local corner = Instance.new("UICorner")
@@ -163,8 +163,8 @@ local function createLabel(pickup, itemType)
 
 	local stroke = Instance.new("UIStroke")
 	stroke.Color = itemType.Color
-	stroke.Thickness = 1.4
-	stroke.Transparency = 0.15
+	stroke.Thickness = 1
+	stroke.Transparency = 0.55
 	stroke.Parent = label
 end
 
