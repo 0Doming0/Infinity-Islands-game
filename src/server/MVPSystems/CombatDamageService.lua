@@ -19,6 +19,18 @@ local function tagCreator(humanoid, player)
 	Debris:AddItem(creator, 3)
 end
 
+local function playHitSound(model)
+	local hitSound = model:FindFirstChild("hit", true)
+
+	if not hitSound or not hitSound:IsA("Sound") then
+		return
+	end
+
+	hitSound:Stop()
+	hitSound.TimePosition = 0
+	hitSound:Play()
+end
+
 local function createImpact(position, color, heavy)
 	local anchor = Instance.new("Part")
 	anchor.Name = "SwordImpact"
@@ -223,6 +235,7 @@ function DamageService.ApplySwordHit(attacker, attackerRoot, target, attack)
 		attack.Heavy and Color3.fromRGB(255, 120, 55) or Color3.fromRGB(255, 235, 170),
 		attack.Heavy
 	)
+	playHitSound(model)
 
 	return true, healthBefore > 0 and humanoid.Health <= 0
 end
