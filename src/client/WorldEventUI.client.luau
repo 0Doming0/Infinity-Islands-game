@@ -1,4 +1,4 @@
-```lua
+
 -- Aviso compacto para eventos aleatórios.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -89,6 +89,9 @@ remote.OnClientEvent:Connect(function(data)
 		data.Title or "EVENTO",
 		data.Message or ""
 	)
+	local eventColor = typeof(data.Color) == "Color3" and data.Color or Color3.fromRGB(255, 226, 110)
+	text.TextColor3 = eventColor
+	cardStroke.Color = eventColor
 
 	TweenService:Create(
 		card,
@@ -112,4 +115,4 @@ remote.OnClientEvent:Connect(function(data)
 		):Play()
 	end)
 end)
-```
+

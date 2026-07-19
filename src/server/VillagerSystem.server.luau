@@ -13,6 +13,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 local VillageShopCatalog = require(ReplicatedStorage:WaitForChild("VillageShopCatalog"))
 local ItemCatalog = require(ReplicatedStorage:WaitForChild("ItemCatalog"))
+local SwordCatalog = require(ReplicatedStorage:WaitForChild("SwordCatalog"))
 local SwordProgressionService = require(script.Parent.MVPSystems:WaitForChild("SwordProgressionService"))
 local InventoryService = require(script.Parent.MVPSystems:WaitForChild("InventoryService"))
 local ScoreService = require(script.Parent.BlockParkour:WaitForChild("ScoreService_SkyDungeon_V10"))
@@ -42,6 +43,98 @@ end
 
 local function getShop(model)
 	return model and VillageShopCatalog.GetShop(model:GetAttribute("ShopId")) or nil
+end
+
+local function offerKey(itemType, itemId)
+	return tostring(itemType or "") .. ":" .. tostring(itemId or "")
+end
+
+local function hashString(value)
+	local hash = 0
+	for index = 1, #value do
+		hash = (hash * 31 + string.byte(value, index)) % 2147483647
+	end
+	return hash
+end
+
+local function getOfferSelectionWeight(offer)
+	local price = tonumber(offer.Price)
+	if offer.ItemType == "Sword" then
+		local sword = SwordCatalog.Get(offer.ItemId)
+		price = sword and sword.Price or price
+	elseif offer.ItemType == "Item" then
+		local item = ItemCatalog.Get(offer.ItemId)
+		price = item and item.Price or price
+	end
+	-- Preco funciona como aproximacao de poder: ofertas caras continuam
+	-- possiveis, mas aparecem com menos frequencia que as basicas.
+	return 1 / math.sqrt(1 + math.max(0, price or 0) / 150)
+end
+
+local function takeWeightedOffer(pool, random)
+	local totalWeight = 0
+	for _, offer in ipairs(pool) do
+		totalWeight += getOfferSelectionWeight(offer)
+	end
+	local roll = random:NextNumber(0, totalWeight)
+	local accumulated = 0
+	for index, offer in ipairs(pool) do
+		accumulated += getOfferSelectionWeight(offer)
+		if roll <= accumulated then
+			return table.remove(pool, index)
+		end
+	end
+	return table.remove(pool)
+end
+
+local function createStockState(model, shop)
+	local island = model:FindFirstAncestorWhichIsA("Model")
+	while island and island:GetAttribute("IsSkyIsland") ~= true do
+		island = island:FindFirstAncestorWhichIsA("Model")
+	end
+	local seed = (island and tonumber(island:GetAttribute("IslandSeed")) or 1)
+		+ MVPConfig.Village.InventoryRandomSalt
+		+ hashString(model.Name .. ":" .. shop.ShopId)
+	seed = math.floor(math.abs(seed)) % 2147483647
+	local random = Random.new(seed == 0 and 1 or seed)
+	local offers = table.clone(shop.Items)
+
+	local offerCount = 0
+	if #offers > 0 and random:NextNumber() > MVPConfig.Village.EmptyStockChance then
+		local minimum = math.clamp(MVPConfig.Village.MinimumOfferTypes, 1, #offers)
+		local maximum = math.clamp(MVPConfig.Village.MaximumOfferTypes, minimum, #offers)
+		offerCount = random:NextInteger(minimum, maximum)
+	end
+
+	local stock = {}
+	for _ = 1, offerCount do
+		local offer = takeWeightedOffer(offers, random)
+		stock[offerKey(offer.ItemType, offer.ItemId)] = {
+			ItemType = offer.ItemType,
+			ItemId = offer.ItemId,
+			Stock = random:NextInteger(
+				MVPConfig.Village.MinimumStockPerOffer,
+				MVPConfig.Village.MaximumStockPerOffer
+			),
+		}
+	end
+	return { Stock = stock }
+end
+
+local function getStockEntry(state, itemType, itemId)
+	return state and state.Stock[offerKey(itemType, itemId)] or nil
+end
+
+local function isOutOfStock(state)
+	if not state then
+		return true
+	end
+	for _, entry in pairs(state.Stock) do
+		if entry.Stock > 0 then
+			return false
+		end
+	end
+	return true
 end
 
 local function ensureBillboard(model, root, shop)
@@ -77,7 +170,51 @@ local function ensureBillboard(model, root, shop)
 	stroke.Parent = label
 end
 
-local function buildInventory(player, shop)
+local function updateAvailability(model, root, shop, state)
+	local empty = isOutOfStock(state)
+	model:SetAttribute("ShopOutOfStock", empty)
+	local billboard = model:FindFirstChild("VillageShopLabel", true)
+	local label = billboard and billboard:FindFirstChildWhichIsA("TextLabel", true)
+	if label then
+		label.Text = empty and "SEM ESTOQUE" or shop.Label
+		label.TextColor3 = empty and Color3.fromRGB(210, 184, 130) or shop.Color
+		local labelStroke = label:FindFirstChildWhichIsA("UIStroke")
+		if labelStroke then
+			labelStroke.Color = label.TextColor3
+		end
+	end
+	local prompt = root:FindFirstChild("VillageShopPrompt") or root:FindFirstChild("SwordShopPrompt")
+	if prompt and prompt:IsA("ProximityPrompt") then
+		prompt.ActionText = empty and "Conversar" or "Negociar"
+		prompt.ObjectText = empty and (shop.DisplayName .. " — SEM ESTOQUE") or shop.DisplayName
+	end
+end
+
+local function validateStock(villager, itemType, itemId)
+	local state = activeVillagers[villager]
+	local entry = getStockEntry(state, itemType, itemId)
+	if not entry or entry.Stock <= 0 then
+		return nil, "Este aldeao esta sem estoque desse item. Explore outra ilha."
+	end
+	return entry
+end
+
+local function consumeStock(villager, itemType, itemId)
+	local state = activeVillagers[villager]
+	local entry = getStockEntry(state, itemType, itemId)
+	if not entry or entry.Stock <= 0 then
+		return false
+	end
+	entry.Stock -= 1
+	local shop = getShop(villager)
+	local root = getRoot(villager)
+	if shop and root then
+		updateAvailability(villager, root, shop, state)
+	end
+	return true
+end
+
+local function buildInventory(player, shop, state)
 	local swordsById = {}
 	for _, sword in ipairs(SwordProgressionService.GetShopInventory(player)) do
 		swordsById[sword.SwordId] = sword
@@ -85,6 +222,10 @@ local function buildInventory(player, shop)
 
 	local inventory = {}
 	for _, offer in ipairs(shop.Items) do
+		local stockEntry = getStockEntry(state, offer.ItemType, offer.ItemId)
+		if not stockEntry then
+			continue
+		end
 		if offer.ItemType == "Sword" then
 			local sword = swordsById[offer.ItemId]
 			if sword then
@@ -102,6 +243,7 @@ local function buildInventory(player, shop)
 					Color = sword.Color,
 					Owned = sword.Owned,
 					Equipped = sword.Equipped,
+					Stock = stockEntry.Stock,
 				})
 			end
 		elseif offer.ItemType == "Item" then
@@ -115,6 +257,7 @@ local function buildInventory(player, shop)
 					StatsText = string.format("Consumivel - maximo %d", item.MaximumStack),
 					Price = item.Price,
 					Color = item.Color,
+					Stock = stockEntry.Stock,
 				})
 			end
 		else
@@ -126,6 +269,7 @@ local function buildInventory(player, shop)
 				StatsText = offer.StatsText,
 				Price = offer.Price,
 				Color = offer.Color,
+				Stock = stockEntry.Stock,
 			})
 		end
 	end
@@ -135,18 +279,22 @@ end
 local function sendShop(player, message, success)
 	local villager = playerSessions[player]
 	local shop = getShop(villager)
-	if not shop then
+	local state = activeVillagers[villager]
+	if not shop or not state then
 		return
 	end
+	local inventory = buildInventory(player, shop, state)
+	local emptyStock = isOutOfStock(state)
 	villagerEvent:FireClient(player, {
 		action = "showShop",
 		shopId = shop.ShopId,
 		shopTitle = shop.DisplayName,
 		shopColor = shop.Color,
-		inventory = buildInventory(player, shop),
+		inventory = inventory,
 		coins = ScoreService.GetCoins(player),
-		message = message,
+		message = message or (emptyStock and "SEM ESTOQUE — explore outras ilhas para encontrar novas ofertas." or nil),
 		success = success,
+		emptyStock = emptyStock,
 	})
 end
 
@@ -231,7 +379,7 @@ local function purchaseService(player, itemId)
 	end
 	local paid = ScoreService.TrySpendCoins(player, offer.Price)
 	if not paid then
-		return false, "Moedas insuficientes."
+		return false, "🪙 Moedas insuficientes."
 	end
 	if not applyService(player, offer) then
 		ScoreService.RefundCoins(player, offer.Price, "VillageServiceRefund")
@@ -249,7 +397,7 @@ local function purchaseItem(player, itemId)
 	end
 	local paid, remaining = ScoreService.TrySpendCoins(player, definition.Price)
 	if not paid then
-		return false, "Moedas insuficientes."
+		return false, "🪙 Moedas insuficientes."
 	end
 	local granted, message = InventoryService.GrantItem(player, itemId, 1)
 	if not granted then
@@ -257,7 +405,7 @@ local function purchaseItem(player, itemId)
 		ScoreService.RefundCoins(player, definition.Price, "VillageRefund")
 		return false, message
 	end
-	return true, definition.DisplayName .. " comprado! Saldo: " .. tostring(remaining)
+	return true, definition.DisplayName .. " comprado! Saldo: 🪙 " .. tostring(remaining)
 end
 
 local function registerVillager(model)
@@ -270,7 +418,8 @@ local function registerVillager(model)
 		warn("[VillageShop] Aldeao invalido ou sem ShopId: " .. model:GetFullName())
 		return
 	end
-	activeVillagers[model] = true
+	local state = createStockState(model, shop)
+	activeVillagers[model] = state
 	model:SetAttribute("NoSwordDamage", true)
 	model:SetAttribute("Invulnerable", true)
 	ensureBillboard(model, root, shop)
@@ -286,8 +435,7 @@ local function registerVillager(model)
 		prompt.RequiresLineOfSight = false
 		prompt.Parent = root
 	end
-	prompt.ActionText = "Negociar"
-	prompt.ObjectText = shop.DisplayName
+	updateAvailability(model, root, shop, state)
 
 	prompt.Triggered:Connect(function(player)
 		if player.Parent == Players then
@@ -340,20 +488,46 @@ villagerEvent.OnServerEvent:Connect(function(player, data)
 			sendShop(player, "Este aldeao nao vende essa espada.", false)
 			return
 		end
+		local stock, stockMessage = validateStock(playerSessions[player], "Sword", itemId)
+		if not stock then
+			sendShop(player, stockMessage, false)
+			return
+		end
 		local success, message = SwordProgressionService.Purchase(player, itemId)
+		if success then
+			consumeStock(playerSessions[player], "Sword", itemId)
+		end
 		sendShop(player, message, success)
 	elseif data.action == "equipSword" then
-		if not VillageShopCatalog.FindItem(shop.ShopId, itemId, "Sword") then
+		if not VillageShopCatalog.FindItem(shop.ShopId, itemId, "Sword")
+			or not getStockEntry(activeVillagers[playerSessions[player]], "Sword", itemId)
+		then
 			sendShop(player, "Fale com o comerciante correto para equipar esta espada.", false)
 			return
 		end
 		local success, message = SwordProgressionService.Equip(player, itemId)
 		sendShop(player, message, success)
 	elseif data.action == "purchaseService" then
+		local stock, stockMessage = validateStock(playerSessions[player], "Service", itemId)
+		if not stock then
+			sendShop(player, stockMessage, false)
+			return
+		end
 		local success, message = purchaseService(player, itemId)
+		if success then
+			consumeStock(playerSessions[player], "Service", itemId)
+		end
 		sendShop(player, message, success)
 	elseif data.action == "purchaseItem" then
+		local stock, stockMessage = validateStock(playerSessions[player], "Item", itemId)
+		if not stock then
+			sendShop(player, stockMessage, false)
+			return
+		end
 		local success, message = purchaseItem(player, itemId)
+		if success then
+			consumeStock(playerSessions[player], "Item", itemId)
+		end
 		sendShop(player, message, success)
 	elseif data.action == "refreshShop" then
 		sendShop(player)

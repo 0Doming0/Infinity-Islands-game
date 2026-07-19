@@ -272,7 +272,7 @@ local function createRow(item, index)
 	stats.Position = UDim2.fromOffset(36, 66)
 	stats.Size = UDim2.new(1, -250, 0, 32)
 	stats.BackgroundTransparency = 1
-	stats.Text = item.StatsText or "Oferta da vila"
+	stats.Text = string.format("%s  •  Estoque: %d", item.StatsText or "Oferta da vila", item.Stock or 0)
 	stats.TextColor3 = Color3.fromRGB(115, 225, 255)
 	stats.Font = Enum.Font.GothamMedium
 	stats.TextSize = 14
@@ -303,6 +303,12 @@ local function createRow(item, index)
 			button.Active = false
 			villagerEvent:FireServer({ action = "equipSword", itemId = item.ItemId })
 		end)
+	elseif (item.Stock or 0) <= 0 then
+		button.Text = "SEM ESTOQUE"
+		button.BackgroundColor3 = Color3.fromRGB(64, 64, 72)
+		button.TextColor3 = Color3.fromRGB(165, 165, 175)
+		button.Active = false
+		button.AutoButtonColor = false
 	else
 		button.Text = string.format("COMPRAR  🪙 %d", item.Price or 0)
 		button.BackgroundColor3 = Color3.fromRGB(135, 82, 170)
@@ -331,7 +337,9 @@ local function showShop(data)
 	coinLabel.Text = "🪙 " .. tostring(data.coins or 0)
 	if data.message then
 		feedback.Text = data.message
-		feedback.TextColor3 = data.success and Color3.fromRGB(105, 255, 145) or Color3.fromRGB(255, 120, 120)
+		feedback.TextColor3 = data.success and Color3.fromRGB(105, 255, 145)
+			or data.emptyStock and Color3.fromRGB(232, 193, 105)
+			or Color3.fromRGB(255, 120, 120)
 		if data.success then
 			playPurchaseSound()
 		end

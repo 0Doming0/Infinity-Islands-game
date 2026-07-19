@@ -17,6 +17,7 @@ local definitions = {
 		Id = "RisingTide",
 		Title = "MARE FURIOSA",
 		Message = "A agua vai subir muito mais rapido!",
+		Color = Color3.fromRGB(100, 190, 255),
 		Duration = MVPConfig.Events.RisingTideDurationSeconds,
 		Start = function()
 			workspace:SetAttribute(MVPConfig.Water.EventMultiplierAttribute, MVPConfig.Events.RisingTideMultiplier)
@@ -27,8 +28,9 @@ local definitions = {
 	},
 	{
 		Id = "CoinRush",
-		Title = "CHUVA DE MOEDAS",
-		Message = "Todas as recompensas de moeda estao dobradas!",
+		Title = "🪙 CHUVA DE MOEDAS",
+		Message = "🪙 Todas as recompensas de moeda estao dobradas!",
+		Color = Color3.fromRGB(255, 211, 76),
 		Duration = MVPConfig.Events.CoinRushDurationSeconds,
 		Start = function()
 			workspace:SetAttribute("CoinRewardMultiplier", MVPConfig.Events.CoinRushMultiplier)
@@ -41,6 +43,7 @@ local definitions = {
 		Id = "MonsterHunt",
 		Title = "CACADA DOS MONSTROS",
 		Message = "Inimigos hostis conseguem perceber voce de mais longe!",
+		Color = Color3.fromRGB(255, 154, 78),
 		Duration = MVPConfig.Events.MonsterHuntDurationSeconds,
 		Start = function()
 			workspace:SetAttribute("MonsterHuntActive", true)
@@ -49,11 +52,25 @@ local definitions = {
 			workspace:SetAttribute("MonsterHuntActive", false)
 		end,
 	},
+	{
+		Id = "WildFury",
+		Title = "⚠ FURIA SELVAGEM",
+		Message = "Ate as criaturas pacificas se tornaram hostis!",
+		Color = Color3.fromRGB(255, 82, 82),
+		Duration = MVPConfig.Events.WildFuryDurationSeconds,
+		Start = function()
+			workspace:SetAttribute("AllMobsAggressive", true)
+		end,
+		Stop = function()
+			workspace:SetAttribute("AllMobsAggressive", false)
+		end,
+	},
 }
 
 workspace:SetAttribute(MVPConfig.Water.EventMultiplierAttribute, 1)
 workspace:SetAttribute("CoinRewardMultiplier", 1)
 workspace:SetAttribute("MonsterHuntActive", false)
+workspace:SetAttribute("AllMobsAggressive", false)
 
 local function chooseEvent()
 	local candidates = {}
@@ -76,6 +93,7 @@ local function runEvent(definition)
 		Id = definition.Id,
 		Title = definition.Title,
 		Message = definition.Message,
+		Color = definition.Color,
 		Duration = definition.Duration,
 	})
 	task.wait(definition.Duration)

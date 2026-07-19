@@ -35,6 +35,14 @@ color.Saturation = -0.04
 color.TintColor = Color3.fromRGB(235, 244, 255)
 color.Parent = Lighting
 
+local furyColor = Lighting:FindFirstChild("SkyDungeonWildFuryColor") or Instance.new("ColorCorrectionEffect")
+furyColor.Name = "SkyDungeonWildFuryColor"
+furyColor.Brightness = 0
+furyColor.Contrast = 0
+furyColor.Saturation = 0
+furyColor.TintColor = Color3.new(1, 1, 1)
+furyColor.Parent = Lighting
+
 local bloom = Lighting:FindFirstChild("SkyDungeonBloom") or Instance.new("BloomEffect")
 bloom.Name = "SkyDungeonBloom"
 bloom.Intensity = 0.24
@@ -114,6 +122,7 @@ end
 local function isDangerousWorldEvent()
 	return workspace:GetAttribute("ActiveWorldEvent") == "RisingTide"
 		or workspace:GetAttribute("ActiveWorldEvent") == "MonsterHunt"
+		or workspace:GetAttribute("ActiveWorldEvent") == "WildFury"
 end
 
 local ambientMusic
@@ -358,6 +367,7 @@ end
 
 workspace:GetAttributeChangedSignal("ActiveWorldEvent"):Connect(function()
 	local dangerous = isDangerousWorldEvent()
+	local wildFury = workspace:GetAttribute("ActiveWorldEvent") == "WildFury"
 	ambientDangerous = dangerous
 	tweenNatureVolume(0.8)
 	if ambientMusic then
@@ -368,4 +378,9 @@ workspace:GetAttributeChangedSignal("ActiveWorldEvent"):Connect(function()
 	if dangerMusic then
 		TweenService:Create(dangerMusic, TweenInfo.new(0.8), { Volume = dangerous and 0.34 or 0 }):Play()
 	end
+	TweenService:Create(furyColor, TweenInfo.new(0.8), {
+		Contrast = wildFury and 0.14 or 0,
+		Saturation = wildFury and -0.08 or 0,
+		TintColor = wildFury and Color3.fromRGB(255, 172, 172) or Color3.new(1, 1, 1),
+	}):Play()
 end)

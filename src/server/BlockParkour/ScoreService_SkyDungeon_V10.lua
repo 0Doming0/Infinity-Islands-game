@@ -11,6 +11,17 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 local PlayerDataService = require(script.Parent.PlayerDataService_SkyDungeon_V10)
 
+local coinRewardRemote = ReplicatedStorage:FindFirstChild("CoinReward")
+if coinRewardRemote and not coinRewardRemote:IsA("RemoteEvent") then
+	coinRewardRemote:Destroy()
+	coinRewardRemote = nil
+end
+if not coinRewardRemote then
+	coinRewardRemote = Instance.new("RemoteEvent")
+	coinRewardRemote.Name = "CoinReward"
+	coinRewardRemote.Parent = ReplicatedStorage
+end
+
 local DEFAULT_MULTIPLIER = 1
 local MIN_MULTIPLIER = 1
 local MAX_MULTIPLIER = 3
@@ -142,6 +153,11 @@ function ScoreService.AwardCoins(player, baseAmount, source)
 	player:SetAttribute("LastCoinSource", tostring(source or "Unknown"))
 	player:SetAttribute("LastCoinAward", awarded)
 	player:SetAttribute("LastCoinSerial", (player:GetAttribute("LastCoinSerial") or 0) + 1)
+	coinRewardRemote:FireClient(player, {
+		Amount = awarded,
+		Balance = balance,
+		Source = tostring(source or "Unknown"),
+	})
 	return awarded
 end
 

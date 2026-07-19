@@ -1171,6 +1171,9 @@ function Generator.Generate(parent, options)
 	end)
 	local monsterSpawnCount = 0
 	local chestSpawnCount = 0
+	-- Primeiro classifica e reserva o conteudo de todas as ilhas. O segundo
+	-- passe prioriza Elites, impedindo que mobs normais do mesmo round consumam
+	-- as vagas globais antes do desafio especial.
 	for _, islandModel in ipairs(generatedIslands) do
 		IslandTypeService.Classify(islandModel, {
 			ChunkIndex = chunkIndex,
@@ -1187,6 +1190,18 @@ function Generator.Generate(parent, options)
 		else
 			warn(string.format("[SkyDungeon] Falha ao criar baus em %s: %s", islandModel:GetFullName(), tostring(chestsOrError)))
 		end
+	end
+
+	local monsterIslands = table.clone(generatedIslands)
+	table.sort(monsterIslands, function(a, b)
+		local aElite = a:GetAttribute("IslandType") == "Elite"
+		local bElite = b:GetAttribute("IslandType") == "Elite"
+		if aElite ~= bElite then
+			return aElite
+		end
+		return (a:GetAttribute("TerrainId") or 0) < (b:GetAttribute("TerrainId") or 0)
+	end)
+	for _, islandModel in ipairs(monsterIslands) do
 		if islandModel:IsA("Model") and islandModel:GetAttribute("CanSpawnMonster") == true then
 			local freeCells = Generator.GetFreeCells(islandModel)
 			local success, spawnedOrError = pcall(MonsterSpawner.PopulateIsland, islandModel, freeCells, {

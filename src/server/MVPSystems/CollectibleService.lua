@@ -33,17 +33,18 @@ local CONFIG = {
 	RANDOM_SALT = 486187739,
 
 	ISLAND_COUNT = {
-		Small = 3,
-		Medium = 5,
-		Large = 7,
+		Small = 1,
+		Medium = 2,
+		Large = 3,
 	},
-	ISLAND_MIN_SPACING_STUDS = 7,
+	ISLAND_SPAWN_CHANCE = 0.58,
+	ISLAND_MIN_SPACING_STUDS = 12,
 
-	MAIN_ROUTE_CHANCE = 0.34,
-	BRANCH_ROUTE_CHANCE = 0.24,
-	ROUTE_MIN_PER_ROUND = 6,
-	ROUTE_MAX_PER_ROUND = 12,
-	ROUTE_MIN_SPACING_STUDS = 9,
+	MAIN_ROUTE_CHANCE = 0.12,
+	BRANCH_ROUTE_CHANCE = 0.08,
+	ROUTE_MIN_PER_ROUND = 2,
+	ROUTE_MAX_PER_ROUND = 5,
+	ROUTE_MIN_SPACING_STUDS = 14,
 }
 
 local DEFINITIONS = {
@@ -94,15 +95,17 @@ local function shuffle(random, source)
 	return result
 end
 
-local function chooseDefinition(random)
+local function chooseDefinition(random, preferValuable)
 	local totalWeight = 0
 	for _, definition in ipairs(DEFINITIONS) do
-		totalWeight += definition.Weight
+		local valueBias = preferValuable and (0.55 + definition.Coins * 0.28) or 1
+		totalWeight += definition.Weight * valueBias
 	end
 	local roll = random:NextNumber(0, totalWeight)
 	local accumulated = 0
 	for _, definition in ipairs(DEFINITIONS) do
-		accumulated += definition.Weight
+		local valueBias = preferValuable and (0.55 + definition.Coins * 0.28) or 1
+		accumulated += definition.Weight * valueBias
 		if roll <= accumulated then
 			return definition
 		end
@@ -198,6 +201,10 @@ local function populateIsland(island, random)
 	if island:GetAttribute("CanSpawnItem") ~= true then
 		return 0
 	end
+	if random:NextNumber() > CONFIG.ISLAND_SPAWN_CHANCE then
+		island:SetAttribute("ScoreCollectibleCount", 0)
+		return 0
+	end
 	local desiredCount = CONFIG.ISLAND_COUNT[island:GetAttribute("TerrainSize")] or 3
 	local freeCells = shuffle(random, Generator.GetFreeCells(island))
 	if #freeCells == 0 then
@@ -213,12 +220,13 @@ local function populateIsland(island, random)
 	folder.Parent = content
 	local selectedPositions = {}
 	local created = 0
+	local hasMonsters = island:FindFirstChild("MonsterSpawnPoints") ~= nil
 	for _, cell in ipairs(freeCells) do
 		if created >= desiredCount then
 			break
 		end
 		if isFarEnough(cell.SurfacePosition, selectedPositions, CONFIG.ISLAND_MIN_SPACING_STUDS) then
-			createCollectible(folder, cell.SurfacePosition, chooseDefinition(random), "Island")
+			createCollectible(folder, cell.SurfacePosition, chooseDefinition(random, hasMonsters), "Island")
 			addCollectibleMarker(island, cell)
 			table.insert(selectedPositions, cell.SurfacePosition)
 			created += 1
@@ -291,7 +299,8 @@ local function populateRoutes(chunk, random)
 
 	for _, part in ipairs(selectedParts) do
 		local surfacePosition = part.Position + Vector3.new(0, part.Size.Y / 2, 0)
-		createCollectible(folder, surfacePosition, chooseDefinition(random), "Route")
+		local optionalPath = part:GetAttribute("PathType") ~= "MainRoute"
+		createCollectible(folder, surfacePosition, chooseDefinition(random, optionalPath), "Route")
 	end
 	if #selectedParts == 0 then
 		folder:Destroy()

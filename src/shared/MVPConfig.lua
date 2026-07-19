@@ -43,6 +43,12 @@ local Config = {
 		RandomSalt = 73428767,
 		ShopTag = "ProceduralSwordVillager",
 		PromptDistance = 13,
+		EmptyStockChance = 0.25,
+		MinimumOfferTypes = 1,
+		MaximumOfferTypes = 2,
+		MinimumStockPerOffer = 1,
+		MaximumStockPerOffer = 2,
+		InventoryRandomSalt = 526133,
 	},
 
 	Difficulty = {
@@ -89,6 +95,7 @@ local Config = {
 		CoinRushDurationSeconds = 35,
 		CoinRushMultiplier = 2,
 		MonsterHuntDurationSeconds = 30,
+		WildFuryDurationSeconds = 35,
 	},
 
 	Atmosphere = {

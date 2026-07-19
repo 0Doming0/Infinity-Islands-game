@@ -40,7 +40,7 @@ local function nearestPlayer(position, range)
 end
 
 local function register(model)
-	if not model:IsA("Model") or states[model] or model:GetAttribute("UseCentralAI") ~= true then
+	if not model:IsA("Model") or states[model] then
 		return
 	end
 	local humanoid = model:FindFirstChildWhichIsA("Humanoid", true)
@@ -92,6 +92,10 @@ RunService.Heartbeat:Connect(function(dt)
 		if model:GetAttribute("CombatStunned") == true then
 			continue
 		end
+		local forceAggressive = workspace:GetAttribute("AllMobsAggressive") == true
+		if model:GetAttribute("UseCentralAI") ~= true and not forceAggressive then
+			continue
+		end
 
 		local eventHunt = workspace:GetAttribute("MonsterHuntActive") == true
 		local aggro = tonumber(model:GetAttribute("AggroRange")) or DEFAULT_AGGRO_RANGE
@@ -99,7 +103,7 @@ RunService.Heartbeat:Connect(function(dt)
 			aggro *= 1.45
 		end
 		local targetHumanoid, targetRoot, distance
-		if model:GetAttribute("Peaceful") ~= true then
+		if forceAggressive or model:GetAttribute("Peaceful") ~= true then
 			targetHumanoid, targetRoot, distance = nearestPlayer(root.Position, aggro)
 		end
 		local leash = tonumber(model:GetAttribute("LeashRange")) or DEFAULT_LEASH_RANGE

@@ -48,6 +48,9 @@ local MonsterSpawner = {}
 
 local CONFIG = {
 	MAX_MONSTERS = 45,
+	-- Mantem vagas globais para que ilhas Elite nao fiquem vazias quando os
+	-- rounds anteriores ja preencheram o mapa com grupos de mobs normais.
+	ELITE_RESERVED_SLOTS = 3,
 	DEFAULT_SPAWN_CHANCE = 0.72,
 	DEFAULT_SPAWN_WEIGHT = 10,
 	DEFAULT_GROUP_MIN = 2,
@@ -92,6 +95,13 @@ end
 local function numberAttribute(instance, name, defaultValue)
 	local value = instance:GetAttribute(name)
 	return typeof(value) == "number" and value or defaultValue
+end
+
+local function getSpawnLimit(isElite)
+	if isElite then
+		return CONFIG.MAX_MONSTERS
+	end
+	return math.max(0, CONFIG.MAX_MONSTERS - CONFIG.ELITE_RESERVED_SLOTS)
 end
 
 local function getRoot(model)
@@ -423,7 +433,8 @@ local function createMarker(pointsFolder, cellRecord, index, template, spawnMode
 end
 
 local function spawnClone(template, parent, island, cellRecord, marker, random, spawnMode)
-	if monsterCount >= CONFIG.MAX_MONSTERS then
+	local elite = island:GetAttribute("IslandType") == "Elite"
+	if monsterCount >= getSpawnLimit(elite) then
 		return false
 	end
 
@@ -451,7 +462,6 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 		1,
 		MVPConfig.Difficulty.MaximumTier
 	)
-	local elite = island:GetAttribute("IslandType") == "Elite"
 	local healthMultiplier = 1 + (difficultyTier - 1) * MVPConfig.Difficulty.HealthPerTier
 	local damageMultiplier = 1 + (difficultyTier - 1) * MVPConfig.Difficulty.DamagePerTier
 	local rewardMultiplier = 1 + (difficultyTier - 1) * MVPConfig.Difficulty.RewardPerTier
@@ -709,11 +719,12 @@ function MonsterSpawner.PopulateIsland(island, freeCells, context)
 	assert(typeof(freeCells) == "table", "[MonsterSpawner] freeCells precisa ser tabela.")
 	context = context or {}
 
+	local eliteIsland = island:GetAttribute("IslandType") == "Elite"
 	if
 		island:GetAttribute("CanSpawnMonster") ~= true
 		or island:GetAttribute("HasBoss") == true
 		or island:FindFirstChild("MonsterSpawnPoints")
-		or monsterCount >= CONFIG.MAX_MONSTERS
+		or monsterCount >= getSpawnLimit(eliteIsland)
 	then
 		return 0
 	end
@@ -734,7 +745,6 @@ function MonsterSpawner.PopulateIsland(island, freeCells, context)
 	local baseSeed = typeof(islandSeed) == "number" and islandSeed or (context.RoundSeed or 1)
 	local seed = normalizedSeed(baseSeed + terrainId * 7907 + CONFIG.RANDOM_SALT)
 	local random = Random.new(seed)
-	local eliteIsland = island:GetAttribute("IslandType") == "Elite"
 	local template = chooseWeightedTemplate(random, templates, islandSize)
 	if not template and eliteIsland then
 		-- Uma ilha Elite nunca deve ficar vazia apenas porque todos os modelos
@@ -753,9 +763,11 @@ function MonsterSpawner.PopulateIsland(island, freeCells, context)
 
 	local amount, spawnMode, groupMinimum = getSpawnAmount(template, random)
 	if eliteIsland then
-		amount, spawnMode, groupMinimum = 1, "Elite", 1
+		-- Elite e uma classificacao do monstro/ilha, nao um SpawnMode. Manter um
+		-- modo valido evita quebrar consumidores que aceitam apenas Solo/Group/Boss.
+		amount, spawnMode, groupMinimum = 1, "Solo", 1
 	end
-	amount = math.min(amount, CONFIG.MAX_MONSTERS - monsterCount)
+	amount = math.min(amount, getSpawnLimit(eliteIsland) - monsterCount)
 	local spacing = spawnMode == "Group"
 		and math.max(0, numberAttribute(template, "GroupSpacing", CONFIG.DEFAULT_GROUP_SPACING))
 		or 0

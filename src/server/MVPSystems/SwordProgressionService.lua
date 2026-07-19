@@ -268,7 +268,7 @@ function SwordProgressionService.Purchase(player, swordId)
 	end
 	local paid, remaining = ScoreService.TrySpendCoins(player, definition.Price)
 	if not paid then
-		return false, "Moedas insuficientes.", remaining
+		return false, "🪙 Moedas insuficientes.", remaining
 	end
 	PlayerDataService.GrantSword(player, swordId)
 	task.spawn(PlayerDataService.Save, player, false)
