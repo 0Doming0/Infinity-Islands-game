@@ -40,6 +40,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ScoreService = require(script.Parent.ScoreService_SkyDungeon_V10)
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 local InventoryService = require(script.Parent.Parent.MVPSystems:WaitForChild("InventoryService"))
+local ServerScriptService = game:GetService("ServerScriptService")
 
 ScoreService.Start()
 InventoryService.Start()
@@ -438,6 +439,13 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 		return false
 	end
 
+    local AnimeOutline = require(
+	    ServerScriptService.MVPSystems.AnimeOutline
+    )
+	local MobDamageFeedback = require(
+	    ServerScriptService.MVPSystems.MobDamageFeedback
+    )
+
 	local clone = template:Clone()
 	local root = getRoot(clone)
 	local humanoid = getHumanoid(clone)
@@ -590,6 +598,17 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 	end)
 
 	clone.Parent = parent
+	if not elite then
+	    AnimeOutline.Apply(clone)
+	else
+        AnimeOutline.Apply(mob, {
+	        OutlineColor = Color3.fromRGB(255, 210, 70),
+	        OutlineTransparency = 0.05,
+        })
+	end 
+
+    MobDamageFeedback.Bind(mob)
+
 	clone.AncestryChanged:Connect(function(_, newParent)
 		if not newParent then
 			unregisterMonster(clone)

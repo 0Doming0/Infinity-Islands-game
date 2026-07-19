@@ -106,7 +106,7 @@ local function getCenterPosition()
 		0.5,
 		0,
 		0.5,
-		-math.floor(cardHeight / 2) - TOP_MARGIN
+		-math.floor(cardHeight / 2) + TOP_MARGIN
 	)
 end
 
