@@ -181,21 +181,41 @@ local function findVisualTemplate(definition)
 end
 
 local function prepareVisual(instance)
-	if instance:IsA("BasePart") then
-		instance.Anchored = true
-		instance.CanCollide = false
-		instance.CanTouch = false
-		instance.CanQuery = false
+	local rootPart
+
+	if instance:IsA("Model") then
+		rootPart = instance.PrimaryPart
+			or instance:FindFirstChild("HumanoidRootPart", true)
+			or instance:FindFirstChild("RootPart", true)
+			or instance:FindFirstChildWhichIsA("BasePart", true)
+	elseif instance:IsA("BasePart") then
+		rootPart = instance
 	end
+
 	for _, descendant in ipairs(instance:GetDescendants()) do
 		if descendant:IsA("BaseScript") then
 			descendant.Disabled = true
+
 		elseif descendant:IsA("BasePart") then
-			descendant.Anchored = true
 			descendant.CanCollide = false
 			descendant.CanTouch = false
 			descendant.CanQuery = false
+			descendant.Massless = descendant ~= rootPart
+
+			-- Somente a peça raiz deve permanecer ancorada.
+			descendant.Anchored = descendant == rootPart
 		end
+	end
+
+	if instance:IsA("BasePart") then
+		instance.CanCollide = false
+		instance.CanTouch = false
+		instance.CanQuery = false
+		instance.Anchored = true
+	end
+
+	if instance:IsA("Model") and rootPart then
+		instance.PrimaryPart = rootPart
 	end
 end
 
@@ -227,23 +247,88 @@ local function hideRuntime(runtime)
 end
 
 local function playCollectibleAnimation(runtime)
-	local controller = runtime:FindFirstChildWhichIsA("AnimationController", true)
-	local animator = controller and controller:FindFirstChildWhichIsA("Animator", true)
-	local animation = runtime:FindFirstChild("IdleAnimation", true)
-
-	if not animator or not animation or not animation:IsA("Animation") then
-		return
+	if not runtime or not runtime:IsDescendantOf(workspace) then
+		warn("[CollectibleAnimation] Runtime inválido ou fora do Workspace")
+		return nil
 	end
 
-	local success, track = pcall(function()
+	local controller = runtime:FindFirstChildWhichIsA(
+		"AnimationController",
+		true
+	)
+
+	if not controller then
+		warn(
+			"[CollectibleAnimation] AnimationController não encontrado:",
+			runtime:GetFullName()
+		)
+		return nil
+	end
+
+	local animator = controller:FindFirstChildWhichIsA("Animator", true)
+
+	if not animator then
+		animator = Instance.new("Animator")
+		animator.Name = "Animator"
+		animator.Parent = controller
+	end
+
+	local animation = runtime:FindFirstChild("MainAnimation", true)
+
+	if not animation or not animation:IsA("Animation") then
+		warn(
+			"[CollectibleAnimation] MainAnimation inválida:",
+			runtime:GetFullName()
+		)
+		return nil
+	end
+
+	if animation.AnimationId == "" then
+		warn("[CollectibleAnimation] AnimationId vazio")
+		return nil
+	end
+
+	local success, trackOrError = pcall(function()
 		return animator:LoadAnimation(animation)
 	end)
 
-	if success then
-		track.Looped = true
-		track.Priority = Enum.AnimationPriority.Idle
-		track:Play(0.15)
+	if not success then
+		warn(
+			"[CollectibleAnimation] Erro ao carregar:",
+			trackOrError
+		)
+		return nil
 	end
+
+	local track = trackOrError
+
+	track.Looped = true
+	track.Priority = Enum.AnimationPriority.Action
+	track:Play(0.1, 1, 1)
+
+	task.delay(1, function()
+		if not track then
+			return
+		end
+
+		print(
+			"[CollectibleAnimation]",
+			"modelo =", runtime:GetFullName(),
+			"id =", animation.AnimationId,
+			"length =", track.Length,
+			"playing =", track.IsPlaying,
+			"weight =", track.WeightCurrent
+		)
+
+		if track.Length <= 0 then
+			warn(
+				"[CollectibleAnimation] A animação foi carregada,",
+				"mas continua com duração 0."
+			)
+		end
+	end)
+
+	return track
 end
 
 local function breakCollectible(part, entry)
@@ -276,7 +361,7 @@ local function createCollectible(parent, surfacePosition, definition, sourceName
 	runtime.Name = definition.Id
 
     runtime.Parent = parent
-    playCollectibleAnimation(runtime)
+    
 
 	local template = findVisualTemplate(definition)
 	local visual
@@ -336,7 +421,7 @@ local function createCollectible(parent, surfacePosition, definition, sourceName
 		part:SetAttribute("TutorialTargetUserId", targetUserId)
 	end
 	runtime.Parent = parent
-
+	playCollectibleAnimation(runtime)
 	local particleColor = template and template:GetAttribute("ParticleColor")
 	local collectSoundId = template and template:GetAttribute("CollectSoundId")
 	active[part] = {
