@@ -251,6 +251,11 @@ end
 
 local function spawnChest(parent, island, record, index, isMimic, coinReward, random, normalTemplate, mimicTemplate, tier)
 	local chest = normalTemplate:Clone()
+
+	local AnimeOutline = require(
+	    ServerScriptService.MVPSystems.AnimeOutline
+    )
+
 	local root = getRoot(chest, false)
 	if not root then
 		chest:Destroy()
@@ -262,6 +267,7 @@ local function spawnChest(parent, island, record, index, isMimic, coinReward, ra
 	chest:SetAttribute("IsTreasureChest", true)
 	chest:SetAttribute("Opened", false)
 	chest.Parent = parent
+	AnimeOutline.Apply(chest)
 	local yaw = random:NextNumber(0, math.pi * 2)
 	alignBottom(chest, record.SurfacePosition, yaw)
 	local prompt = Instance.new("ProximityPrompt")

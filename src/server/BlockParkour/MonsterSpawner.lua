@@ -30,6 +30,8 @@
 	DropItemId          String   ""
 	Peaceful            Boolean  false
 	UseCentralAI        Boolean  true
+	SlimeVariant        String   "Random", "Green", "Blue", "Red" ou "Golden"
+	KeepEmbeddedAIScripts Boolean false
 ]]
 
 local Debris = game:GetService("Debris")
@@ -41,6 +43,8 @@ local ScoreService = require(script.Parent.ScoreService_SkyDungeon_V10)
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 local InventoryService = require(script.Parent.Parent.MVPSystems:WaitForChild("InventoryService"))
 local ServerScriptService = game:GetService("ServerScriptService")
+local SlimeController = require(script.Parent.SlimeController)
+local SlimeVariants = require(script.Parent.SlimeVariants)
 
 ScoreService.Start()
 InventoryService.Start()
@@ -367,6 +371,9 @@ local function getRecordedDamager(entry, model, humanoid)
 	end
 
 	local userId = model:GetAttribute("LastDamagedByUserId")
+	if typeof(userId) ~= "number" then
+		userId = model:GetAttribute("LastHitUserId")
+	end
 	if typeof(userId) == "number" then
 		return Players:GetPlayerByUserId(userId)
 	end
@@ -411,6 +418,7 @@ local function createLoot(parent, position, itemId)
 end
 
 local function unregisterMonster(model)
+	SlimeController.Stop(model)
 	if activeMonsters[model] then
 		activeMonsters[model] = nil
 		monsterCount = math.max(0, monsterCount - 1)
@@ -433,7 +441,7 @@ local function createMarker(pointsFolder, cellRecord, index, template, spawnMode
 	return marker
 end
 
-local function spawnClone(template, parent, island, cellRecord, marker, random, spawnMode)
+local function spawnClone(template, parent, island, cellRecord, marker, random, spawnMode, selectedSlimeVariant)
 	local elite = island:GetAttribute("IslandType") == "Elite"
 	if monsterCount >= getSpawnLimit(elite) then
 		return false
@@ -455,8 +463,18 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 	end
 
 	clone.PrimaryPart = root
-	local monsterId = template:GetAttribute("MonsterId") or template.Name
-	local displayName = template:GetAttribute("DisplayName") or monsterId
+	local slimeDefinition, slimeVariant = SlimeVariants.ConfigureClone(
+		clone,
+		template,
+		random,
+		selectedSlimeVariant
+	)
+	local monsterId = slimeDefinition and slimeDefinition.MonsterId
+		or template:GetAttribute("MonsterId")
+		or template.Name
+	local displayName = slimeDefinition and slimeDefinition.DisplayName
+		or template:GetAttribute("DisplayName")
+		or monsterId
 	local maxHealth = math.max(1, numberAttribute(template, "MaxHealth", CONFIG.DEFAULT_MAX_HEALTH))
 	local scoreValue = math.max(0, numberAttribute(template, "ScoreValue", CONFIG.DEFAULT_SCORE_VALUE))
 	if template:GetAttribute("RewardScaleVersion") ~= 2 and scoreValue > 10 then
@@ -464,6 +482,12 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 	end
 	local coinValue = math.max(0, numberAttribute(template, "CoinValue", CONFIG.DEFAULT_COIN_VALUE))
 	local attackDamage = math.max(0, numberAttribute(template, "AttackDamage", CONFIG.DEFAULT_ATTACK_DAMAGE))
+	if slimeDefinition then
+		maxHealth *= slimeDefinition.HealthMultiplier
+		scoreValue *= slimeDefinition.ScoreMultiplier
+		coinValue *= slimeDefinition.CoinMultiplier
+		attackDamage = slimeDefinition.AttackDamage or attackDamage
+	end
 	local roundIndex = tonumber(island:GetAttribute("RoundIndex")) or 1
 	local difficultyTier = math.clamp(
 		math.floor((roundIndex - 1) / MVPConfig.Difficulty.RoundsPerTier) + 1,
@@ -511,19 +535,37 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 	clone:SetAttribute("DifficultyTier", difficultyTier)
 	clone:SetAttribute("IsElite", elite)
 	clone:SetAttribute("HomePosition", cellRecord.SurfacePosition)
-	clone:SetAttribute("Peaceful", not elite and template:GetAttribute("Peaceful") == true)
-	local useCentralAI = template:GetAttribute("UseCentralAI") == true
+	local initiallyPeaceful = template:GetAttribute("Peaceful") == true
+	if slimeDefinition then
+		initiallyPeaceful = slimeDefinition.InitiallyPeaceful
+	end
+	clone:SetAttribute("Peaceful", not elite and initiallyPeaceful)
+	local useCentralAI = slimeDefinition ~= nil
+		or template:GetAttribute("UseCentralAI") == true
 		or (elite and template:GetAttribute("UseCustomAI") ~= true)
 	clone:SetAttribute("UseCentralAI", useCentralAI)
 	clone:SetAttribute("SpawnSurfacePosition", cellRecord.SurfacePosition)
 	clone:SetAttribute("SpawnGridX", cellRecord.Cell.X)
 	clone:SetAttribute("SpawnGridY", cellRecord.Cell.Y)
 	clone:SetAttribute("SpawnGridZ", cellRecord.Cell.Z)
+	if slimeVariant then
+		marker:SetAttribute("SlimeVariant", slimeVariant)
+		marker:SetAttribute("MonsterId", monsterId)
+	end
 	CollectionService:AddTag(clone, "CombatTarget")
 
 	for _, descendant in ipairs(clone:GetDescendants()) do
 		if descendant:IsA("BaseScript") and useCentralAI then
-			descendant.Disabled = true
+			if
+				not slimeDefinition
+				or (
+					template:GetAttribute("KeepEmbeddedAIScripts") ~= true
+					and descendant.Name ~= "Animate"
+					and descendant:GetAttribute("AllowWithSlimeController") ~= true
+				)
+			then
+				descendant.Disabled = true
+			end
 		elseif descendant:IsA("BasePart") then
 			descendant.Anchored = false
 			pcall(function()
@@ -555,9 +597,13 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 		CoinValue = coinValue,
 		DropChance = math.clamp(numberAttribute(template, "DropChance", CONFIG.DEFAULT_DROP_CHANCE), 0, 1),
 		DropItemId = template:GetAttribute("DropItemId") or "",
-		DeathParticleColor = template:GetAttribute("DeathParticleColor"),
+		DeathParticleColor = clone:GetAttribute("DeathParticleColor") or template:GetAttribute("DeathParticleColor"),
 		LastDamager = nil,
+		SlimeDefinition = slimeDefinition and table.clone(slimeDefinition) or nil,
 	}
+	if entry.SlimeDefinition then
+		entry.SlimeDefinition.AttackDamage = attackDamage
+	end
 	activeMonsters[clone] = entry
 	monsterCount += 1
 
@@ -585,12 +631,17 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 		if root.Parent then
 			createDeathParticles(root, entry.DeathParticleColor)
 		end
-		if root.Parent and entry.DropItemId ~= "" and random:NextNumber() <= entry.DropChance and island.Parent then
-			local lootFolder = island:FindFirstChild("MVPLoot")
+		if
+			root.Parent
+			and entry.DropItemId ~= ""
+			and random:NextNumber() <= entry.DropChance
+			and entry.Island.Parent
+		then
+			local lootFolder = entry.Island:FindFirstChild("MVPLoot")
 			if not lootFolder then
 				lootFolder = Instance.new("Folder")
 				lootFolder.Name = "MVPLoot"
-				lootFolder.Parent = island
+				lootFolder.Parent = entry.Island
 			end
 			createLoot(lootFolder, root.Position, entry.DropItemId)
 		end
@@ -598,6 +649,21 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 	end)
 
 	clone.Parent = parent
+	if entry.SlimeDefinition then
+		SlimeController.Start(entry, entry.SlimeDefinition, random, {
+			OnTeleported = function(destinationIsland)
+				entry.Island = destinationIsland
+			end,
+			OnExpired = function()
+				if activeMonsters[clone] then
+					unregisterMonster(clone)
+				end
+				if clone.Parent then
+					clone:Destroy()
+				end
+			end,
+		})
+	end
 	if not elite then
 	    AnimeOutline.Apply(clone)
 	else
@@ -607,7 +673,7 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
         })
 	end 
 
-    MobDamageFeedback.Bind(clone)
+	MobDamageFeedback.Bind(clone)
 
 	clone.AncestryChanged:Connect(function(_, newParent)
 		if not newParent then
@@ -737,6 +803,7 @@ function MonsterSpawner.PopulateIsland(island, freeCells, context)
 	assert(island and island:IsA("Model"), "[MonsterSpawner] Ilha invalida.")
 	assert(typeof(freeCells) == "table", "[MonsterSpawner] freeCells precisa ser tabela.")
 	context = context or {}
+	SlimeController.RegisterIsland(island, freeCells)
 
 	local eliteIsland = island:GetAttribute("IslandType") == "Elite"
 	if
@@ -780,7 +847,14 @@ function MonsterSpawner.PopulateIsland(island, freeCells, context)
 		return 0
 	end
 
+	local selectedSlimeVariant = SlimeVariants.IsSlime(template)
+		and SlimeVariants.SelectVariant(template, random, { DisallowGolden = eliteIsland })
+		or nil
 	local amount, spawnMode, groupMinimum = getSpawnAmount(template, random)
+	if selectedSlimeVariant == "Golden" then
+		-- O dourado e um evento raro Solo, mas nao e Boss e nao bloqueia a ilha.
+		amount, spawnMode, groupMinimum = 1, "Solo", 1
+	end
 	if eliteIsland then
 		-- Elite e uma classificacao do monstro/ilha, nao um SpawnMode. Manter um
 		-- modo valido evita quebrar consumidores que aceitam apenas Solo/Group/Boss.
@@ -811,19 +885,32 @@ function MonsterSpawner.PopulateIsland(island, freeCells, context)
 	pointsFolder.Name = "MonsterSpawnPoints"
 	pointsFolder:SetAttribute("SpawnMode", spawnMode)
 	pointsFolder:SetAttribute("MonsterId", template:GetAttribute("MonsterId") or template.Name)
+	pointsFolder:SetAttribute("SlimeVariant", selectedSlimeVariant)
 	pointsFolder.Parent = island
 
 	local monsterFolder = Instance.new("Folder")
 	monsterFolder.Name = spawnMode == "Boss" and "MVPBoss" or "MVPMonsters"
 	monsterFolder:SetAttribute("SpawnMode", spawnMode)
 	monsterFolder:SetAttribute("MonsterId", template:GetAttribute("MonsterId") or template.Name)
+	monsterFolder:SetAttribute("SlimeVariant", selectedSlimeVariant)
 	monsterFolder.Parent = island
 
 	local spawned = 0
 	for index, cellRecord in ipairs(selectedCells) do
 		local marker = createMarker(pointsFolder, cellRecord, index, template, spawnMode)
 		local monsterSeed = normalizedSeed(seed + index * 101)
-		if spawnClone(template, monsterFolder, island, cellRecord, marker, Random.new(monsterSeed), spawnMode) then
+		if
+			spawnClone(
+				template,
+				monsterFolder,
+				island,
+				cellRecord,
+				marker,
+				Random.new(monsterSeed),
+				spawnMode,
+				selectedSlimeVariant
+			)
+		then
 			spawned += 1
 		else
 			marker:Destroy()
