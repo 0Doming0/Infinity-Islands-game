@@ -289,7 +289,7 @@ local function playCollectibleAnimation(runtime)
 	end
 
 	local success, trackOrError = pcall(function()
-		return animator:LoadAnimation(animation)
+		return controller:LoadAnimation(animation)
 	end)
 
 	if not success then
@@ -362,7 +362,9 @@ local function createCollectible(parent, surfacePosition, definition, sourceName
 
     runtime.Parent = parent
     
-
+	local AnimeOutline = require(
+	    ServerScriptService.MVPSystems.AnimeOutline
+    )
 	local template = findVisualTemplate(definition)
 	local visual
 	if template then
@@ -422,6 +424,7 @@ local function createCollectible(parent, surfacePosition, definition, sourceName
 	end
 	runtime.Parent = parent
 	playCollectibleAnimation(runtime)
+	AnimeOutline.Apply(runtime)
 	local particleColor = template and template:GetAttribute("ParticleColor")
 	local collectSoundId = template and template:GetAttribute("CollectSoundId")
 	active[part] = {

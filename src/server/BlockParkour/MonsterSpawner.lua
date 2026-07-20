@@ -601,13 +601,13 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 	if not elite then
 	    AnimeOutline.Apply(clone)
 	else
-        AnimeOutline.Apply(mob, {
+        AnimeOutline.Apply(clone, {
 	        OutlineColor = Color3.fromRGB(255, 210, 70),
 	        OutlineTransparency = 0.05,
         })
 	end 
 
-    MobDamageFeedback.Bind(mob)
+    MobDamageFeedback.Bind(clone)
 
 	clone.AncestryChanged:Connect(function(_, newParent)
 		if not newParent then
