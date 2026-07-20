@@ -288,6 +288,10 @@ local function addTarget(list, seen, player, character, attackerRoot, model, hum
 	if model:GetAttribute("Invulnerable") == true or model:GetAttribute("NoSwordDamage") == true then
 		return
 	end
+	local tutorialTargetUserId = model:GetAttribute("TutorialTargetUserId")
+	if typeof(tutorialTargetUserId) == "number" and tutorialTargetUserId ~= player.UserId then
+		return
+	end
 	local distance = (root.Position - attackerRoot.Position).Magnitude
 	if distance > Config.MaxHitboxDimension then
 		return

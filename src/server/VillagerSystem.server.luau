@@ -17,6 +17,7 @@ local SwordCatalog = require(ReplicatedStorage:WaitForChild("SwordCatalog"))
 local SwordProgressionService = require(script.Parent.MVPSystems:WaitForChild("SwordProgressionService"))
 local InventoryService = require(script.Parent.MVPSystems:WaitForChild("InventoryService"))
 local ScoreService = require(script.Parent.BlockParkour:WaitForChild("ScoreService_SkyDungeon_V10"))
+local CURRENCY_SYMBOL = MVPConfig.Currency.Symbol
 
 local SHOP_TAG = MVPConfig.Village.ShopTag
 local MAX_SESSION_DISTANCE = MVPConfig.Village.PromptDistance + 4
@@ -379,7 +380,7 @@ local function purchaseService(player, itemId)
 	end
 	local paid = ScoreService.TrySpendCoins(player, offer.Price)
 	if not paid then
-		return false, "🪙 Moedas insuficientes."
+		return false, CURRENCY_SYMBOL .. " Moedas insuficientes."
 	end
 	if not applyService(player, offer) then
 		ScoreService.RefundCoins(player, offer.Price, "VillageServiceRefund")
@@ -397,7 +398,7 @@ local function purchaseItem(player, itemId)
 	end
 	local paid, remaining = ScoreService.TrySpendCoins(player, definition.Price)
 	if not paid then
-		return false, "🪙 Moedas insuficientes."
+		return false, CURRENCY_SYMBOL .. " Moedas insuficientes."
 	end
 	local granted, message = InventoryService.GrantItem(player, itemId, 1)
 	if not granted then
@@ -405,7 +406,7 @@ local function purchaseItem(player, itemId)
 		ScoreService.RefundCoins(player, definition.Price, "VillageRefund")
 		return false, message
 	end
-	return true, definition.DisplayName .. " comprado! Saldo: 🪙 " .. tostring(remaining)
+	return true, definition.DisplayName .. " comprado! Saldo: " .. CURRENCY_SYMBOL .. " " .. tostring(remaining)
 end
 
 local function registerVillager(model)

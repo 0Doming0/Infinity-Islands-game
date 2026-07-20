@@ -229,7 +229,9 @@ function DamageService.ApplySwordHit(attacker, attackerRoot, target, attack)
 	model:SetAttribute("LastSwordHitAt", workspace:GetServerTimeNow())
 
 	humanoid:TakeDamage(attack.Damage)
-	applyKnockback(attackerRoot, model, humanoid, root, attack)
+	if model:GetAttribute("NoKnockback") ~= true then
+		applyKnockback(attackerRoot, model, humanoid, root, attack)
+	end
 	createImpact(
 		root.Position + Vector3.new(0, math.max(0.5, root.Size.Y * 0.35), 0),
 		attack.Heavy and Color3.fromRGB(255, 120, 55) or Color3.fromRGB(255, 235, 170),

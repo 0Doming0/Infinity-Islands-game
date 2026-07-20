@@ -12,6 +12,7 @@ local ServerStorage = game:GetService("ServerStorage")
 
 local Catalog = require(ReplicatedStorage:WaitForChild("SwordCatalog"))
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
+local CURRENCY_SYMBOL = MVPConfig.Currency.Symbol
 local BlockParkour = script.Parent.Parent:WaitForChild("BlockParkour")
 local PlayerDataService = require(BlockParkour:WaitForChild("PlayerDataService_SkyDungeon_V10"))
 local ScoreService = require(BlockParkour:WaitForChild("ScoreService_SkyDungeon_V10"))
@@ -268,7 +269,7 @@ function SwordProgressionService.Purchase(player, swordId)
 	end
 	local paid, remaining = ScoreService.TrySpendCoins(player, definition.Price)
 	if not paid then
-		return false, "🪙 Moedas insuficientes.", remaining
+		return false, CURRENCY_SYMBOL .. " Moedas insuficientes.", remaining
 	end
 	PlayerDataService.GrantSword(player, swordId)
 	task.spawn(PlayerDataService.Save, player, false)

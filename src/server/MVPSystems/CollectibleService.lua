@@ -8,6 +8,7 @@ local CollectionService = game:GetService("CollectionService")
 local Debris = game:GetService("Debris")
 local Players = game:GetService("Players")
 local ServerScriptService = game:GetService("ServerScriptService")
+local ServerStorage = game:GetService("ServerStorage")
 
 local generatorModule = script.Parent:FindFirstChild("Generator_SkyDungeon_V10_Deterministic")
 if not generatorModule then
@@ -80,6 +81,10 @@ local DEFINITIONS = {
 local CollectibleService = {}
 local started = false
 local active = {}
+local templateCache = {}
+local warnedTemplates = {}
+
+local DEFAULT_COLLECT_SOUND_ID = "rbxasset://sounds/electronicpingshort.wav"
 
 local function normalizedSeed(value)
 	local seed = math.floor(math.abs(tonumber(value) or 1)) % 2147483647
@@ -122,12 +127,132 @@ local function isFarEnough(position, selectedPositions, minimumDistance)
 	return true
 end
 
-local function breakCollectible(part, definition)
+local function warnTemplate(definition, message)
+	if warnedTemplates[definition.Id] then
+		return
+	end
+	warnedTemplates[definition.Id] = true
+	warn(string.format("[CollectibleService] %s: %s; usando visual de fallback.", definition.Id, message))
+end
+
+local function hasBasePart(instance)
+	return instance:IsA("BasePart") or instance:FindFirstChildWhichIsA("BasePart", true) ~= nil
+end
+
+local function findVisualTemplate(definition)
+	local cached = templateCache[definition.Id]
+	if cached ~= nil then
+		return cached or nil
+	end
+
+	local assets = ServerStorage:FindFirstChild("MVPAssets")
+	local folder = assets and assets:FindFirstChild("Collectibles")
+	if not folder or not folder:IsA("Folder") then
+		templateCache[definition.Id] = false
+		return nil
+	end
+
+	local byName
+	for _, candidate in ipairs(folder:GetChildren()) do
+		if candidate:GetAttribute("CollectibleId") == definition.Id then
+			byName = candidate
+			break
+		elseif candidate.Name == definition.Id then
+			byName = candidate
+		end
+	end
+
+	if not byName then
+		templateCache[definition.Id] = false
+		return nil
+	end
+	if byName:GetAttribute("Enabled") == false then
+		templateCache[definition.Id] = false
+		return nil
+	end
+	if not (byName:IsA("Model") or byName:IsA("BasePart")) or not hasBasePart(byName) then
+		warnTemplate(definition, "o template precisa ser Model ou BasePart e conter ao menos uma BasePart")
+		templateCache[definition.Id] = false
+		return nil
+	end
+
+	templateCache[definition.Id] = byName
+	return byName
+end
+
+local function prepareVisual(instance)
+	if instance:IsA("BasePart") then
+		instance.Anchored = true
+		instance.CanCollide = false
+		instance.CanTouch = false
+		instance.CanQuery = false
+	end
+	for _, descendant in ipairs(instance:GetDescendants()) do
+		if descendant:IsA("BaseScript") then
+			descendant.Disabled = true
+		elseif descendant:IsA("BasePart") then
+			descendant.Anchored = true
+			descendant.CanCollide = false
+			descendant.CanTouch = false
+			descendant.CanQuery = false
+		end
+	end
+end
+
+local function createFallbackVisual(definition)
+	local part = Instance.new("Part")
+	part.Name = "Visual"
+	part.Size = definition.Size
+	part.Shape = definition.Shape
+	part.CastShadow = false
+	part.Material = Enum.Material.Neon
+	part.Color = definition.Color
+	if definition.Id == "BlueCrystal" then
+		part.CFrame = CFrame.Angles(0, math.rad(45), math.rad(45))
+	elseif definition.Id == "RubyShard" then
+		part.CFrame = CFrame.Angles(0, 0, math.rad(45))
+	end
+	return part
+end
+
+local function hideRuntime(runtime)
+	for _, descendant in ipairs(runtime:GetDescendants()) do
+		if descendant:IsA("BasePart") then
+			descendant.Transparency = 1
+			descendant.CanQuery = false
+		elseif descendant:IsA("ParticleEmitter") or descendant:IsA("Trail") or descendant:IsA("Beam") then
+			descendant.Enabled = false
+		end
+	end
+end
+
+local function playCollectibleAnimation(runtime)
+	local controller = runtime:FindFirstChildWhichIsA("AnimationController", true)
+	local animator = controller and controller:FindFirstChildWhichIsA("Animator", true)
+	local animation = runtime:FindFirstChild("IdleAnimation", true)
+
+	if not animator or not animation or not animation:IsA("Animation") then
+		return
+	end
+
+	local success, track = pcall(function()
+		return animator:LoadAnimation(animation)
+	end)
+
+	if success then
+		track.Looped = true
+		track.Priority = Enum.AnimationPriority.Idle
+		track:Play(0.15)
+	end
+end
+
+local function breakCollectible(part, entry)
+	hideRuntime(entry.Runtime)
 	part.Transparency = 1
 	part.CanQuery = false
 
 	local particles = Instance.new("ParticleEmitter")
-	particles.Color = ColorSequence.new(definition.Color)
+	particles.Color = ColorSequence.new(entry.ParticleColor)
 	particles.LightEmission = 0.8
 	particles.Lifetime = NumberRange.new(0.25, 0.45)
 	particles.Speed = NumberRange.new(7, 12)
@@ -138,45 +263,91 @@ local function breakCollectible(part, definition)
 	particles:Emit(18)
 
 	local sound = Instance.new("Sound")
-	sound.SoundId = "rbxasset://sounds/electronicpingshort.wav"
+	sound.SoundId = entry.CollectSoundId
 	sound.Volume = 0.55
 	sound.RollOffMaxDistance = 45
 	sound.Parent = part
 	sound:Play()
-	Debris:AddItem(part, 0.65)
+	Debris:AddItem(entry.Runtime, 0.65)
 end
 
-local function createCollectible(parent, surfacePosition, definition, sourceName)
+local function createCollectible(parent, surfacePosition, definition, sourceName, targetUserId)
+	local runtime = Instance.new("Model")
+	runtime.Name = definition.Id
+
+    runtime.Parent = parent
+    playCollectibleAnimation(runtime)
+
+	local template = findVisualTemplate(definition)
+	local visual
+	if template then
+		local success, result = pcall(template.Clone, template)
+		if success and result then
+			visual = result
+			visual.Name = "Visual"
+		else
+			warnTemplate(definition, "nao foi possivel clonar o template")
+		end
+	end
+	visual = visual or createFallbackVisual(definition)
+	prepareVisual(visual)
+	visual.Parent = runtime
+
+	-- Move apenas a posicao do clone para preservar a orientacao configurada no
+	-- Studio, independentemente da PrimaryPart ou do pivot escolhido no template.
+	local boundingBox, boundingSize = runtime:GetBoundingBox()
+	local targetBottomY = surfacePosition.Y + CONFIG.FLOAT_HEIGHT
+	local translation = Vector3.new(
+		surfacePosition.X - boundingBox.Position.X,
+		targetBottomY - (boundingBox.Position.Y - boundingSize.Y / 2),
+		surfacePosition.Z - boundingBox.Position.Z
+	)
+	runtime:PivotTo(runtime:GetPivot() + translation)
+	boundingBox, boundingSize = runtime:GetBoundingBox()
+
 	local part = Instance.new("Part")
-	part.Name = definition.Id
-	part.Size = definition.Size
-	part.Shape = definition.Shape
+	part.Name = "CollectibleHitbox"
+	part.Size = Vector3.one
+	part.CFrame = CFrame.new(
+		boundingBox.Position.X,
+		targetBottomY + math.min(2.5, boundingSize.Y / 2),
+		boundingBox.Position.Z
+	)
+	part.Transparency = 1
 	part.Anchored = true
 	part.CanCollide = false
 	part.CanTouch = false
 	part.CanQuery = false
 	part.CastShadow = false
-	part.Material = Enum.Material.Neon
-	part.Color = definition.Color
-	part.CFrame = CFrame.new(
-		surfacePosition + Vector3.new(0, definition.Size.Y / 2 + CONFIG.FLOAT_HEIGHT, 0)
-	)
-	if definition.Id == "BlueCrystal" then
-		part.CFrame *= CFrame.Angles(0, math.rad(45), math.rad(45))
-	elseif definition.Id == "RubyShard" then
-		part.CFrame *= CFrame.Angles(0, 0, math.rad(45))
-	end
-	part:SetAttribute("IsScoreCollectible", true)
-	part:SetAttribute("CollectibleId", definition.Id)
-	part:SetAttribute("ScoreValue", definition.Score)
-	part:SetAttribute("CoinValue", definition.Coins)
-	part:SetAttribute("CollectibleSource", sourceName)
-	part:SetAttribute("Claimed", false)
-	part.Parent = parent
+	part.Parent = runtime
+	runtime.PrimaryPart = part
 
+	for _, instance in ipairs({ runtime, part }) do
+		instance:SetAttribute("IsScoreCollectible", true)
+		instance:SetAttribute("CollectibleId", definition.Id)
+		instance:SetAttribute("ScoreValue", definition.Score)
+		instance:SetAttribute("CoinValue", definition.Coins)
+		instance:SetAttribute("CollectibleSource", sourceName)
+		instance:SetAttribute("Claimed", false)
+	end
+	runtime:SetAttribute("UsesCustomModel", template ~= nil)
+	if typeof(targetUserId) == "number" then
+		runtime:SetAttribute("TutorialTargetUserId", targetUserId)
+		part:SetAttribute("TutorialTargetUserId", targetUserId)
+	end
+	runtime.Parent = parent
+
+	local particleColor = template and template:GetAttribute("ParticleColor")
+	local collectSoundId = template and template:GetAttribute("CollectSoundId")
 	active[part] = {
 		Definition = definition,
 		Claimed = false,
+		Runtime = runtime,
+		ParticleColor = typeof(particleColor) == "Color3" and particleColor or definition.Color,
+		CollectSoundId = typeof(collectSoundId) == "string" and collectSoundId ~= ""
+			and collectSoundId
+			or DEFAULT_COLLECT_SOUND_ID,
+		TargetUserId = targetUserId,
 	}
 	return part
 end
@@ -344,11 +515,12 @@ local function processChunk(chunk)
 end
 
 local function tryClaim(part, entry, player)
-	if entry.Claimed or not part.Parent then
+	if entry.Claimed or not part.Parent or not entry.Runtime.Parent then
 		return
 	end
 	entry.Claimed = true
 	part:SetAttribute("Claimed", true)
+	entry.Runtime:SetAttribute("Claimed", true)
 	local scoreAwarded, coinsAwarded = ScoreService.AwardRewards(
 		player,
 		entry.Definition.Score,
@@ -358,22 +530,26 @@ local function tryClaim(part, entry, player)
 	if scoreAwarded <= 0 and coinsAwarded <= 0 then
 		entry.Claimed = false
 		part:SetAttribute("Claimed", false)
+		entry.Runtime:SetAttribute("Claimed", false)
 		return
 	end
 	active[part] = nil
-	breakCollectible(part, entry.Definition)
+	breakCollectible(part, entry)
 end
 
 local function proximityPass()
 	local radiusSquared = CONFIG.CLAIM_RADIUS * CONFIG.CLAIM_RADIUS
 	for part, entry in pairs(active) do
-		if not part.Parent then
+		if not part.Parent or not entry.Runtime.Parent then
 			active[part] = nil
 			continue
 		end
 		local closestPlayer
 		local closestDistanceSquared = radiusSquared
 		for _, player in ipairs(Players:GetPlayers()) do
+			if entry.TargetUserId and player.UserId ~= entry.TargetUserId then
+				continue
+			end
 			local character = player.Character
 			local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 			local root = character and character:FindFirstChild("HumanoidRootPart")
@@ -390,6 +566,32 @@ local function proximityPass()
 			tryClaim(part, entry, closestPlayer)
 		end
 	end
+end
+
+function CollectibleService.RemoveTutorialCollectible(player)
+	for part, entry in pairs(active) do
+		if entry.TargetUserId == player.UserId then
+			active[part] = nil
+			if entry.Runtime.Parent then
+				entry.Runtime:Destroy()
+			end
+		end
+	end
+end
+
+function CollectibleService.EnsureTutorialCollectible(player, surfacePosition)
+	if not player or player.Parent ~= Players or typeof(surfacePosition) ~= "Vector3" then
+		return nil
+	end
+	CollectibleService.RemoveTutorialCollectible(player)
+	local folder = workspace:FindFirstChild("TutorialRuntime")
+	if not folder then
+		folder = Instance.new("Folder")
+		folder.Name = "TutorialRuntime"
+		folder.Parent = workspace
+	end
+	local part = createCollectible(folder, surfacePosition, DEFINITIONS[1], "Tutorial", player.UserId)
+	return part, active[part] and active[part].Runtime or nil
 end
 
 function CollectibleService.Start()

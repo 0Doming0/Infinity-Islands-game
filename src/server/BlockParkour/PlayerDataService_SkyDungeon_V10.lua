@@ -14,7 +14,8 @@ local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 
 local DATASTORE_NAME = "SkyDungeonPlayerData_V10"
 local LEGACY_MVP_DATASTORE_NAME = "BlockParkour_PlayerData_v1"
-local SCHEMA_VERSION = 3
+local SCHEMA_VERSION = 4
+local SCORE_SCALE_VERSION = 3
 local STARTER_SWORD_ID = "ClassicSword"
 local LOAD_RETRIES = 4
 local SAVE_RETRIES = 4
@@ -43,6 +44,8 @@ local function defaultData()
 		EquippedSword = STARTER_SWORD_ID,
 		Inventory = {},
 		LegacyMVPMigrated = false,
+		TutorialStage = 1,
+		TutorialCompleted = false,
 	}
 end
 
@@ -79,7 +82,7 @@ end
 
 local function migrateBestScore(raw, sourceVersion)
 	local previous = math.max(0, math.floor(tonumber(raw.BestScore) or 0))
-	if sourceVersion >= SCHEMA_VERSION then
+	if sourceVersion >= SCORE_SCALE_VERSION then
 		return previous
 	end
 	if previous == 0 then
@@ -102,6 +105,15 @@ local function sanitize(raw)
 	data.OwnedSwords = sanitizeOwnedSwords(raw.OwnedSwords)
 	data.Inventory = sanitizeInventory(raw.Inventory or raw.OwnedItems)
 	data.LegacyMVPMigrated = raw.LegacyMVPMigrated == true
+	-- Perfis anteriores ao tutorial que ja possuem progresso sao tratados como
+	-- veteranos; contas realmente novas ainda recebem o fluxo completo.
+	local hasTutorialRecord = raw.TutorialCompleted ~= nil or raw.TutorialStage ~= nil
+	data.TutorialCompleted = raw.TutorialCompleted == true
+		or (not hasTutorialRecord and (data.BestScore > 0 or data.Coins > 0 or next(data.Inventory) ~= nil))
+	data.TutorialStage = math.clamp(math.floor(tonumber(raw.TutorialStage) or 1), 1, 5)
+	if data.TutorialCompleted then
+		data.TutorialStage = 5
+	end
 
 	local equipped = type(raw.EquippedSword) == "string" and raw.EquippedSword or STARTER_SWORD_ID
 	if data.OwnedSwords[equipped] then
@@ -127,6 +139,8 @@ local function cloneData(data)
 		EquippedSword = data.EquippedSword,
 		Inventory = cloneDictionary(data.Inventory),
 		LegacyMVPMigrated = data.LegacyMVPMigrated == true,
+		TutorialStage = data.TutorialStage,
+		TutorialCompleted = data.TutorialCompleted == true,
 	}
 end
 
@@ -220,6 +234,35 @@ end
 function PlayerDataService.GetCoins(player)
 	local data = PlayerDataService.Get(player)
 	return data and data.Coins or 0
+end
+
+function PlayerDataService.GetTutorialProgress(player)
+	local data = PlayerDataService.Get(player)
+	if not data then
+		return 1, false
+	end
+	return data.TutorialStage, data.TutorialCompleted == true
+end
+
+function PlayerDataService.SetTutorialProgress(player, stage, completed)
+	local session = sessions[player]
+	if not session then
+		return false
+	end
+	local nextCompleted = completed == true or session.Data.TutorialCompleted == true
+	local nextStage = math.clamp(math.floor(tonumber(stage) or session.Data.TutorialStage or 1), 1, 5)
+	if nextCompleted then
+		nextStage = 5
+	end
+	if
+		nextStage ~= session.Data.TutorialStage
+		or nextCompleted ~= session.Data.TutorialCompleted
+	then
+		session.Data.TutorialStage = nextStage
+		session.Data.TutorialCompleted = nextCompleted
+		markDirty(session)
+	end
+	return true
 end
 
 function PlayerDataService.AddCoins(player, amount)
@@ -383,6 +426,10 @@ function PlayerDataService.Save(player, force)
 				end
 			end
 			snapshot.BestScore = math.max(snapshot.BestScore, previousData.BestScore)
+			snapshot.TutorialCompleted = snapshot.TutorialCompleted or previousData.TutorialCompleted
+			snapshot.TutorialStage = snapshot.TutorialCompleted
+				and 5
+				or math.max(snapshot.TutorialStage, previousData.TutorialStage)
 			if not snapshot.OwnedSwords[snapshot.EquippedSword] then
 				snapshot.EquippedSword = STARTER_SWORD_ID
 			end

@@ -9,6 +9,7 @@ local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 local villagerEvent = ReplicatedStorage:WaitForChild("VillagerEvent")
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
+local CURRENCY_SYMBOL = MVPConfig.Currency.Symbol
 
 local gui = Instance.new("ScreenGui")
 gui.Name = "VillageShopUI"
@@ -65,7 +66,7 @@ coinLabel.AnchorPoint = Vector2.new(1, 0)
 coinLabel.Position = UDim2.new(1, -74, 0, 18)
 coinLabel.Size = UDim2.fromOffset(190, 36)
 coinLabel.BackgroundTransparency = 1
-coinLabel.Text = "🪙 0"
+coinLabel.Text = CURRENCY_SYMBOL .. " 0"
 coinLabel.TextColor3 = Color3.fromRGB(255, 220, 93)
 coinLabel.Font = Enum.Font.GothamMedium
 coinLabel.TextSize = 19
@@ -310,7 +311,7 @@ local function createRow(item, index)
 		button.Active = false
 		button.AutoButtonColor = false
 	else
-		button.Text = string.format("COMPRAR  🪙 %d", item.Price or 0)
+		button.Text = string.format("COMPRAR  %s %d", CURRENCY_SYMBOL, item.Price or 0)
 		button.BackgroundColor3 = Color3.fromRGB(135, 82, 170)
 		button.MouseButton1Click:Connect(function()
 			button.Active = false
@@ -334,7 +335,7 @@ local function showShop(data)
 		title.TextColor3 = data.shopColor
 		stroke.Color = data.shopColor
 	end
-	coinLabel.Text = "🪙 " .. tostring(data.coins or 0)
+	coinLabel.Text = CURRENCY_SYMBOL .. " " .. tostring(data.coins or 0)
 	if data.message then
 		feedback.Text = data.message
 		feedback.TextColor3 = data.success and Color3.fromRGB(105, 255, 145)

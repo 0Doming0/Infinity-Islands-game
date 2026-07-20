@@ -3,6 +3,12 @@
 -- pelos assets publicados pelo dono ou grupo da experiencia antes do lancamento.
 
 local Config = {
+	Currency = {
+		-- Simbolo monetario antigo e compativel com as fontes do Roblox.
+		-- Evita emojis recentes que podem aparecer como quadrados em alguns aparelhos.
+		Symbol = "¤",
+	},
+
 	Progression = {
 		DeathCoinLossPercent = 0.20,
 		LegacyScoreDivisor = 1000,

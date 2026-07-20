@@ -15,6 +15,7 @@ lutar, acumular moedas, comprar equipamento nas vilas e arriscar rotas laterais.
 - ilhas laterais Elite opcionais;
 - baus comuns, Baú Mimico e Ilha do Tesouro;
 - eventos Mare Furiosa, Chuva de Moedas e Cacada dos Monstros;
+- tutorial contextual e persistente para jogadores iniciantes;
 - PvP desativado e grupos de colisao seguros para jogadores e inimigos;
 - cura passiva desativada;
 - atmosfera, nuvens, iluminacao e suporte a musica licenciada;
@@ -30,6 +31,10 @@ ServerStorage
     ├── Chests
     │   ├── NormalChest [Model]
     │   └── MimicChest [Model]
+    ├── Collectibles
+    │   ├── BlueCrystal [Model ou BasePart]
+    │   ├── GoldenOrb [Model ou BasePart]
+    │   └── RubyShard [Model ou BasePart]
     ├── Monsters
     │   └── GreenSlime [Model, exemplo]
     ├── Swords
@@ -75,6 +80,34 @@ fade e reducao durante eventos perigosos ficam em `MVPConfig.Atmosphere`.
 
 O jogo cria prototipos em tempo de execucao quando um asset essencial nao
 existe. Um modelo real com o nome esperado sempre tem prioridade.
+
+## Tutorial de iniciantes
+
+Jogadores que ainda nao concluiram ou pularam o tutorial recebem cinco objetivos:
+movimento, pulo, coleta, combate e fuga da agua. O servidor salva a etapa atual e
+retoma o fluxo depois de morte ou reconexao. Os objetivos sao escolhidos perto da
+ilha/round atual e recalculados caso o mapa mude ou seja consumido pela agua.
+
+Durante o tutorial, apenas o dano da agua e suspenso. O coletavel e o alvo de
+treino pertencem ao iniciante correspondente, portanto outros jogadores nao podem
+coleta-los nem derrota-los. A interface adapta as dicas para teclado, toque ou
+controle e oferece o botao `PULAR`; concluir ou pular impede novas exibicoes.
+
+## Contrato dos coletaveis
+
+Coloque os modelos visuais em `ServerStorage/MVPAssets/Collectibles`. O nome do
+asset pode ser `BlueCrystal`, `GoldenOrb` ou `RubyShard`; alternativamente,
+defina o atributo `CollectibleId` com um desses valores. O asset pode ser um
+`Model` ou uma `BasePart` e precisa conter ao menos uma `BasePart`.
+
+- tamanho e orientacao sao definidos pelo proprio modelo;
+- o servidor ancora, centraliza e posiciona a base do modelo automaticamente;
+- colisao, toque e query das partes sao desativados;
+- Scripts dentro do clone sao desativados; efeitos visuais, luzes e particulas podem permanecer;
+- `Enabled = false` faz o sistema ignorar o modelo;
+- `ParticleColor` (`Color3`) e `CollectSoundId` (`string`) sao opcionais;
+- pontos e moedas continuam definidos pelo jogo, portanto trocar o modelo nao altera a economia;
+- se o asset estiver ausente ou invalido, o visual neon de fallback continua funcionando.
 
 ## Contrato do bau normal
 

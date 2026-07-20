@@ -4,6 +4,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
+local CURRENCY_SYMBOL = MVPConfig.Currency.Symbol
 local eventRemote = ReplicatedStorage:FindFirstChild("WorldEvent") or Instance.new("RemoteEvent")
 eventRemote.Name = "WorldEvent"
 eventRemote.Parent = ReplicatedStorage
@@ -28,8 +29,8 @@ local definitions = {
 	},
 	{
 		Id = "CoinRush",
-		Title = "🪙 CHUVA DE MOEDAS",
-		Message = "🪙 Todas as recompensas de moeda estao dobradas!",
+		Title = CURRENCY_SYMBOL .. " CHUVA DE MOEDAS",
+		Message = CURRENCY_SYMBOL .. " Todas as recompensas de moeda estao dobradas!",
 		Color = Color3.fromRGB(255, 211, 76),
 		Duration = MVPConfig.Events.CoinRushDurationSeconds,
 		Start = function()

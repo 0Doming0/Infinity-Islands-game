@@ -7,6 +7,8 @@ local TweenService = game:GetService("TweenService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 local coinRewardRemote = ReplicatedStorage:WaitForChild("CoinReward")
+local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
+local CURRENCY_SYMBOL = MVPConfig.Currency.Symbol
 
 local gui = Instance.new("ScreenGui")
 gui.Name = "CoinRewardUI"
@@ -45,7 +47,7 @@ stroke.Parent = card
 local label = Instance.new("TextLabel")
 label.Size = UDim2.fromScale(1, 1)
 label.BackgroundTransparency = 1
-label.Text = "+0 🪙"
+label.Text = "+0 " .. CURRENCY_SYMBOL
 label.TextColor3 = Color3.fromRGB(255, 224, 112)
 label.Font = Enum.Font.GothamBold
 label.TextSize = 19
@@ -81,7 +83,7 @@ local function showAward(amount)
 	local token = animationToken
 
 	cancelTweens()
-	label.Text = string.format("+%d 🪙", accumulated)
+	label.Text = string.format("+%d %s", accumulated, CURRENCY_SYMBOL)
 	card.Visible = true
 	card.Position = card.GroupTransparency < 1 and card.Position or HIDDEN_POSITION
 

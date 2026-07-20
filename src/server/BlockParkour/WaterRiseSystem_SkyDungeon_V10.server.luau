@@ -279,14 +279,18 @@ while true do
 		local playerY = rootPart.Position.Y
 		if playerY < currentWaterY then
 			data.inWater = true
-			humanoid:TakeDamage(CONFIG.DAMAGE_PER_SECOND * dt)
+			if player:GetAttribute("TutorialWaterProtection") ~= true then
+				humanoid:TakeDamage(CONFIG.DAMAGE_PER_SECOND * dt)
+			end
 		else
 			data.inWater = false
 		end
 
 		if now >= data.nextSurvivalScoreAt then
 			data.nextSurvivalScoreAt = now + CONFIG.SURVIVAL_SCORE_INTERVAL
-			ScoreService.Award(player, CONFIG.SURVIVAL_SCORE_AMOUNT, "SurvivalTime")
+			if player:GetAttribute("TutorialActive") ~= true then
+				ScoreService.Award(player, CONFIG.SURVIVAL_SCORE_AMOUNT, "SurvivalTime")
+			end
 		end
 		local height = math.max(0, playerY - 0.5)
 		local checkpoint = math.floor(height / CONFIG.HEIGHT_CHECKPOINT_STUDS)

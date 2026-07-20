@@ -7,6 +7,8 @@ local TweenService = game:GetService("TweenService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 local waterEvent = ReplicatedStorage:WaitForChild("WaterEvent")
+local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
+local CURRENCY_SYMBOL = MVPConfig.Currency.Symbol
 
 local screenGui = Instance.new("ScreenGui")
 screenGui.Name = "SurvivalUI"
@@ -64,7 +66,7 @@ local coinLabel = createLabel(
 	"Coins",
 	UDim2.fromOffset(122, 7),
 	UDim2.fromOffset(96, 25),
-	"🪙 0",
+	CURRENCY_SYMBOL .. " 0",
 	Color3.fromRGB(255, 196, 66),
 	Enum.Font.GothamMedium,
 	13,
@@ -196,7 +198,7 @@ waterEvent.OnClientEvent:Connect(function(data)
 	local alive = data.alive ~= false
 
 	scoreLabel.Text = "⭐ " .. tostring(data.runScore or data.score or 0)
-	coinLabel.Text = "🪙 " .. tostring(data.coins or 0)
+	coinLabel.Text = CURRENCY_SYMBOL .. " " .. tostring(data.coins or 0)
 	updateWaterDisplay(gap)
 
 	if alive and gap <= 0 then
@@ -214,9 +216,10 @@ waterEvent.OnClientEvent:Connect(function(data)
 		warning.Visible = false
 		local cause = data.inWater and "VOCE SE AFOGOU" or "VOCE MORREU"
 		resultText.Text = string.format(
-			"%s\n⭐ %d perdidos  •  🪙 %d perdidas",
+			"%s\n⭐ %d perdidos  •  %s %d perdidas",
 			cause,
 			tonumber(data.lastDeathRunScore) or 0,
+			CURRENCY_SYMBOL,
 			tonumber(data.lastDeathCoinsLost) or 0
 		)
 		resultCard.BackgroundTransparency = 1
