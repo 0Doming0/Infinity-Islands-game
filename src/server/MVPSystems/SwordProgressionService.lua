@@ -114,7 +114,18 @@ local function findTemplate(folder, swordId)
 	return nil
 end
 
+local function resolveBaseDamage(template, definition)
+	local modelDamage = template:GetAttribute("BaseDamage")
+	if typeof(modelDamage) == "number" and modelDamage == modelDamage and modelDamage >= 0 then
+		return modelDamage
+	end
+	return definition.BaseDamage
+end
+
 local function configureTemplate(template, definition)
+	-- O valor configurado no modelo e a fonte principal. O catalogo serve como
+	-- fallback para modelos sem BaseDamage e para os modelos de exemplo.
+	local baseDamage = resolveBaseDamage(template, definition)
 	template.Name = definition.SwordId
 	template.CanBeDropped = false
 	template:SetAttribute("Enabled", true)
@@ -122,7 +133,7 @@ local function configureTemplate(template, definition)
 	template:SetAttribute("WeaponType", "Sword")
 	template:SetAttribute("SwordId", definition.SwordId)
 	template:SetAttribute("DisplayName", definition.DisplayName)
-	template:SetAttribute("BaseDamage", definition.BaseDamage)
+	template:SetAttribute("BaseDamage", baseDamage)
 	template:SetAttribute("AttackSpeed", definition.AttackSpeed)
 	template:SetAttribute("ScoreMultiplier", definition.ScoreMultiplier)
 	template:SetAttribute("KnockbackMultiplier", definition.KnockbackMultiplier)
@@ -242,12 +253,14 @@ function SwordProgressionService.GetShopInventory(player)
 	local data = PlayerDataService.Get(player) or PlayerDataService.Load(player)
 	local inventory = {}
 	for _, definition in ipairs(Catalog.GetAll()) do
+		local template = findTemplate(getSwordsFolder(), definition.SwordId)
+		local baseDamage = template and resolveBaseDamage(template, definition) or definition.BaseDamage
 		table.insert(inventory, {
 			SwordId = definition.SwordId,
 			DisplayName = definition.DisplayName,
 			Description = definition.Description,
 			Price = definition.Price,
-			BaseDamage = definition.BaseDamage,
+			BaseDamage = baseDamage,
 			AttackSpeed = definition.AttackSpeed,
 			ScoreMultiplier = definition.ScoreMultiplier,
 			Color = definition.Color,

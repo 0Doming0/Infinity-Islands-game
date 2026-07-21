@@ -214,6 +214,9 @@ local function shouldSpawnVillage(island, random)
 	local roundIndex = tonumber(island:GetAttribute("RoundIndex")) or 0
 	local size = island:GetAttribute("TerrainSize")
 	local role = island:GetAttribute("IslandRole")
+	if island:GetAttribute("IsSocialSanctuary") == true then
+		return true
+	end
 	if island:GetAttribute("IslandType") ~= "Normal"
 		or roundIndex < VILLAGE_CONFIG.MinimumRound
 		or role ~= "MainHall"
