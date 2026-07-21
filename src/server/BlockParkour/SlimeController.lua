@@ -18,6 +18,7 @@ local SlimeAnimator = require(script.Parent.SlimeAnimator)
 local SlimeController = {}
 
 local THINK_INTERVAL = 0.12
+local DORMANT_THINK_INTERVAL = 0.6
 local PATH_RECOMPUTE_INTERVAL = 0.75
 local WAYPOINT_REACHED_DISTANCE = 2.6
 local DESTINATION_CHANGED_DISTANCE = 3
@@ -394,6 +395,11 @@ local function randomPause(state)
 end
 
 local function thinkWander(state, now)
+	-- Protecao defensiva para estados criados por versoes antigas do controlador.
+	-- O loop principal sempre envia o relogio atual, mas uma chamada externa nunca
+	-- deve conseguir interromper toda a IA por comparar nil com numero.
+	now = tonumber(now) or serverTime()
+	state.IdleUntil = tonumber(state.IdleUntil) or now
 	if now < state.IdleUntil then
 		stopMoving(state, "Idle")
 		return
@@ -1011,8 +1017,12 @@ function SlimeController.Start(entry, definition, random, callbacks)
 
 	task.spawn(function()
 		while isAlive(state) do
+			local waitInterval = THINK_INTERVAL
 			local currentTime = serverTime()
-			if state.Model:GetAttribute("CombatStunned") == true then
+			if state.Model:GetAttribute("SimulationActive") == false then
+				stopMoving(state, "Dormant")
+				waitInterval = DORMANT_THINK_INTERVAL
+			elseif state.Model:GetAttribute("CombatStunned") == true then
 				setAIState(state, "Stunned")
 			elseif definition.Behavior == "NeutralMelee" then
 				thinkGreen(state, currentTime)
@@ -1023,7 +1033,7 @@ function SlimeController.Start(entry, definition, random, callbacks)
 			elseif definition.Behavior == "GoldenEscape" then
 				thinkGolden(state, currentTime)
 			end
-			task.wait(THINK_INTERVAL)
+			task.wait(waitInterval)
 		end
 	end)
 	return state

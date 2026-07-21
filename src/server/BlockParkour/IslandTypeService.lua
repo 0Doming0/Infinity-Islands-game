@@ -5,7 +5,6 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 
 local IslandTypeService = {}
-local lastTreasureRound = -math.huge
 
 local function normalizedSeed(value)
 	local seed = math.floor(math.abs(tonumber(value) or 1)) % 2147483647
@@ -69,36 +68,39 @@ function IslandTypeService.Classify(island, context)
 		1,
 		MVPConfig.Difficulty.MaximumTier
 	)
+	local baseRewardMultiplier = math.max(0.1, tonumber(island:GetAttribute("RouteRewardMultiplier")) or 1)
+	local specialChanceMultiplier = math.max(0, tonumber(island:GetAttribute("SpecialIslandChanceMultiplier")) or 1)
 	island:SetAttribute("IslandType", "Normal")
 	island:SetAttribute("DangerLevel", tier)
-	island:SetAttribute("RewardMultiplier", 1)
-	if not string.find(role, "SideRoom", 1, true) then
+	island:SetAttribute("RewardMultiplier", baseRewardMultiplier)
+	if string.find(role, "Sanctuary", 1, true) then
 		return "Normal"
 	end
 
 	local random = Random.new(normalizedSeed(
 		(island:GetAttribute("IslandSeed") or context.RoundSeed or 1) + MVPConfig.SpecialIslands.RandomSalt
 	))
-	if roundIndex >= MVPConfig.SpecialIslands.MinimumTreasureRound
-		and roundIndex - lastTreasureRound >= MVPConfig.SpecialIslands.MinimumTreasureRoundGap
-		and random:NextNumber() <= MVPConfig.SpecialIslands.TreasureChance
+	local treasureGap = math.max(1, MVPConfig.SpecialIslands.MinimumTreasureRoundGap)
+	local treasureWindow = roundIndex >= MVPConfig.SpecialIslands.MinimumTreasureRound
+		and (roundIndex - MVPConfig.SpecialIslands.MinimumTreasureRound) % treasureGap == 0
+	if treasureWindow
+		and random:NextNumber() <= math.clamp(MVPConfig.SpecialIslands.TreasureChance * specialChanceMultiplier, 0, 1)
 	then
-		lastTreasureRound = roundIndex
 		island:SetAttribute("IslandType", "Treasure")
 		island:SetAttribute("CanSpawnMonster", false)
 		island:SetAttribute("CanSpawnItem", false)
-		island:SetAttribute("RewardMultiplier", 2)
+		island:SetAttribute("RewardMultiplier", baseRewardMultiplier * 2)
 		styleIsland(island, "Treasure", tier)
 		return "Treasure"
 	end
 
 	if roundIndex >= MVPConfig.SpecialIslands.MinimumEliteRound
-		and random:NextNumber() <= MVPConfig.SpecialIslands.EliteChance
+		and random:NextNumber() <= math.clamp(MVPConfig.SpecialIslands.EliteChance * specialChanceMultiplier, 0, 1)
 	then
 		island:SetAttribute("IslandType", "Elite")
 		island:SetAttribute("CanSpawnMonster", true)
 		island:SetAttribute("CanSpawnItem", false)
-		island:SetAttribute("RewardMultiplier", MVPConfig.Difficulty.EliteRewardMultiplier)
+		island:SetAttribute("RewardMultiplier", baseRewardMultiplier * MVPConfig.Difficulty.EliteRewardMultiplier)
 		styleIsland(island, "Elite", tier)
 		return "Elite"
 	end

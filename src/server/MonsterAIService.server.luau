@@ -43,6 +43,10 @@ local function register(model)
 	if not model:IsA("Model") or states[model] then
 		return
 	end
+	local controller = model:GetAttribute("AIController")
+	if controller ~= nil and controller ~= "Generic" then
+		return
+	end
 	local humanoid = model:FindFirstChildWhichIsA("Humanoid", true)
 	local root = rootOf(model)
 	if not humanoid or not root or not root:IsA("BasePart") then
@@ -89,11 +93,17 @@ RunService.Heartbeat:Connect(function(dt)
 			states[model] = nil
 			continue
 		end
+		if model:GetAttribute("SimulationActive") == false then
+			continue
+		end
 		if model:GetAttribute("CombatStunned") == true then
 			continue
 		end
 		local forceAggressive = workspace:GetAttribute("AllMobsAggressive") == true
-		if model:GetAttribute("UseCentralAI") ~= true and not forceAggressive then
+		local controller = model:GetAttribute("AIController")
+		local ownedByGenericAI = controller == "Generic"
+			or (controller == nil and model:GetAttribute("UseCentralAI") == true)
+		if not ownedByGenericAI then
 			continue
 		end
 

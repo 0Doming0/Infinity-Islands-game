@@ -1,10 +1,5 @@
---[[
-	Sky Dungeon V10 - WaterRiseSystem (Server Script)
-
-	A agua e o relogio do dungeon. Ela solicita rounds completos quando se
-	aproxima do topo seguro, remove apenas rounds totalmente submersos e envia
-	o estado do andar para a interface.
-]]
+-- A agua usa a media protegida do coletivo. Sua superficie visual e dividida
+-- em tiles proximos aos jogadores, pois a fronteira pode crescer em qualquer X/Z.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -51,12 +46,15 @@ local CONFIG = {
 
 	CHUNK_CLEANUP_CHECK_RATE = 2,
 	CHUNK_CLEANUP_MARGIN_STUDS = 15,
-	MIN_ACTIVE_CHUNKS = MapConfig.MIN_ACTIVE_CHUNKS,
+	MIN_ACTIVE_CYCLES = MapConfig.MIN_ACTIVE_CYCLES,
 
 	SAFE_RESPAWN_CLEARANCE = 15,
 	SAFE_RESPAWN_HRP_OFFSET = 3,
 	SAFE_RESPAWN_SEARCH_RETRIES = 10,
 	SAFE_RESPAWN_RETRY_DELAY = 0.1,
+	WATER_TILE_SIZE = 1024,
+	WATER_TILE_OVERLAP = 8,
+	WATER_TILE_UPDATE_RATE = 0.5,
 }
 
 ScoreService.Start()
@@ -71,45 +69,123 @@ local water = workspace:FindFirstChild("Water")
 if not water then
 	water = Instance.new("Part")
 	water.Name = "Water"
-	water.Size = Vector3.new(800, 200, 800)
+	water.Size = Vector3.new(1, 200, 1)
 	water.Anchored = true
 	water.CanCollide = false
 	water.CanTouch = false
 	water.CanQuery = false
 	water.CastShadow = false
 	water.Material = Enum.Material.SmoothPlastic
-	water.Transparency = 0.55
+	water.Transparency = 1
 	water.Color = Color3.fromRGB(0, 105, 180)
 	water.Reflectance = 0.2
 	water.Parent = workspace
 end
 
+water.Size = Vector3.new(1, math.max(200, water.Size.Y), 1)
+water.Transparency = 1
+local oldTiles = workspace:FindFirstChild("WaterTiles")
+if oldTiles then
+	oldTiles:Destroy()
+end
+local waterTilesFolder = Instance.new("Folder")
+waterTilesFolder.Name = "WaterTiles"
+waterTilesFolder.Parent = workspace
+local waterTiles = {}
+
 local currentWaterY = CONFIG.WATER_START_SURFACE_Y
 local currentWaterSpeed = 0
 local systemStartedAt = os.clock()
+local observedWorldRebaseSerial = tonumber(workspace:GetAttribute("WorldRebaseSerial")) or 0
 local waterHalfHeight = water.Size.Y / 2
 water.Position = Vector3.new(MapConfig.CENTER_WORLD.X, currentWaterY - waterHalfHeight, MapConfig.CENTER_WORLD.Z)
 water:SetAttribute("SurfaceY", currentWaterY)
-water:SetAttribute("GenerationUnit", "Round")
+water:SetAttribute("GenerationUnit", "IslandFrontier")
 water:SetAttribute("RiseSpeed", currentWaterSpeed)
+
+local function waterTileKey(position)
+	local size = CONFIG.WATER_TILE_SIZE
+	local x = math.floor(position.X / size + 0.5)
+	local z = math.floor(position.Z / size + 0.5)
+	return string.format("%d,%d", x, z), x, z
+end
+
+local function createWaterTile(key, tileX, tileZ)
+	local tile = Instance.new("Part")
+	tile.Name = "WaterTile_" .. key
+	tile.Size = Vector3.new(
+		CONFIG.WATER_TILE_SIZE + CONFIG.WATER_TILE_OVERLAP,
+		water.Size.Y,
+		CONFIG.WATER_TILE_SIZE + CONFIG.WATER_TILE_OVERLAP
+	)
+	tile.Anchored = true
+	tile.CanCollide = false
+	tile.CanTouch = false
+	tile.CanQuery = false
+	tile.CastShadow = false
+	tile.Material = Enum.Material.SmoothPlastic
+	tile.Transparency = 0.55
+	tile.Color = Color3.fromRGB(0, 105, 180)
+	tile.Reflectance = 0.2
+	tile:SetAttribute("WaterTileKey", key)
+	tile:SetAttribute("TileX", tileX)
+	tile:SetAttribute("TileZ", tileZ)
+	tile.Parent = waterTilesFolder
+	waterTiles[key] = tile
+	return tile
+end
+
+local function updateWaterTiles()
+	local desired = {}
+	for _, player in ipairs(Players:GetPlayers()) do
+		local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+		if root then
+			local key, tileX, tileZ = waterTileKey(root.Position)
+			desired[key] = { X = tileX, Z = tileZ }
+		end
+	end
+	if next(desired) == nil then
+		desired["0,0"] = { X = 0, Z = 0 }
+	end
+	for key, coordinate in pairs(desired) do
+		local tile = waterTiles[key] or createWaterTile(key, coordinate.X, coordinate.Z)
+		tile.Position = Vector3.new(
+			coordinate.X * CONFIG.WATER_TILE_SIZE,
+			currentWaterY - tile.Size.Y / 2,
+			coordinate.Z * CONFIG.WATER_TILE_SIZE
+		)
+	end
+	for key, tile in pairs(waterTiles) do
+		if not desired[key] then
+			tile:Destroy()
+			waterTiles[key] = nil
+		end
+	end
+end
+
+local function logicalAltitude(physicalY)
+	return physicalY + (tonumber(workspace:GetAttribute("LogicalAltitudeOffsetStuds")) or 0)
+end
 
 local function calculateTargetWaterSpeed()
 	if #Players:GetPlayers() == 0 then
-		return 0, "Waiting", 0
+		return 0, "Waiting", 0, 0, 0
 	end
 
 	local elapsedSeconds = os.clock() - systemStartedAt
 	if elapsedSeconds < CONFIG.WATER_WARMUP_SECONDS then
 		local warmupAlpha = math.clamp(elapsedSeconds / math.max(1, CONFIG.WATER_WARMUP_SECONDS), 0, 1)
-		return CONFIG.WATER_RISE_SPEED * CONFIG.WATER_MIN_SPEED_MULTIPLIER * warmupAlpha, "Warmup", 0
+		return CONFIG.WATER_RISE_SPEED * CONFIG.WATER_MIN_SPEED_MULTIPLIER * warmupAlpha, "Warmup", 0, 0, 0
 	end
 
-	local groupProgressY = ChunkManager.GetGroupProgressY()
+	local collective = ChunkManager.GetCollectiveProgress()
+	local groupProgressY = collective.MeanY
 	if not groupProgressY then
-		return CONFIG.WATER_RISE_SPEED, "Normal", 0
+		return CONFIG.WATER_RISE_SPEED, "Normal", 0, 0, 0
 	end
 
 	local gap = groupProgressY - currentWaterY
+	local lowerGap = (collective.LowerGroupY or groupProgressY) - currentWaterY
 	local speedMultiplier
 	local mode
 	if gap <= CONFIG.WATER_DANGER_GAP then
@@ -139,7 +215,15 @@ local function calculateTargetWaterSpeed()
 	local difficultyMultiplier = 1
 		+ (CONFIG.WATER_MAX_DIFFICULTY_MULTIPLIER - 1) * difficultyAlpha
 	local eventMultiplier = math.max(0.25, tonumber(workspace:GetAttribute(MVPConfig.Water.EventMultiplierAttribute)) or 1)
-	return CONFIG.WATER_RISE_SPEED * speedMultiplier * difficultyMultiplier * eventMultiplier, mode, gap
+	if lowerGap < CONFIG.WATER_DANGER_GAP and collective.Count >= 2 then
+		speedMultiplier *= MapConfig.COLLECTIVE_MERCY_MULTIPLIER
+		mode = "GroupMercy"
+	end
+	return CONFIG.WATER_RISE_SPEED * speedMultiplier * difficultyMultiplier * eventMultiplier,
+		mode,
+		gap,
+		lowerGap,
+		collective.Count
 end
 
 local function findSafeRoutePart()
@@ -165,6 +249,15 @@ end
 local function getSafeRespawnCFrame()
 	if CONFIG.RESPAWN_HEIGHT >= currentWaterY + CONFIG.SAFE_RESPAWN_CLEARANCE then
 		return CFrame.new(MapConfig.CENTER_WORLD.X, CONFIG.RESPAWN_HEIGHT, MapConfig.CENTER_WORLD.Z)
+	end
+
+	local sanctuaryCFrame = ChunkManager.GetSafeRespawnCFrame(
+		currentWaterY,
+		CONFIG.SAFE_RESPAWN_CLEARANCE,
+		CONFIG.SAFE_RESPAWN_HRP_OFFSET
+	)
+	if sanctuaryCFrame then
+		return sanctuaryCFrame
 	end
 
 	ChunkManager.EnsureRoundsAheadOfWater(currentWaterY, CONFIG.SAFE_ROUND_BUFFER, CONFIG.MAX_ROUNDS_PER_REQUEST)
@@ -210,6 +303,12 @@ local function onCharacterAdded(player, character)
 		task.wait(0.5)
 		if rootPart.Parent and player.Parent then
 			rootPart.CFrame = getSafeRespawnCFrame()
+			local data = playerData[player]
+			if data then
+				local spawnHeight = math.max(0, logicalAltitude(rootPart.Position.Y) - 0.5)
+				data.highestHeightCheckpoint = math.floor(spawnHeight / CONFIG.HEIGHT_CHECKPOINT_STUDS)
+				player:SetAttribute("RunStartLogicalHeight", math.floor(spawnHeight))
+			end
 		end
 	end
 end
@@ -240,21 +339,38 @@ end
 local lastUIUpdate = 0
 local lastRoundGenerationCheck = 0
 local lastChunkCleanup = 0
+local lastWaterTileUpdate = 0
 local currentWaterMode = "Waiting"
 local currentProgressGap = 0
+local currentLowerGroupGap = 0
+local currentCollectiveCount = 0
 
 while true do
 	local elapsed = task.wait(CONFIG.WATER_UPDATE_RATE)
 	local dt = math.min(elapsed, 0.5)
-	local targetSpeed, mode, progressGap = calculateTargetWaterSpeed()
+	local rebaseSerial = tonumber(workspace:GetAttribute("WorldRebaseSerial")) or 0
+	if rebaseSerial ~= observedWorldRebaseSerial then
+		currentWaterY -= tonumber(workspace:GetAttribute("LastWorldRebaseShiftStuds")) or 0
+		observedWorldRebaseSerial = rebaseSerial
+	end
+	local targetSpeed, mode, progressGap, lowerGroupGap, collectiveCount = calculateTargetWaterSpeed()
 	local smoothingAlpha = 1 - math.exp(-CONFIG.WATER_SPEED_SMOOTHING * dt)
 	currentWaterSpeed += (targetSpeed - currentWaterSpeed) * smoothingAlpha
 	currentWaterMode = mode
 	currentProgressGap = progressGap
+	currentLowerGroupGap = lowerGroupGap
+	currentCollectiveCount = collectiveCount
 	currentWaterY += currentWaterSpeed * dt
 	water.Position = Vector3.new(MapConfig.CENTER_WORLD.X, currentWaterY - waterHalfHeight, MapConfig.CENTER_WORLD.Z)
+	for _, tile in pairs(waterTiles) do
+		tile.Position = Vector3.new(tile.Position.X, currentWaterY - tile.Size.Y / 2, tile.Position.Z)
+	end
 
 	local now = os.clock()
+	if now - lastWaterTileUpdate >= CONFIG.WATER_TILE_UPDATE_RATE then
+		lastWaterTileUpdate = now
+		updateWaterTiles()
+	end
 	if now - lastRoundGenerationCheck >= CONFIG.ROUND_GENERATION_CHECK_RATE and #Players:GetPlayers() > 0 then
 		lastRoundGenerationCheck = now
 		ChunkManager.EnsureRoundsAheadOfWater(currentWaterY, CONFIG.SAFE_ROUND_BUFFER, CONFIG.MAX_ROUNDS_PER_REQUEST)
@@ -262,7 +378,7 @@ while true do
 
 	if now - lastChunkCleanup >= CONFIG.CHUNK_CLEANUP_CHECK_RATE and #Players:GetPlayers() > 0 then
 		lastChunkCleanup = now
-		ChunkManager.CleanupBelowWater(currentWaterY, CONFIG.CHUNK_CLEANUP_MARGIN_STUDS, CONFIG.MIN_ACTIVE_CHUNKS)
+		ChunkManager.CleanupBelowWater(currentWaterY, CONFIG.CHUNK_CLEANUP_MARGIN_STUDS, CONFIG.MIN_ACTIVE_CYCLES)
 	end
 
 	for player, data in pairs(playerData) do
@@ -292,7 +408,7 @@ while true do
 				ScoreService.Award(player, CONFIG.SURVIVAL_SCORE_AMOUNT, "SurvivalTime")
 			end
 		end
-		local height = math.max(0, playerY - 0.5)
+		local height = math.max(0, logicalAltitude(playerY) - 0.5)
 		local checkpoint = math.floor(height / CONFIG.HEIGHT_CHECKPOINT_STUDS)
 		if checkpoint > data.highestHeightCheckpoint then
 			local crossed = checkpoint - data.highestHeightCheckpoint
@@ -304,10 +420,13 @@ while true do
 	if now - lastUIUpdate >= CONFIG.UI_UPDATE_RATE then
 		lastUIUpdate = now
 		water:SetAttribute("SurfaceY", currentWaterY)
+		water:SetAttribute("LogicalSurfaceY", logicalAltitude(currentWaterY))
 		water:SetAttribute("RiseSpeed", currentWaterSpeed)
 		water:SetAttribute("TargetRiseSpeed", targetSpeed)
 		water:SetAttribute("AdaptiveMode", currentWaterMode)
 		water:SetAttribute("ProgressGap", currentProgressGap)
+		water:SetAttribute("LowerGroupGap", currentLowerGroupGap)
+		water:SetAttribute("CollectivePlayerCount", currentCollectiveCount)
 		local waterRoundStatus = ChunkManager.GetRoundStatus(currentWaterY)
 		water:SetAttribute("GeneratedRounds", waterRoundStatus.GeneratedRounds)
 		water:SetAttribute("SafeRoundsAhead", waterRoundStatus.SafeRoundsAhead)
@@ -315,13 +434,16 @@ while true do
 		for player, data in pairs(playerData) do
 			local character = player.Character
 			local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-			local height = rootPart and math.max(0, math.floor(rootPart.Position.Y - 0.5)) or 0
+			local height = rootPart and math.max(0, math.floor(logicalAltitude(rootPart.Position.Y) - 0.5)) or 0
 			local playerRoundStatus = ChunkManager.GetRoundStatus(rootPart and rootPart.Position.Y or currentWaterY)
+			local playerContext = rootPart and ChunkManager.GetPlayerWorldContext(rootPart.Position) or nil
 			waterEvent:FireClient(player, {
-				waterY = math.floor(currentWaterY),
+				waterY = math.floor(logicalAltitude(currentWaterY)),
 				waterSpeed = currentWaterSpeed,
 				waterMode = currentWaterMode,
 				waterGap = math.floor(currentProgressGap),
+				lowerGroupGap = math.floor(currentLowerGroupGap),
+				collectivePlayerCount = currentCollectiveCount,
 				score = ScoreService.GetScore(player),
 				runScore = ScoreService.GetRunScore(player),
 				bestScore = ScoreService.GetBestScore(player),
@@ -332,10 +454,20 @@ while true do
 				height = height,
 				alive = data.alive,
 				inWater = data.inWater,
-				currentRound = playerRoundStatus.CurrentRound,
+				currentRound = playerContext and playerContext.LogicalLevel or playerRoundStatus.CurrentRound,
+				currentCycle = playerContext and playerContext.CycleIndex or playerRoundStatus.CurrentCycle,
+				currentRoute = playerContext and playerContext.RouteId or nil,
+				currentRouteProfile = playerContext and playerContext.RouteProfile or nil,
+				inSocialSanctuary = playerContext and playerContext.IsSanctuary or false,
+				currentIslandKey = playerContext and playerContext.IslandKey or nil,
+				currentLaneX = playerContext and playerContext.LaneX or nil,
+				currentLaneZ = playerContext and playerContext.LaneZ or nil,
+				inConvergenceIsland = playerContext and playerContext.IsConvergence or false,
 				generatedRounds = waterRoundStatus.GeneratedRounds,
 				safeRoundsAhead = waterRoundStatus.SafeRoundsAhead,
-				groupProgressY = math.floor(waterRoundStatus.GroupProgressY or 0),
+				groupProgressY = waterRoundStatus.GroupProgressY
+					and math.floor(logicalAltitude(waterRoundStatus.GroupProgressY))
+					or 0,
 				worldEvent = workspace:GetAttribute("ActiveWorldEvent"),
 			})
 		end

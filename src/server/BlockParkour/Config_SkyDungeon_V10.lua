@@ -1,10 +1,4 @@
---[[
-	Sky Dungeon V10 - Config
-
-	Um chunk agora representa um round/andar completo: entrada, sala principal,
-	rotas opcionais, ponto de reencontro e saida. Todas as coordenadas logicas
-	continuam em celulas inteiras para manter seeds reproduziveis.
-]]
+-- Sky Dungeon - configuracao da fronteira vertical gerada por ilha.
 
 local Config = {
 	-- BASE DO GRID
@@ -12,7 +6,9 @@ local Config = {
 	CENTER_WORLD = Vector3.new(0, 0, 0),
 	START_GRID = Vector3.new(0, 0, 0),
 	SEED = nil, -- Inteiro para repetir exatamente a mesma torre.
-	MAX_RADIUS_STUDS = 300, -- Folga para curvas deterministicas sem prender rounds futuros.
+	-- 0 desativa o antigo limite circular. A malha cresce somente onde jogadores
+	-- chegam e as regioes submersas sao removidas.
+	MAX_RADIUS_STUDS = 0,
 	HEADROOM_CELLS = 2,
 	REPLACE_EXISTING = true,
 	MODEL_NAME = "GeneratedSkyDungeonRound",
@@ -20,13 +16,102 @@ local Config = {
 	-- GERACAO CONTINUA POR ROUNDS
 	ENABLE_DYNAMIC_CHUNKS = true,
 	WORLD_MODEL_NAME = "GeneratedBlockWorld",
-	INITIAL_CHUNK_COUNT = 2,
+	INITIAL_CHUNK_COUNT = 1,
 	MAX_TOTAL_CHUNKS = 0, -- 0 = infinito; a agua remove os rounds antigos.
 	CHUNK_SEED_STEP = 7919,
 	CHUNK_CHECK_INTERVAL_SECONDS = 1,
 	MAX_CHUNKS_PER_CHECK = 1,
 	MIN_ACTIVE_CHUNKS = 3,
 	ROUND_GENERATION_RETRIES = 4,
+
+	-- FRONTEIRA VERTICAL REATIVA POR ROUNDS
+	-- Cada ilha continua sendo um no, mas a unidade visual de geracao e um round
+	-- completo com dois niveis da malha. O proximo round comeca quando um jogador
+	-- se aproxima de uma ilha de fronteira, antes de colocar os pes nela.
+	ENABLE_ISLAND_FRONTIER_WORLD = true,
+	-- A posicao fisica continua presa ao grid seguro, mas cada faixa usa uma
+	-- distancia sorteada pela seed. Isso quebra o aspecto de tabuleiro sem perder
+	-- convergencias: o mesmo (LaneX, LaneZ, Level) ainda resolve para um unico ponto.
+	FRONTIER_LANE_SPACING_CELLS = 15, -- fallback/compatibilidade: 75 studs.
+	FRONTIER_HORIZONTAL_SPACING_MIN_CELLS = 14, -- 70 studs.
+	FRONTIER_HORIZONTAL_SPACING_MAX_CELLS = 17, -- 85 studs.
+	FRONTIER_LEVEL_RISE_CELLS = 4, -- fallback/compatibilidade: 20 studs.
+	FRONTIER_VERTICAL_RISE_MIN_CELLS = 3, -- 15 studs.
+	FRONTIER_VERTICAL_RISE_MAX_CELLS = 4, -- 20 studs.
+	FRONTIER_CONNECTION_LANE_OFFSET_CELLS = 1,
+	FRONTIER_ROUND_DEPTH_LEVELS = 2,
+	-- A preparacao comeca na rota anterior, mas somente depois de o jogador
+	-- demonstrar intencao real de seguir ate aquela ilha. Distancia sozinha nao
+	-- abre mais rounds e, portanto, um jogador parado nao gera o mundo inteiro.
+	FRONTIER_APPROACH_DISTANCE_STUDS = 68,
+	FRONTIER_APPROACH_VERTICAL_MARGIN_STUDS = 48,
+	FRONTIER_INTENT_SUSTAIN_SECONDS = 0.55,
+	FRONTIER_INTENT_MIN_PROGRESS_STUDS = 3.5,
+	FRONTIER_INTENT_MIN_MOVE_SPEED_STUDS = 2,
+	FRONTIER_INTENT_MIN_ALIGNMENT = 0.18,
+	FRONTIER_INTENT_DISTANCE_REGRESSION_TOLERANCE_STUDS = 1.25,
+	FRONTIER_INTENT_TRIGGER_COOLDOWN_SECONDS = 1.5,
+	FRONTIER_MIN_OUTGOING_CONNECTIONS = 2,
+	FRONTIER_MAX_OUTGOING_CONNECTIONS = 3,
+	FRONTIER_EXTRA_CONNECTION_CHANCE = 0.24,
+	FRONTIER_SANCTUARY_CHANCE = 0.075,
+	FRONTIER_SANCTUARY_MIN_LEVEL = 5,
+	FRONTIER_SANCTUARY_SIZE = "Large",
+	FRONTIER_SANCTUARY_MIN_CONNECTIONS = 3,
+	FRONTIER_DISCOVERY_POLL_SECONDS = 0.16,
+	FRONTIER_DISCOVERY_HORIZONTAL_PADDING_STUDS = 2,
+	FRONTIER_DISCOVERY_VERTICAL_PADDING_STUDS = 7,
+	-- Uma operacao cria no maximo uma ilha OU uma conexao. O worker roda no
+	-- Heartbeat e respeita tambem um pequeno orcamento de tempo por frame.
+	FRONTIER_MAX_EXPANSIONS_PER_UPDATE = 1, -- contrato antigo
+	FRONTIER_MAX_GEOMETRY_OPERATIONS_PER_FRAME = 1,
+	FRONTIER_GEOMETRY_PARTS_PER_FRAME = 2,
+	FRONTIER_GENERATION_TIME_BUDGET_SECONDS = 0.002,
+	-- Detalhes visuais e conteudo jogavel usam uma fila global separada. Cada
+	-- clone pode ceder o frame para impedir rajadas de Instances.
+	FRONTIER_DETAIL_YIELD_EVERY_CLONES = 2,
+	FRONTIER_DETAIL_TIME_BUDGET_SECONDS = 0.0015,
+	FRONTIER_DETAIL_IDLE_SECONDS = 0.03,
+	FRONTIER_MAX_ACTIVE_ISLANDS = 650,
+	FRONTIER_MIN_ACTIVE_ISLANDS = 12,
+	FRONTIER_CONTENT_ACTIVATION_DISTANCE_STUDS = 135,
+	FRONTIER_CONTENT_VERTICAL_MARGIN_STUDS = 55,
+	FRONTIER_MAX_CONTENT_ACTIVATIONS_PER_UPDATE = 2,
+	-- Conteudo ja descoberto permanece no mundo, mas a IA so simula perto de
+	-- jogadores. Os dois raios formam uma histerese e evitam liga/desliga na borda.
+	FRONTIER_SIMULATION_ACTIVATION_DISTANCE_STUDS = 155,
+	FRONTIER_SIMULATION_DEACTIVATION_DISTANCE_STUDS = 210,
+	FRONTIER_SIMULATION_VERTICAL_MARGIN_STUDS = 75,
+	FRONTIER_SIMULATION_UPDATE_SECONDS = 0.5,
+	-- Consultas de proximidade usam buckets X/Z em vez de varrer todas as ilhas.
+	FRONTIER_SPATIAL_HASH_CELL_STUDS = 96,
+	FRONTIER_SPATIAL_QUERY_PADDING_STUDS = 42,
+	FRONTIER_DIAGNOSTIC_UPDATE_SECONDS = 0.25,
+	-- O cliente deixa o culling de Parts para o motor do Roblox e pausa somente
+	-- efeitos caros de ilhas fora da camera/distantes.
+	FRONTIER_EFFECT_CULLING_ENABLED = true,
+	FRONTIER_EFFECT_CULLING_UPDATE_SECONDS = 0.2,
+	FRONTIER_EFFECT_CULLING_MAX_DISTANCE_STUDS = 230,
+	FRONTIER_EFFECT_CULLING_FORCE_ACTIVE_DISTANCE_STUDS = 45,
+	FRONTIER_EFFECT_CULLING_SCREEN_MARGIN_PIXELS = 96,
+	-- Misterio a longa distancia sem FogStart/FogEnd e sem cortina de particulas.
+	-- O cliente aplica apenas profundidade de campo ao horizonte; objetos proximos
+	-- continuam nitidos e o culling real permanece por conta do motor/streaming.
+	FRONTIER_MYSTERY_DISTANCE_ENABLED = true,
+	FRONTIER_MYSTERY_FOCUS_DISTANCE_STUDS = 90,
+	FRONTIER_MYSTERY_IN_FOCUS_RADIUS_STUDS = 105,
+	FRONTIER_MYSTERY_FAR_INTENSITY = 0.72,
+	FRONTIER_WATER_SAFETY_LEVELS = 2,
+	FRONTIER_CLEANUP_MARGIN_STUDS = 15,
+	-- Compatibilidade temporaria com o script da agua anterior.
+	MIN_ACTIVE_CYCLES = 12,
+	MAX_SECTOR_ACTIVATIONS_PER_UPDATE = 2,
+	COLLECTIVE_UPDATE_INTERVAL_SECONDS = 0.5,
+	COLLECTIVE_TRIM_FRACTION = 0.10,
+	COLLECTIVE_LOWER_PERCENTILE = 0.20,
+	COLLECTIVE_MERCY_MULTIPLIER = 0.72,
+	WORLD_REBASE_TRIGGER_Y = 8000,
+	WORLD_REBASE_SHIFT_STUDS = 5000,
 
 	-- Contrato antigo mantido para scripts externos que ainda leem esses campos.
 	CHUNK_ROUTE_BLOCK_COUNT = 70,
@@ -96,6 +181,9 @@ local Config = {
 	-- CAMADA PLANA: terra embaixo e material Grass somente no topo.
 	-- A camada e visual, fica quase toda embutida na terra e nao altera a colisao.
 	CREATE_FLAT_GRASS_LAYER = true,
+	-- Cada bloco das pontes decide pela seed se recebe ou nao o topo de grama.
+	-- 0.5 produz aproximadamente metade terra nua e metade terra com grama.
+	CONNECTOR_FLAT_GRASS_CHANCE = 0.5,
 	FLAT_GRASS_LAYER_THICKNESS_STUDS = 0.35,
 	FLAT_GRASS_SURFACE_OFFSET_STUDS = 0.02,
 	FLAT_GRASS_COLOR = Color3.fromRGB(88, 142, 72),

@@ -5,9 +5,11 @@ local CollectionService = game:GetService("CollectionService")
 local Debris = game:GetService("Debris")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local ServerScriptService = game:GetService("ServerScriptService")
 
 local ScoreService = require(script.Parent.ScoreService_SkyDungeon_V10)
 local InventoryService = require(script.Parent.Parent.MVPSystems:WaitForChild("InventoryService"))
+local AnimeOutline = require(ServerScriptService.MVPSystems:WaitForChild("AnimeOutline"))
 ScoreService.Start()
 InventoryService.Start()
 
@@ -16,9 +18,39 @@ local states = setmetatable({}, { __mode = "k" })
 local heartbeatConnected = false
 
 local function getRoot(model)
-	return model:FindFirstChild("HumanoidRootPart", true)
+	return model:FindFirstChild("MimicRoot", true)
+		or model:FindFirstChild("HumanoidRootPart", true)
 		or model.PrimaryPart
 		or model:FindFirstChildWhichIsA("BasePart", true)
+end
+
+local function ensureHumanoidRootPart(model, mimicRoot)
+	local existing = model:FindFirstChild("HumanoidRootPart", true)
+	if existing and existing:IsA("BasePart") then
+		return existing
+	end
+
+	-- Humanoid locomotion expects this conventional name. Keep MimicRoot as the
+	-- real/visible root and add only a massless runtime proxy to the same assembly.
+	local movementRoot = Instance.new("Part")
+	movementRoot.Name = "HumanoidRootPart"
+	movementRoot.Size = mimicRoot.Size
+	movementRoot.CFrame = mimicRoot.CFrame
+	movementRoot.Transparency = 1
+	movementRoot.Massless = true
+	movementRoot.Anchored = false
+	movementRoot.CanCollide = false
+	movementRoot.CanTouch = false
+	movementRoot.CanQuery = false
+	movementRoot.CastShadow = false
+	movementRoot.Parent = model
+
+	local weld = Instance.new("WeldConstraint")
+	weld.Name = "MimicMovementRootWeld"
+	weld.Part0 = movementRoot
+	weld.Part1 = mimicRoot
+	weld.Parent = movementRoot
+	return movementRoot
 end
 
 local function getDamager(model, humanoid)
@@ -105,6 +137,9 @@ local function connectHeartbeat()
 				states[model] = nil
 				continue
 			end
+			if model:GetAttribute("SimulationActive") == false then
+				continue
+			end
 			if model:GetAttribute("CombatStunned") == true then
 				continue
 			end
@@ -139,19 +174,26 @@ function MimicAI.Activate(model, options)
 	local humanoid = model:FindFirstChildWhichIsA("Humanoid", true)
 	local root = getRoot(model)
 	if not humanoid or not root or not root:IsA("BasePart") then
-		return false, "MimicChest precisa de Humanoid e HumanoidRootPart"
+		return false, "MimicChest precisa de Humanoid e MimicRoot"
 	end
+	local movementRoot = ensureHumanoidRootPart(model, root)
 	model.PrimaryPart = root
 	model:SetAttribute("RuntimeMonster", true)
 	model:SetAttribute("MonsterId", "MimicChest")
 	model:SetAttribute("DisplayName", "Bau Mimico")
 	model:SetAttribute("UseCentralAI", false)
+	local island = model:FindFirstAncestorWhichIsA("Model")
+	while island and island:GetAttribute("IsSkyIsland") ~= true do
+		island = island:FindFirstAncestorWhichIsA("Model")
+	end
+	model:SetAttribute("SimulationActive", not island or island:GetAttribute("SimulationActive") ~= false)
 	model:SetAttribute("Peaceful", false)
 	model:SetAttribute("IsMimic", true)
 	model:SetAttribute("HomePosition", root.Position)
 	CollectionService:AddTag(model, "CombatTarget")
+	AnimeOutline.Apply(model)
 	pcall(function()
-		root:SetNetworkOwner(nil)
+		movementRoot:SetNetworkOwner(nil)
 	end)
 
 	local tier = math.max(1, math.floor(tonumber(options.DifficultyTier) or 1))

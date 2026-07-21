@@ -496,7 +496,9 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 	)
 	local healthMultiplier = 1 + (difficultyTier - 1) * MVPConfig.Difficulty.HealthPerTier
 	local damageMultiplier = 1 + (difficultyTier - 1) * MVPConfig.Difficulty.DamagePerTier
-	local rewardMultiplier = 1 + (difficultyTier - 1) * MVPConfig.Difficulty.RewardPerTier
+	local routeRewardMultiplier = math.max(0.1, tonumber(island:GetAttribute("RouteRewardMultiplier")) or 1)
+	local rewardMultiplier = (1 + (difficultyTier - 1) * MVPConfig.Difficulty.RewardPerTier)
+		* routeRewardMultiplier
 	if elite then
 		healthMultiplier *= MVPConfig.Difficulty.EliteHealthMultiplier
 		damageMultiplier *= MVPConfig.Difficulty.EliteDamageMultiplier
@@ -540,10 +542,14 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 		initiallyPeaceful = slimeDefinition.InitiallyPeaceful
 	end
 	clone:SetAttribute("Peaceful", not elite and initiallyPeaceful)
-	local useCentralAI = slimeDefinition ~= nil
-		or template:GetAttribute("UseCentralAI") == true
-		or (elite and template:GetAttribute("UseCustomAI") ~= true)
+	local usesSlimeController = slimeDefinition ~= nil
+	local useCentralAI = not usesSlimeController and (
+		template:GetAttribute("UseCentralAI") == true
+			or (elite and template:GetAttribute("UseCustomAI") ~= true)
+	)
 	clone:SetAttribute("UseCentralAI", useCentralAI)
+	clone:SetAttribute("AIController", usesSlimeController and "Slime" or (useCentralAI and "Generic" or "Custom"))
+	clone:SetAttribute("SimulationActive", island:GetAttribute("SimulationActive") ~= false)
 	clone:SetAttribute("SpawnSurfacePosition", cellRecord.SurfacePosition)
 	clone:SetAttribute("SpawnGridX", cellRecord.Cell.X)
 	clone:SetAttribute("SpawnGridY", cellRecord.Cell.Y)
@@ -555,7 +561,7 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 	CollectionService:AddTag(clone, "CombatTarget")
 
 	for _, descendant in ipairs(clone:GetDescendants()) do
-		if descendant:IsA("BaseScript") and useCentralAI then
+		if descendant:IsA("BaseScript") and (useCentralAI or usesSlimeController) then
 			if
 				not slimeDefinition
 				or (
@@ -841,8 +847,13 @@ function MonsterSpawner.PopulateIsland(island, freeCells, context)
 		return 0
 	end
 
+	local routeChanceMultiplier = math.max(0, tonumber(island:GetAttribute("MonsterChanceMultiplier")) or 1)
 	local spawnChance = eliteIsland and 1
-		or math.clamp(numberAttribute(template, "SpawnChance", CONFIG.DEFAULT_SPAWN_CHANCE), 0, 1)
+		or math.clamp(
+			numberAttribute(template, "SpawnChance", CONFIG.DEFAULT_SPAWN_CHANCE) * routeChanceMultiplier,
+			0,
+			1
+		)
 	if random:NextNumber() > spawnChance then
 		return 0
 	end
@@ -965,4 +976,3 @@ end
 initialize()
 
 return MonsterSpawner
- 

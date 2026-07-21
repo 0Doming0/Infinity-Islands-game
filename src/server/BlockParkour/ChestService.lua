@@ -3,6 +3,7 @@
 local Debris = game:GetService("Debris")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 local ServerStorage = game:GetService("ServerStorage")
 
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
@@ -60,7 +61,7 @@ local function createMimicPrototype(folder)
 	model:SetAttribute("MaxHealth", 90)
 	model:SetAttribute("AttackDamage", 12)
 	local root = Instance.new("Part")
-	root.Name = "HumanoidRootPart"
+	root.Name = "MimicRoot"
 	root.Size = Vector3.new(3.8, 2.8, 3.2)
 	root.Color = Color3.fromRGB(100, 54, 34)
 	root.Material = Enum.Material.WoodPlanks
@@ -106,17 +107,22 @@ local function getTemplates()
 end
 
 local function getRoot(model, mimic)
-	local root = mimic and model:FindFirstChild("HumanoidRootPart", true)
+	local root = mimic and model:FindFirstChild("MimicRoot", true)
+		or mimic and model:FindFirstChild("HumanoidRootPart", true)
 		or model:FindFirstChild("Root", true)
 		or model.PrimaryPart
 		or model:FindFirstChildWhichIsA("BasePart", true)
 	return root and root:IsA("BasePart") and root or nil
 end
 
-local function prepare(model, anchored)
+local function prepare(model, anchored, preserveScripts)
 	for _, descendant in ipairs(model:GetDescendants()) do
 		if descendant:IsA("BaseScript") then
-			descendant.Disabled = true
+			-- The custom MimicChest owns its animation scripts. Keep their original
+			-- Enabled/Disabled state; ordinary chest templates remain inert.
+			if not preserveScripts then
+				descendant.Disabled = true
+			end
 		elseif descendant:IsA("BasePart") then
 			descendant.Anchored = anchored
 			descendant.CanTouch = false
@@ -232,10 +238,10 @@ local function activateChest(chest, player)
 		return
 	end
 	mimic.PrimaryPart = root
-	prepare(mimic, false)
+	prepare(mimic, false, true)
 	mimic.Name = "Monster_MimicChest"
-	mimic.Parent = state.Island
 	alignBottom(mimic, state.SurfacePosition, state.Yaw)
+	mimic.Parent = state.Island
 	chest:Destroy()
 	revealParticles(root.Position, Color3.fromRGB(210, 63, 75))
 	local success, reason = MimicAI.Activate(mimic, {
@@ -262,7 +268,7 @@ local function spawnChest(parent, island, record, index, isMimic, coinReward, ra
 		return false
 	end
 	chest.PrimaryPart = root
-	prepare(chest, true)
+	prepare(chest, true, false)
 	chest.Name = string.format("Chest_%02d", index)
 	chest:SetAttribute("IsTreasureChest", true)
 	chest:SetAttribute("Opened", false)
@@ -306,13 +312,15 @@ function ChestService.PopulateIsland(island, freeCells, context)
 	if islandType ~= "Normal" and islandType ~= "Treasure" then
 		return 0
 	end
-	if islandType ~= "Treasure" and not string.find(role, "SideRoom", 1, true) then
+	if string.find(role, "Sanctuary", 1, true) then
 		return 0
 	end
 	local seed = math.floor(math.abs((island:GetAttribute("IslandSeed") or context.RoundSeed or 1)
 		+ MVPConfig.Chests.RandomSalt)) % 2147483647
 	local random = Random.new(seed == 0 and 1 or seed)
-	if islandType ~= "Treasure" and random:NextNumber() > MVPConfig.Chests.NormalIslandChance then
+	local chanceMultiplier = math.max(0, tonumber(island:GetAttribute("ChestChanceMultiplier")) or 1)
+	local normalChance = math.clamp(MVPConfig.Chests.NormalIslandChance * chanceMultiplier, 0, 1)
+	if islandType ~= "Treasure" and random:NextNumber() > normalChance then
 		return 0
 	end
 

@@ -21,6 +21,8 @@ local ChestService = require(script.Parent.ChestService)
 local Generator = {}
 local warnedMissingDecorationAssets = false
 local warnedMissingGrassAssets = false
+local decorationTemplateCache
+local grassTemplateCache
 local spawnGrassModel
 
 local CARDINAL_DIRECTIONS = {
@@ -61,22 +63,31 @@ local function shuffle(random, source)
 end
 
 local function gridToWorld(cell)
-	return Config.CENTER_WORLD + cell * Config.GRID_SIZE
+	local physicalOffsetY = tonumber(workspace:GetAttribute("WorldPhysicalYOffsetStuds")) or 0
+	return Config.CENTER_WORLD + Vector3.new(0, physicalOffsetY, 0) + cell * Config.GRID_SIZE
 end
 
 local function worldToGrid(position)
-	local relative = (position - Config.CENTER_WORLD) / Config.GRID_SIZE
+	local physicalOffsetY = tonumber(workspace:GetAttribute("WorldPhysicalYOffsetStuds")) or 0
+	local physicalOrigin = Config.CENTER_WORLD + Vector3.new(0, physicalOffsetY, 0)
+	local relative = (position - physicalOrigin) / Config.GRID_SIZE
 	return Vector3.new(math.round(relative.X), math.round(relative.Y), math.round(relative.Z))
 end
 
 local function isInsideRadius(cell)
+	if Config.MAX_RADIUS_STUDS <= 0 then
+		return true
+	end
 	local horizontalStuds = Vector2.new(cell.X, cell.Z).Magnitude * Config.GRID_SIZE
 	return horizontalStuds <= Config.MAX_RADIUS_STUDS + 0.001
 end
 
 local function validateConfig()
 	assert(isInteger(Config.GRID_SIZE) and Config.GRID_SIZE >= 4, "[SkyDungeon] GRID_SIZE invalido.")
-	assert(isMultiple(Config.MAX_RADIUS_STUDS, Config.GRID_SIZE), "[SkyDungeon] Raio deve alinhar ao grid.")
+	assert(
+		Config.MAX_RADIUS_STUDS == 0 or isMultiple(Config.MAX_RADIUS_STUDS, Config.GRID_SIZE),
+		"[SkyDungeon] Raio deve ser zero ou alinhar ao grid."
+	)
 	assert(Config.HEADROOM_CELLS >= 1, "[SkyDungeon] HEADROOM_CELLS deve ser positivo.")
 	assert(
 		Config.ISLAND_FLOOR_THICKNESS_STUDS == Config.GRID_SIZE,
@@ -107,6 +118,10 @@ local function validateConfig()
 		"[SkyDungeon] GRASS_NOISE_THRESHOLD deve ficar entre 0 e 1."
 	)
 	assert(Config.GRASS_JITTER_STUDS >= 0, "[SkyDungeon] GRASS_JITTER_STUDS invalido.")
+	assert(
+		Config.CONNECTOR_FLAT_GRASS_CHANCE >= 0 and Config.CONNECTOR_FLAT_GRASS_CHANCE <= 1,
+		"[SkyDungeon] CONNECTOR_FLAT_GRASS_CHANCE deve ficar entre 0 e 1."
+	)
 	assert(Config.FLAT_GRASS_LAYER_THICKNESS_STUDS > 0, "[SkyDungeon] Espessura da camada de grama invalida.")
 	assert(Config.FLAT_GRASS_SURFACE_OFFSET_STUDS >= 0, "[SkyDungeon] Offset da camada de grama invalido.")
 	assert(
@@ -297,10 +312,13 @@ local function layoutFits(candidate, externalOccupied, externalHeadroom)
 	return true, maximumRadius
 end
 
-local function buildLayoutCandidates(random, startGrid, roundIndex, actualSeed, externalOccupied, externalHeadroom)
-	local roundRise = random:NextInteger(Config.ROUND_MIN_VERTICAL_CELLS, Config.ROUND_MAX_VERTICAL_CELLS)
-	local mainType = Config.MAIN_ISLAND_TYPES[random:NextInteger(1, #Config.MAIN_ISLAND_TYPES)]
-	local sideCount = random:NextInteger(Config.ROUND_MIN_SIDE_ROOMS, Config.ROUND_MAX_SIDE_ROOMS)
+local function buildLayoutCandidates(random, startGrid, roundIndex, actualSeed, externalOccupied, externalHeadroom, options)
+	local roundRise = options.ForcedRoundRiseCells
+		or random:NextInteger(Config.ROUND_MIN_VERTICAL_CELLS, Config.ROUND_MAX_VERTICAL_CELLS)
+	local mainType = options.ForcedMainIslandType
+		or Config.MAIN_ISLAND_TYPES[random:NextInteger(1, #Config.MAIN_ISLAND_TYPES)]
+	local sideCount = options.ForcedSideRoomCount
+		or random:NextInteger(Config.ROUND_MIN_SIDE_ROOMS, Config.ROUND_MAX_SIDE_ROOMS)
 	local candidates = {}
 	local mainSize = Config.TERRAIN_TYPES[mainType]
 	local hubSize = Config.TERRAIN_TYPES[Config.HUB_ISLAND_TYPE]
@@ -315,9 +333,13 @@ local function buildLayoutCandidates(random, startGrid, roundIndex, actualSeed, 
 	local mainToHubRise = Config.ROUND_HUB_RISE_CELLS - Config.ROUND_MAIN_RISE_CELLS
 	local hubToExitRise = roundRise - Config.ROUND_HUB_RISE_CELLS
 
-	for _, forward in ipairs(shuffle(random, CARDINAL_DIRECTIONS)) do
+	local forwardCandidates = options.ForcedForward and { options.ForcedForward }
+		or shuffle(random, CARDINAL_DIRECTIONS)
+	local turnCandidates = options.ForcedTurnSign and { options.ForcedTurnSign }
+		or shuffle(random, { -1, 1 })
+	for _, forward in ipairs(forwardCandidates) do
 		local right = Vector3.new(-forward.Z, 0, forward.X)
-		for _, turnSign in ipairs(shuffle(random, { -1, 1 })) do
+		for _, turnSign in ipairs(turnCandidates) do
 			local exitDirection = right * turnSign
 			local mainCenter = startGrid
 				+ forward * (mainHalfDepth + Config.ROUND_MAIN_RISE_CELLS)
@@ -361,7 +383,7 @@ local function buildLayoutCandidates(random, startGrid, roundIndex, actualSeed, 
 					)
 				)
 			end
-			if roundIndex == 1 then
+			if roundIndex == 1 and options.IncludeEntrySanctuary ~= false then
 				local entryHalfDepth = math.floor(Config.TERRAIN_TYPES[Config.ENTRY_ISLAND_TYPE].Depth / 2)
 				local entryCenter = startGrid - forward * entryHalfDepth
 				table.insert(
@@ -390,6 +412,7 @@ local function buildLayoutCandidates(random, startGrid, roundIndex, actualSeed, 
 				Exit = islands[3],
 				Sides = {},
 				Archetype = turnSign > 0 and "TurningAscentRight" or "TurningAscentLeft",
+				ExitCornerSign = options.ForcedExitCornerSign,
 			}
 			for index = 4, #islands do
 				local island = islands[index]
@@ -478,9 +501,39 @@ local function chooseExitEndGrid(candidate)
 	local farEdgeCenter = exitIsland.Center + candidate.ExitDirection * halfTurnAxis
 	local cornerA = farEdgeCenter + candidate.Forward * halfForwardAxis
 	local cornerB = farEdgeCenter - candidate.Forward * halfForwardAxis
+	if candidate.ExitCornerSign == 1 then
+		return cornerA
+	elseif candidate.ExitCornerSign == -1 then
+		return cornerB
+	end
 	local radiusA = Vector2.new(cornerA.X, cornerA.Z).Magnitude
 	local radiusB = Vector2.new(cornerB.X, cornerB.Z).Magnitude
 	return radiusA <= radiusB and cornerA or cornerB
+end
+
+local function applyWorldContextAttributes(instance, options, roundIndex)
+	local profile = options.RouteId and Config.ROUTE_PROFILES[options.RouteId] or nil
+	instance:SetAttribute("RoundIndex", roundIndex)
+	if options.CycleIndex then
+		instance:SetAttribute("CycleIndex", options.CycleIndex)
+	end
+	if options.LogicalLevel then
+		instance:SetAttribute("LogicalLevel", options.LogicalLevel)
+	end
+	if options.LevelInCycle then
+		instance:SetAttribute("LevelInCycle", options.LevelInCycle)
+	end
+	if options.RouteId then
+		instance:SetAttribute("RouteId", options.RouteId)
+	end
+	if profile then
+		instance:SetAttribute("RouteProfile", profile.DisplayName)
+		instance:SetAttribute("RouteRewardMultiplier", profile.RewardMultiplier)
+		instance:SetAttribute("MonsterChanceMultiplier", profile.MonsterChanceMultiplier)
+		instance:SetAttribute("ChestChanceMultiplier", profile.ChestChanceMultiplier)
+		instance:SetAttribute("CollectibleChanceMultiplier", profile.CollectibleChanceMultiplier)
+		instance:SetAttribute("SpecialIslandChanceMultiplier", profile.SpecialIslandChanceMultiplier)
+	end
 end
 
 local function tryPlanCandidate(_random, candidate, startGrid, externalOccupied, externalHeadroom)
@@ -584,7 +637,35 @@ local function createFlatGrassLayer(parent, sourcePart, name, roundIndex)
 	return layer
 end
 
-local function createConnector(parent, cell, pathType, pathId, pathName, sequence, roundIndex, grassTemplates)
+local function connectorHasFlatGrass(cell, pathId, sequence, roundIndex, worldSeed)
+	if not Config.CREATE_FLAT_GRASS_LAYER then
+		return false
+	end
+
+	local chance = Config.CONNECTOR_FLAT_GRASS_CHANCE
+	if chance <= 0 then
+		return false
+	end
+	if chance >= 1 then
+		return true
+	end
+
+	-- A posicao da celula participa da seed para caminhos diferentes nao repetirem
+	-- o mesmo desenho. A escolha continua identica sempre que o mundo for recriado.
+	local randomSeed = (
+		(tonumber(worldSeed) or 0) * 104729
+		+ roundIndex * 7919
+		+ pathId * 1009
+		+ sequence * 101
+		+ cell.X * 73856093
+		+ cell.Y * 19349663
+		+ cell.Z * 83492791
+	) % 2147483647
+	return Random.new(math.max(1, randomSeed)):NextNumber() < chance
+end
+
+local function createConnector(parent, cell, pathType, pathId, pathName, sequence, roundIndex, grassTemplates, options)
+	options = options or {}
 	local part = Instance.new("Part")
 	part.Name = string.format("%s_%02d_%03d", pathName, pathId, sequence)
 	part.Size = Vector3.new(Config.GRID_SIZE, Config.GRID_SIZE, Config.GRID_SIZE)
@@ -607,8 +688,20 @@ local function createConnector(parent, cell, pathType, pathId, pathName, sequenc
 	part:SetAttribute("IsRoundConnector", true)
 	part:SetAttribute("RoundIndex", roundIndex)
 	part.Parent = parent
-	createFlatGrassLayer(parent, part, part.Name .. "_GrassTop", roundIndex)
-	if Config.GRASS_ON_CONNECTORS and #grassTemplates > 0 then
+	if options.YieldCallback then
+		options.YieldCallback()
+	end
+	local deferVisualContent = options.DeferVisualContent == true
+	local hasFlatGrass = connectorHasFlatGrass(cell, pathId, sequence, roundIndex, options.Seed)
+	part:SetAttribute("ConnectorSurface", hasFlatGrass and "Grass" or "Dirt")
+	part:SetAttribute("SimplifiedRouteVisual", deferVisualContent)
+	if hasFlatGrass then
+		createFlatGrassLayer(parent, part, part.Name .. "_GrassTop", roundIndex)
+		if options.YieldCallback then
+			options.YieldCallback()
+		end
+	end
+	if hasFlatGrass and not deferVisualContent and Config.GRASS_ON_CONNECTORS and #grassTemplates > 0 then
 		local grassSeed = math.max(1, (roundIndex * 7919) % 2147483647)
 		local randomSeed = math.max(1, (grassSeed + sequence * 101 + pathId * 1009) % 2147483647)
 		local grassRandom = Random.new(randomSeed)
@@ -627,6 +720,9 @@ local function islandHasMainRoute(island)
 end
 
 local function getDecorationTemplates()
+	if decorationTemplateCache then
+		return decorationTemplateCache
+	end
 	local assets = ServerStorage:FindFirstChild("MVPAssets")
 	local folder = assets and assets:FindFirstChild(Config.DECORATION_FOLDER_NAME)
 	if not folder then
@@ -634,7 +730,8 @@ local function getDecorationTemplates()
 			warn("[SkyDungeon] Decoracao desativada nesta execucao: crie ServerStorage > MVPAssets > Decorations.")
 			warnedMissingDecorationAssets = true
 		end
-		return {}
+		decorationTemplateCache = {}
+		return decorationTemplateCache
 	end
 
 	local templates = {}
@@ -649,10 +746,14 @@ local function getDecorationTemplates()
 	table.sort(templates, function(a, b)
 		return a.Name < b.Name
 	end)
-	return templates
+	decorationTemplateCache = templates
+	return decorationTemplateCache
 end
 
 local function getGrassTemplates()
+	if grassTemplateCache then
+		return grassTemplateCache
+	end
 	local assets = ServerStorage:FindFirstChild("MVPAssets")
 	local folder = assets and assets:FindFirstChild(Config.GRASS_FOLDER_NAME)
 	if not folder then
@@ -660,7 +761,8 @@ local function getGrassTemplates()
 			warn("[SkyDungeon] Grama visual ausente: crie ServerStorage > MVPAssets > Grass.")
 			warnedMissingGrassAssets = true
 		end
-		return {}
+		grassTemplateCache = {}
+		return grassTemplateCache
 	end
 
 	local templates = {}
@@ -675,7 +777,8 @@ local function getGrassTemplates()
 	table.sort(templates, function(a, b)
 		return a.Name < b.Name
 	end)
-	return templates
+	grassTemplateCache = templates
+	return grassTemplateCache
 end
 
 local function removeEmbeddedScripts(instance)
@@ -689,10 +792,28 @@ end
 local function prepareStaticDecoration(instance)
 	if instance:IsA("BasePart") then
 		instance.Anchored = true
+		if instance:GetAttribute("GameplayTouch") ~= true then
+			instance.CanTouch = false
+		end
+		if instance:GetAttribute("GameplayQuery") ~= true then
+			instance.CanQuery = false
+		end
+		if instance:GetAttribute("KeepShadow") ~= true then
+			instance.CastShadow = false
+		end
 	end
 	for _, descendant in ipairs(instance:GetDescendants()) do
 		if descendant:IsA("BasePart") then
 			descendant.Anchored = true
+			if descendant:GetAttribute("GameplayTouch") ~= true then
+				descendant.CanTouch = false
+			end
+			if descendant:GetAttribute("GameplayQuery") ~= true then
+				descendant.CanQuery = false
+			end
+			if descendant:GetAttribute("KeepShadow") ~= true then
+				descendant.CastShadow = false
+			end
 		end
 	end
 end
@@ -822,7 +943,7 @@ spawnGrassModel = function(parent, templates, cell, seed, random, name)
 	return true
 end
 
-local function populateIslandGrass(model, island, content, grassTemplates)
+local function populateIslandGrass(model, island, content, grassTemplates, yieldCallback)
 	model:SetAttribute("GrassSpawnCount", 0)
 	if not Config.ENABLE_GRASS_MODELS or #grassTemplates == 0 then
 		return
@@ -851,12 +972,15 @@ local function populateIslandGrass(model, island, content, grassTemplates)
 			)
 		then
 			spawnCount += 1
+			if yieldCallback then
+				yieldCallback()
+			end
 		end
 	end
 	model:SetAttribute("GrassSpawnCount", spawnCount)
 end
 
-local function decorateIsland(model, island, content, roundIndex)
+local function decorateIsland(model, island, content, roundIndex, yieldCallback)
 	local points = Instance.new("Folder")
 	points.Name = "DecorationPoints"
 	points.Parent = model
@@ -912,13 +1036,17 @@ local function decorateIsland(model, island, content, roundIndex)
 				marker:SetAttribute("Populated", true)
 				marker:SetAttribute("AssetName", template.Name)
 				spawnCount += 1
+				if yieldCallback then
+					yieldCallback()
+				end
 			end
 		end
 	end
 	model:SetAttribute("DecorationSpawnCount", spawnCount)
 end
 
-local function createIsland(parent, island, roundIndex, previousCenter, grassTemplates)
+local function createIsland(parent, island, roundIndex, previousCenter, grassTemplates, options)
+	options = options or {}
 	local previousY = previousCenter.Y
 	local horizontalCenterDistance = Vector2.new(island.Center.X - previousCenter.X, island.Center.Z - previousCenter.Z).Magnitude
 		* Config.GRID_SIZE
@@ -944,7 +1072,7 @@ local function createIsland(parent, island, roundIndex, previousCenter, grassTem
 	model:SetAttribute("TotalBlockCount", #island.Cells)
 	model:SetAttribute("VerticalRiseFromPrevious", (island.Center.Y - previousY) * Config.GRID_SIZE)
 	model:SetAttribute("EdgeGapFromPrevious", edgeGap)
-	local isSanctuary = island.Role == "ExitSanctuary" or island.Role == "EntrySanctuary"
+	local isSanctuary = string.find(island.Role, "Sanctuary", 1, true) ~= nil
 	model:SetAttribute("CanSpawnItem", not isSanctuary)
 	model:SetAttribute("CanSpawnMonster", roundIndex > 1 and not isSanctuary)
 	model:SetAttribute("TraversalFromPrevious", island.Role == "MainHall" and "Entrance" or "Ascent")
@@ -1002,9 +1130,101 @@ local function createIsland(parent, island, roundIndex, previousCenter, grassTem
 	local content = Instance.new("Folder")
 	content.Name = "MVPContent"
 	content.Parent = model
-	decorateIsland(model, island, content, roundIndex)
-	populateIslandGrass(model, island, content, grassTemplates)
+	local deferVisualContent = options.DeferVisualContent == true
+	model:SetAttribute("VisualContentDeferred", deferVisualContent)
+	model:SetAttribute("VisualContentPopulated", not deferVisualContent)
+	if deferVisualContent then
+		model:SetAttribute("DecorationSpawnCount", 0)
+		model:SetAttribute("GrassSpawnCount", 0)
+	else
+		decorateIsland(model, island, content, roundIndex)
+		populateIslandGrass(model, island, content, grassTemplates)
+	end
 	return model
+end
+
+local function restoreIslandVisualSpec(islandModel)
+	local center = assert(islandModel:GetAttribute("CenterGrid"), "CenterGrid ausente na ilha adiada.")
+	local minX = assert(islandModel:GetAttribute("MinGridX"), "MinGridX ausente na ilha adiada.")
+	local maxX = assert(islandModel:GetAttribute("MaxGridX"), "MaxGridX ausente na ilha adiada.")
+	local minZ = assert(islandModel:GetAttribute("MinGridZ"), "MinGridZ ausente na ilha adiada.")
+	local maxZ = assert(islandModel:GetAttribute("MaxGridZ"), "MaxGridZ ausente na ilha adiada.")
+	local cells = table.create((maxX - minX + 1) * (maxZ - minZ + 1))
+	for x = minX, maxX do
+		for z = minZ, maxZ do
+			table.insert(cells, Vector3.new(x, center.Y, z))
+		end
+	end
+	local routeReservations = {}
+	local reservations = islandModel:FindFirstChild("RouteReservations")
+	if reservations then
+		for _, marker in ipairs(reservations:GetChildren()) do
+			local x = marker:GetAttribute("GridX")
+			local y = marker:GetAttribute("GridY")
+			local z = marker:GetAttribute("GridZ")
+			if x and y and z then
+				local cell = Vector3.new(x, y, z)
+				routeReservations[cellKey(cell)] = {
+					Cell = cell,
+					PathType = marker:GetAttribute("PathType"),
+					PathId = marker:GetAttribute("PathId"),
+				}
+			end
+		end
+	end
+	return {
+		Id = islandModel:GetAttribute("IslandId") or 0,
+		Role = islandModel:GetAttribute("IslandRole") or "FrontierIsland",
+		SizeName = islandModel:GetAttribute("TerrainSize") or "Small",
+		Center = center,
+		Cells = cells,
+		MinX = minX,
+		MaxX = maxX,
+		MinZ = minZ,
+		MaxZ = maxZ,
+		Seed = islandModel:GetAttribute("IslandSeed") or 1,
+		RouteReservations = routeReservations,
+	}
+end
+
+-- Grama e decoracao nao fazem parte da rota vital. No mundo reativo elas sao
+-- preenchidas depois por um unico worker, que pode ceder entre clones.
+function Generator.PopulateDeferredVisualContent(model, yieldCallback)
+	assert(model and model:IsA("Model"), "Modelo invalido para detalhes visuais.")
+	if model:GetAttribute("VisualContentPopulated") == true then
+		return true
+	end
+	if model:GetAttribute("VisualContentPopulating") == true then
+		return false
+	end
+	model:SetAttribute("VisualContentPopulating", true)
+	local terrainFolder = model:FindFirstChild("TerrainAreas")
+	if terrainFolder then
+		local islands = terrainFolder:GetChildren()
+		table.sort(islands, function(a, b)
+			return (a:GetAttribute("TerrainId") or 0) < (b:GetAttribute("TerrainId") or 0)
+		end)
+		local grassTemplates = getGrassTemplates()
+		for _, islandModel in ipairs(islands) do
+			if islandModel:IsA("Model") and islandModel:GetAttribute("VisualContentPopulated") ~= true then
+				local spec = restoreIslandVisualSpec(islandModel)
+				local content = islandModel:FindFirstChild("MVPContent")
+				if not content then
+					content = Instance.new("Folder")
+					content.Name = "MVPContent"
+					content.Parent = islandModel
+				end
+				decorateIsland(islandModel, spec, content, model:GetAttribute("RoundIndex") or 1, yieldCallback)
+				populateIslandGrass(islandModel, spec, content, grassTemplates, yieldCallback)
+				islandModel:SetAttribute("VisualContentDeferred", false)
+				islandModel:SetAttribute("VisualContentPopulated", true)
+			end
+		end
+	end
+	model:SetAttribute("VisualContentDeferred", false)
+	model:SetAttribute("VisualContentPopulated", true)
+	model:SetAttribute("VisualContentPopulating", false)
+	return true
 end
 
 local function assertGeneratedModelIsValid(model)
@@ -1032,6 +1252,7 @@ function Generator.Generate(parent, options)
 	local startGrid = options.StartGrid or Config.START_GRID
 	local modelName = options.ModelName or Config.MODEL_NAME
 	local chunkIndex = options.ChunkIndex or options.RoundIndex or 1
+	local roundIndex = options.RoundIndex or chunkIndex
 	local replaceExisting = options.ReplaceExisting
 	if replaceExisting == nil then
 		replaceExisting = Config.REPLACE_EXISTING
@@ -1054,7 +1275,7 @@ function Generator.Generate(parent, options)
 
 	local externalOccupied, externalHeadroom = collectExternalReservations(parent)
 	local candidates =
-		buildLayoutCandidates(random, startGrid, chunkIndex, actualSeed, externalOccupied, externalHeadroom)
+		buildLayoutCandidates(random, startGrid, roundIndex, actualSeed, externalOccupied, externalHeadroom, options)
 	assert(#candidates > 0, "[SkyDungeon] Nenhum layout cabe no raio atual; aumente MAX_RADIUS_STUDS.")
 
 	local plan
@@ -1072,12 +1293,12 @@ function Generator.Generate(parent, options)
 	model.Name = modelName
 	model:SetAttribute("Seed", actualSeed)
 	model:SetAttribute("ChunkIndex", chunkIndex)
-	model:SetAttribute("RoundIndex", chunkIndex)
+	model:SetAttribute("RoundIndex", roundIndex)
 	model:SetAttribute("RoundArchetype", candidate.Archetype)
 	model:SetAttribute("GeneratorVersion", "SkyDungeonV18IntegratedMonsterSpawner")
 	model:SetAttribute("RoutePlanner", "DeterministicStairsV10")
 	model:SetAttribute("UsesPathfinding", false)
-	model:SetAttribute("DifficultyTier", math.max(1, math.floor((chunkIndex - 1) / 4) + 1))
+	model:SetAttribute("DifficultyTier", math.max(1, math.floor((roundIndex - 1) / 4) + 1))
 	model:SetAttribute("StartGrid", startGrid)
 	model:SetAttribute("EndGrid", plan.EndGrid)
 	model:SetAttribute("ReusesPreviousEnd", options.ReuseStartBlock == true)
@@ -1086,6 +1307,7 @@ function Generator.Generate(parent, options)
 	model:SetAttribute("TerrainAreaCount", #candidate.Islands)
 	model:SetAttribute("BranchCount", plan.SuccessfulBranches)
 	model:SetAttribute("RecommendedExplorationSeconds", Config.ROUND_EXPLORATION_SECONDS)
+	applyWorldContextAttributes(model, options, roundIndex)
 
 	local bottomWorldY = gridToWorld(startGrid).Y - Config.GRID_SIZE / 2
 	local topWorldY = gridToWorld(plan.EndGrid).Y + Config.GRID_SIZE / 2
@@ -1120,8 +1342,11 @@ function Generator.Generate(parent, options)
 				pathData.PathId,
 				pathData.Name,
 				index - 1,
-				chunkIndex,
-				grassTemplates
+				roundIndex,
+				grassTemplates,
+				{
+					Seed = actualSeed,
+				}
 			)
 		end
 	end
@@ -1136,8 +1361,11 @@ function Generator.Generate(parent, options)
 				pathData.PathId,
 				pathData.Name,
 				index - 1,
-				chunkIndex,
-				grassTemplates
+				roundIndex,
+				grassTemplates,
+				{
+					Seed = actualSeed,
+				}
 			)
 		end
 	end
@@ -1152,7 +1380,8 @@ function Generator.Generate(parent, options)
 		elseif string.find(island.Role, "SideRoom", 1, true) then
 			previousCenter = candidate.Main.Center
 		end
-		createIsland(terrainFolder, island, chunkIndex, previousCenter, grassTemplates)
+		local islandModel = createIsland(terrainFolder, island, roundIndex, previousCenter, grassTemplates)
+		applyWorldContextAttributes(islandModel, options, roundIndex)
 		logicalTerrainCells += #island.Cells
 	end
 	model:SetAttribute("RouteBlockCount", routeBlockCount)
@@ -1163,77 +1392,36 @@ function Generator.Generate(parent, options)
 
 	assertGeneratedModelIsValid(model)
 
-	-- O mapa ja esta completo neste ponto: piso, grama, rotas e decoracoes.
-	-- O MonsterSpawner recebe as celulas logicas livres diretamente, sem analisar o Workspace.
+	-- Classificacao e geometria sao deterministicas. Conteudo caro pode ser
+	-- ativado depois pelo ChunkManager quando um jogador se aproximar.
 	local generatedIslands = terrainFolder:GetChildren()
 	table.sort(generatedIslands, function(a, b)
 		return (a:GetAttribute("TerrainId") or 0) < (b:GetAttribute("TerrainId") or 0)
 	end)
-	local monsterSpawnCount = 0
-	local chestSpawnCount = 0
-	-- Primeiro classifica e reserva o conteudo de todas as ilhas. O segundo
-	-- passe prioriza Elites, impedindo que mobs normais do mesmo round consumam
-	-- as vagas globais antes do desafio especial.
 	for _, islandModel in ipairs(generatedIslands) do
 		IslandTypeService.Classify(islandModel, {
 			ChunkIndex = chunkIndex,
-			RoundIndex = chunkIndex,
+			RoundIndex = roundIndex,
 			RoundSeed = actualSeed,
 		})
-		local chestSuccess, chestsOrError = pcall(ChestService.PopulateIsland, islandModel, Generator.GetFreeCells(islandModel), {
-			ChunkIndex = chunkIndex,
-			RoundIndex = chunkIndex,
-			RoundSeed = actualSeed,
-		})
-		if chestSuccess then
-			chestSpawnCount += tonumber(chestsOrError) or 0
-		else
-			warn(string.format("[SkyDungeon] Falha ao criar baus em %s: %s", islandModel:GetFullName(), tostring(chestsOrError)))
-		end
 	end
+	model:SetAttribute("IslandsClassified", true)
+	model:SetAttribute("RuntimeContentDeferred", options.DeferRuntimeContent == true)
+	model:SetAttribute("RuntimeContentPopulated", false)
+	model:SetAttribute("MonsterSpawnCount", 0)
+	model:SetAttribute("ChestSpawnCount", 0)
 
-	local monsterIslands = table.clone(generatedIslands)
-	table.sort(monsterIslands, function(a, b)
-		local aElite = a:GetAttribute("IslandType") == "Elite"
-		local bElite = b:GetAttribute("IslandType") == "Elite"
-		if aElite ~= bElite then
-			return aElite
-		end
-		return (a:GetAttribute("TerrainId") or 0) < (b:GetAttribute("TerrainId") or 0)
-	end)
-	for _, islandModel in ipairs(monsterIslands) do
-		if islandModel:IsA("Model") and islandModel:GetAttribute("CanSpawnMonster") == true then
-			local freeCells = Generator.GetFreeCells(islandModel)
-			local success, spawnedOrError = pcall(MonsterSpawner.PopulateIsland, islandModel, freeCells, {
-				ChunkIndex = chunkIndex,
-				RoundIndex = chunkIndex,
-				RoundSeed = actualSeed,
-				GridSize = Config.GRID_SIZE,
-			})
-			if success then
-				monsterSpawnCount += tonumber(spawnedOrError) or 0
-			else
-				warn(
-					string.format(
-						"[SkyDungeon] Falha ao popular monstros em %s: %s",
-						islandModel:GetFullName(),
-						tostring(spawnedOrError)
-					)
-				)
-			end
-		end
-	end
-	model:SetAttribute("MonsterSpawnCount", monsterSpawnCount)
-	model:SetAttribute("ChestSpawnCount", chestSpawnCount)
-
-	-- Publica o round somente depois de reservar e criar os monstros.
-	-- Assim, servicos externos (como coletaveis) ja enxergam MonsterSpawnPoints.
+	-- A geometria pode ser publicada antes do conteudo de simulacao. No modo
+	-- vertical aberto, o ChunkManager so ativa um setor perto de jogadores.
 	model.Parent = parent
+	if options.DeferRuntimeContent ~= true then
+		Generator.PopulateRuntimeContent(model)
+	end
 
 	print(
 		string.format(
 			"[SkyDungeon] Round %d | %s | Seed %d | %d ilhas | %d loops | %.0f studs",
-			chunkIndex,
+			roundIndex,
 			candidate.Archetype,
 			actualSeed,
 			#candidate.Islands,
@@ -1245,7 +1433,7 @@ function Generator.Generate(parent, options)
 	return model,
 	{
 		ChunkIndex = chunkIndex,
-		RoundIndex = chunkIndex,
+		RoundIndex = roundIndex,
 		Seed = actualSeed,
 		StartGrid = startGrid,
 		EndGrid = plan.EndGrid,
@@ -1255,6 +1443,217 @@ function Generator.Generate(parent, options)
 		TerrainAreaCount = #candidate.Islands,
 		BranchCount = plan.SuccessfulBranches,
 		RouteBlockCount = routeBlockCount,
+	}
+end
+
+local function reserveFrontierGateways(island)
+	local directions = {
+		Vector3.new(1, 0, 0),
+		Vector3.new(-1, 0, 0),
+		Vector3.new(0, 0, 1),
+		Vector3.new(0, 0, -1),
+	}
+	for pathId, direction in ipairs(directions) do
+		local edgeCenter = perimeterToward(island, island.Center + direction * 1000)
+		local perpendicular = direction.X ~= 0 and Vector3.new(0, 0, 1) or Vector3.new(1, 0, 0)
+		for offset = -Config.FRONTIER_CONNECTION_LANE_OFFSET_CELLS,
+			Config.FRONTIER_CONNECTION_LANE_OFFSET_CELLS
+		do
+			local cell = edgeCenter + perpendicular * offset
+			markIslandCorridor(island, cell, island.Center, "FrontierGateway", pathId)
+		end
+	end
+end
+
+local function styleFrontierSanctuary(islandModel)
+	local floor = islandModel.PrimaryPart
+	local grass = islandModel:FindFirstChild("IslandGrassTop")
+	if grass and grass:IsA("BasePart") then
+		grass.Color = Color3.fromRGB(92, 154, 146)
+	end
+	if not floor or islandModel:FindFirstChild("SanctuaryLabel") then
+		return
+	end
+	local billboard = Instance.new("BillboardGui")
+	billboard.Name = "SanctuaryLabel"
+	billboard.Adornee = floor
+	billboard.Size = UDim2.fromOffset(170, 34)
+	billboard.StudsOffset = Vector3.new(0, 5, 0)
+	billboard.AlwaysOnTop = false
+	billboard.MaxDistance = 42
+	billboard.Parent = islandModel
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.fromScale(1, 1)
+	label.BackgroundColor3 = Color3.fromRGB(20, 38, 43)
+	label.BackgroundTransparency = 0.25
+	label.BorderSizePixel = 0
+	label.Text = "SANTUARIO"
+	label.TextColor3 = Color3.fromRGB(178, 255, 235)
+	label.Font = Enum.Font.GothamBold
+	label.TextSize = 15
+	label.Parent = billboard
+	Instance.new("UICorner", label).CornerRadius = UDim.new(0, 8)
+end
+
+-- Cria somente uma ilha da malha. O modelo externo preserva o contrato de
+-- PopulateRuntimeContent, mas a unidade de geracao agora e uma unica ilha.
+function Generator.CreateFrontierNode(parent, spec, options)
+	validateConfig()
+	assert(parent, "Parent ausente para a ilha de fronteira.")
+	assert(typeof(spec) == "table" and typeof(spec.Center) == "Vector3", "NodeSpec invalido.")
+	options = options or {}
+	local roundIndex = spec.Level + 1
+	local island = makeIsland(
+		options.NodeSerial or roundIndex,
+		spec.Role,
+		spec.SizeName,
+		spec.Center,
+		Vector3.new(0, 0, -1),
+		Vector3.new(1, 0, 0),
+		spec.Seed
+	)
+	reserveFrontierGateways(island)
+
+	local model = Instance.new("Model")
+	model.Name = "IslandNode_" .. spec.Key
+	model:SetAttribute("Seed", spec.Seed)
+	model:SetAttribute("ChunkIndex", options.NodeSerial or roundIndex)
+	model:SetAttribute("RoundIndex", roundIndex)
+	model:SetAttribute("LogicalLevel", spec.Level)
+	model:SetAttribute("IslandNodeKey", spec.Key)
+	model:SetAttribute("LaneX", spec.LaneX)
+	model:SetAttribute("LaneZ", spec.LaneZ)
+	model:SetAttribute("GenerationUnit", "IslandNode")
+	model:SetAttribute("GeneratorVersion", "SkyDungeonOrganicRoundsV3")
+	model:SetAttribute("RuntimeContentDeferred", options.DeferRuntimeContent ~= false)
+	model:SetAttribute("RuntimeContentPopulated", false)
+	model:SetAttribute("MonsterSpawnCount", 0)
+	model:SetAttribute("ChestSpawnCount", 0)
+	model:SetAttribute("IsSanctuary", spec.IsSanctuary == true)
+	model:SetAttribute("IsSocialSanctuary", spec.IsSanctuary == true)
+	model:SetAttribute("SimulationActive", false)
+	model:SetAttribute("Discovered", false)
+	model:SetAttribute("Expanded", false)
+	model:SetAttribute("VisualContentDeferred", options.DeferVisualContent == true)
+	model:SetAttribute("VisualContentPopulated", options.DeferVisualContent ~= true)
+
+	local terrainFolder = Instance.new("Folder")
+	terrainFolder.Name = "TerrainAreas"
+	terrainFolder.Parent = model
+	local islandModel = createIsland(terrainFolder, island, roundIndex, spec.Center, getGrassTemplates(), {
+		DeferVisualContent = options.DeferVisualContent == true,
+	})
+	islandModel:SetAttribute("IslandNodeKey", spec.Key)
+	islandModel:SetAttribute("LogicalLevel", spec.Level)
+	islandModel:SetAttribute("LaneX", spec.LaneX)
+	islandModel:SetAttribute("LaneZ", spec.LaneZ)
+	islandModel:SetAttribute("IsSanctuary", spec.IsSanctuary == true)
+	islandModel:SetAttribute("IsSocialSanctuary", spec.IsSanctuary == true)
+	islandModel:SetAttribute("SimulationActive", false)
+	IslandTypeService.Classify(islandModel, {
+		ChunkIndex = options.NodeSerial or roundIndex,
+		RoundIndex = roundIndex,
+		RoundSeed = spec.Seed,
+	})
+	if spec.IsSanctuary then
+		styleFrontierSanctuary(islandModel)
+	end
+	model:SetAttribute("IslandsClassified", true)
+	model.PrimaryPart = islandModel.PrimaryPart
+	model.Parent = parent
+
+	local boundsCFrame, boundsSize = model:GetBoundingBox()
+	local bottomWorldY = boundsCFrame.Position.Y - boundsSize.Y / 2
+	local topWorldY = boundsCFrame.Position.Y + boundsSize.Y / 2
+	model:SetAttribute("BottomWorldY", bottomWorldY)
+	model:SetAttribute("TopWorldY", topWorldY)
+	model:SetAttribute("CenterGrid", spec.Center)
+	if options.DeferRuntimeContent == false then
+		Generator.PopulateRuntimeContent(model)
+	end
+	return model, {
+		IslandModel = islandModel,
+		BoundsCFrame = boundsCFrame,
+		BoundsSize = boundsSize,
+		BottomWorldY = bottomWorldY,
+		TopWorldY = topWorldY,
+	}
+end
+
+-- Valida e materializa apenas os blocos internos de uma aresta. As pontas da
+-- lista ja pertencem aos pisos das ilhas e nunca sao duplicadas.
+function Generator.CreateFrontierConnection(parent, connectionPlan, options)
+	validateConfig()
+	assert(parent, "Parent ausente para a conexao.")
+	assert(typeof(connectionPlan) == "table" and #connectionPlan.Cells >= 3, "ConnectionPlan invalido.")
+	options = options or {}
+	local reservationParent = options.ReservationParent or parent.Parent
+	local occupied, headroom
+	if options.SkipExternalReservationScan == true then
+		-- A malha usa coordenadas deterministicas e faixas par/impar validadas. O
+		-- ChunkManager evita arestas duplicadas, portanto nao precisamos varrer
+		-- todos os descendentes do mundo a cada nova conexao.
+		occupied, headroom = {}, {}
+	else
+		occupied, headroom = collectExternalReservations(reservationParent)
+	end
+	for index = 2, #connectionPlan.Cells - 1 do
+		local cell = connectionPlan.Cells[index]
+		local key = cellKey(cell)
+		assert(not occupied[key] and not headroom[key], "Conexao bloqueada na celula " .. key)
+		for offset = 1, Config.HEADROOM_CELLS do
+			assert(not occupied[cellKey(cell + Vector3.new(0, offset, 0))], "Headroom bloqueado em " .. key)
+		end
+	end
+	for index = 2, #connectionPlan.Cells do
+		local valid, reason = validateJump(connectionPlan.Cells[index - 1], connectionPlan.Cells[index])
+		assert(valid, "Salto invalido na conexao: " .. tostring(reason))
+	end
+
+	local model = Instance.new("Model")
+	model.Name = "Connection_" .. connectionPlan.Key
+	model:SetAttribute("IsFrontierConnection", true)
+	model:SetAttribute("EdgeKey", connectionPlan.Key)
+	model:SetAttribute("SourceNodeKey", connectionPlan.SourceKey)
+	model:SetAttribute("TargetNodeKey", connectionPlan.TargetKey)
+	model:SetAttribute("DirectionId", connectionPlan.DirectionId)
+	model:SetAttribute("ConnectionLaneParity", connectionPlan.LaneParity or 0)
+	model:SetAttribute("ConnectionLaneOffsetX", connectionPlan.LaneOffsetCells.X)
+	model:SetAttribute("ConnectionLaneOffsetZ", connectionPlan.LaneOffsetCells.Z)
+	model:SetAttribute("LogicalLevel", options.LogicalLevel or 0)
+	model:SetAttribute("VisualContentDeferred", false)
+	model:SetAttribute("OptimizedEssentialRoute", options.DeferVisualContent == true)
+	local grassTemplates = options.DeferVisualContent == true and {} or getGrassTemplates()
+	local roundIndex = (options.LogicalLevel or 0) + 1
+	for index = 2, #connectionPlan.Cells - 1 do
+		local part = createConnector(
+			model,
+			connectionPlan.Cells[index],
+			"MainRoute",
+			options.PathId or 0,
+			"Frontier",
+			index - 1,
+			roundIndex,
+			grassTemplates,
+			{
+				DeferVisualContent = options.DeferVisualContent == true,
+				Seed = options.Seed,
+				YieldCallback = options.YieldCallback,
+			}
+		)
+		part:SetAttribute("EdgeKey", connectionPlan.Key)
+		part:SetAttribute("SourceNodeKey", connectionPlan.SourceKey)
+		part:SetAttribute("TargetNodeKey", connectionPlan.TargetKey)
+	end
+	model.Parent = parent
+	local boundsCFrame, boundsSize = model:GetBoundingBox()
+	model:SetAttribute("BottomWorldY", boundsCFrame.Position.Y - boundsSize.Y / 2)
+	model:SetAttribute("TopWorldY", boundsCFrame.Position.Y + boundsSize.Y / 2)
+	return model, {
+		BoundsCFrame = boundsCFrame,
+		BoundsSize = boundsSize,
+		BottomWorldY = boundsCFrame.Position.Y - boundsSize.Y / 2,
+		TopWorldY = boundsCFrame.Position.Y + boundsSize.Y / 2,
 	}
 end
 
@@ -1341,6 +1740,96 @@ function Generator.GetFreeCells(islandModel)
 		end
 	end
 	return result
+end
+
+function Generator.PopulateRuntimeContent(model, yieldCallback)
+	assert(model and model:IsA("Model"), "Round invalido para popular conteudo.")
+	if model:GetAttribute("RuntimeContentPopulated") == true then
+		return model:GetAttribute("MonsterSpawnCount") or 0, model:GetAttribute("ChestSpawnCount") or 0
+	end
+
+	local terrainFolder = model:FindFirstChild("TerrainAreas")
+	if not terrainFolder then
+		return 0, 0
+	end
+	local chunkIndex = tonumber(model:GetAttribute("ChunkIndex")) or 1
+	local roundIndex = tonumber(model:GetAttribute("RoundIndex")) or chunkIndex
+	local roundSeed = tonumber(model:GetAttribute("Seed")) or 1
+	local generatedIslands = terrainFolder:GetChildren()
+	table.sort(generatedIslands, function(a, b)
+		return (a:GetAttribute("TerrainId") or 0) < (b:GetAttribute("TerrainId") or 0)
+	end)
+
+	local chestSpawnCount = 0
+	for _, islandModel in ipairs(generatedIslands) do
+		local success, spawnedOrError = pcall(
+			ChestService.PopulateIsland,
+			islandModel,
+			Generator.GetFreeCells(islandModel),
+			{
+				ChunkIndex = chunkIndex,
+				RoundIndex = roundIndex,
+				RoundSeed = roundSeed,
+			}
+		)
+		if success then
+			chestSpawnCount += tonumber(spawnedOrError) or 0
+		else
+			warn(string.format(
+				"[SkyDungeon] Falha ao criar baus em %s: %s",
+				islandModel:GetFullName(),
+				tostring(spawnedOrError)
+			))
+		end
+		if yieldCallback then
+			yieldCallback()
+		end
+	end
+
+	local monsterIslands = table.clone(generatedIslands)
+	table.sort(monsterIslands, function(a, b)
+		local aElite = a:GetAttribute("IslandType") == "Elite"
+		local bElite = b:GetAttribute("IslandType") == "Elite"
+		if aElite ~= bElite then
+			return aElite
+		end
+		return (a:GetAttribute("TerrainId") or 0) < (b:GetAttribute("TerrainId") or 0)
+	end)
+	local monsterSpawnCount = 0
+	for _, islandModel in ipairs(monsterIslands) do
+		if islandModel:IsA("Model") and islandModel:GetAttribute("CanSpawnMonster") == true then
+			local success, spawnedOrError = pcall(
+				MonsterSpawner.PopulateIsland,
+				islandModel,
+				Generator.GetFreeCells(islandModel),
+				{
+					ChunkIndex = chunkIndex,
+					RoundIndex = roundIndex,
+					RoundSeed = roundSeed,
+					GridSize = Config.GRID_SIZE,
+				}
+			)
+			if success then
+				monsterSpawnCount += tonumber(spawnedOrError) or 0
+			else
+				warn(string.format(
+					"[SkyDungeon] Falha ao popular monstros em %s: %s",
+					islandModel:GetFullName(),
+					tostring(spawnedOrError)
+				))
+			end
+			if yieldCallback then
+				yieldCallback()
+			end
+		end
+	end
+
+	model:SetAttribute("MonsterSpawnCount", monsterSpawnCount)
+	model:SetAttribute("ChestSpawnCount", chestSpawnCount)
+	model:SetAttribute("RuntimeContentDeferred", false)
+	model:SetAttribute("RuntimeContentPopulated", true)
+	model:SetAttribute("RuntimeContentActivatedAt", os.clock())
+	return monsterSpawnCount, chestSpawnCount
 end
 
 function Generator.ValidateJump(fromGridCell, toGridCell)

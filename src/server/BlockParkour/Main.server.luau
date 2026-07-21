@@ -1,6 +1,8 @@
--- Script de inicializacao do servidor.
--- Deixe este Script como filho da pasta BlockParkour em ServerScriptService.
+-- Inicializador canonico da geracao. Start e idempotente porque o sistema de
+-- agua tambem confirma que o mundo esta pronto antes de iniciar sua simulacao.
 
-local Generator = require(script.Parent.Generator_SkyDungeon_V10_Deterministic)
+local ChunkManager = require(script.Parent.ChunkManager_SkyDungeon_V10)
 
-Generator.Generate(workspace)
+if not ChunkManager.IsRunning() then
+	ChunkManager.Start()
+end
