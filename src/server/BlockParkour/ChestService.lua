@@ -1,3 +1,4 @@
+-- ChestService Real NormalChest Swap V3
 -- Baús comuns, Ilha do Tesouro e revelacao do Mimico.
 
 local Debris = game:GetService("Debris")
@@ -9,6 +10,7 @@ local ServerStorage = game:GetService("ServerStorage")
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 local ScoreService = require(script.Parent.ScoreService_SkyDungeon_V10)
 local MimicAI = require(script.Parent.MimicAI)
+local AnimeOutline = require(ServerScriptService.MVPSystems:WaitForChild("AnimeOutline"))
 
 local ChestService = {}
 local active = setmetatable({}, { __mode = "k" })
@@ -115,7 +117,7 @@ local function getRoot(model, mimic)
 	return root and root:IsA("BasePart") and root or nil
 end
 
-local function prepare(model, anchored, preserveScripts)
+local function prepare(model, anchored, preserveScripts, preserveAnchoring)
 	for _, descendant in ipairs(model:GetDescendants()) do
 		if descendant:IsA("BaseScript") then
 			-- The custom MimicChest owns its animation scripts. Keep their original
@@ -124,7 +126,9 @@ local function prepare(model, anchored, preserveScripts)
 				descendant.Disabled = true
 			end
 		elseif descendant:IsA("BasePart") then
-			descendant.Anchored = anchored
+			if not preserveAnchoring then
+				descendant.Anchored = anchored
+			end
 			descendant.CanTouch = false
 			descendant.CanQuery = true
 			if not anchored then
@@ -192,6 +196,70 @@ local function revealParticles(position, color)
 	Debris:AddItem(part, 0.8)
 end
 
+local function createDormantMimicDisguise(mimic, normalTemplate, island, pivot)
+	if not mimic.Parent or not normalTemplate or not normalTemplate:IsA("Model") then
+		return nil
+	end
+	local chest = normalTemplate:Clone()
+	local root = getRoot(chest, false)
+	if not root then
+		chest:Destroy()
+		return nil
+	end
+	chest.PrimaryPart = root
+	prepare(chest, true, false)
+	chest.Name = "NormalChest"
+	chest:SetAttribute("IsTreasureChest", true)
+	chest:SetAttribute("IsDormantMimicChest", true)
+	chest:SetAttribute("Opened", false)
+	chest.Parent = island:FindFirstChild("MVPChests") or island
+	chest:PivotTo(pivot)
+	AnimeOutline.Apply(chest)
+
+	local prompt = Instance.new("ProximityPrompt")
+	prompt.Name = "WakeMimicPrompt"
+	prompt.ActionText = "Abrir"
+	prompt.ObjectText = "Bau"
+	prompt.KeyboardKeyCode = Enum.KeyCode.E
+	prompt.GamepadKeyCode = Enum.KeyCode.ButtonX
+	prompt.HoldDuration = 0.18
+	prompt.MaxActivationDistance = MVPConfig.Chests.PromptDistance
+	prompt.RequiresLineOfSight = false
+	prompt.Parent = root
+
+	local opening = false
+	prompt.Triggered:Connect(function(player)
+		if opening or not chest.Parent or not mimic.Parent then
+			return
+		end
+		local character = player.Character
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		local playerRoot = character and character:FindFirstChild("HumanoidRootPart")
+		if not humanoid or humanoid.Health <= 0 or not playerRoot
+			or (playerRoot.Position - root.Position).Magnitude > MVPConfig.Chests.PromptDistance + 3
+		then
+			return
+		end
+		opening = true
+		prompt.Enabled = false
+		local revealPosition = root.Position
+		local success, reason = MimicAI.Wake(mimic)
+		if not success then
+			opening = false
+			if prompt.Parent then
+				prompt.Enabled = true
+			end
+			warn("[ChestService] Falha ao despertar Mimico: " .. tostring(reason))
+			return
+		end
+		revealParticles(revealPosition, Color3.fromRGB(210, 63, 75))
+		if chest.Parent then
+			chest:Destroy()
+		end
+	end)
+	return chest
+end
+
 local function activateChest(chest, player)
 	local state = active[chest]
 	if not state or state.Opened or not chest.Parent then
@@ -238,7 +306,10 @@ local function activateChest(chest, player)
 		return
 	end
 	mimic.PrimaryPart = root
-	prepare(mimic, false, true)
+	-- O MimicChest pode animar suas pecas diretamente por CFrame. Preserve a
+	-- ancoragem configurada no template; MimicAI desancora somente MimicRoot e
+	-- a raiz tecnica usada pelo Humanoid.
+	prepare(mimic, false, true, true)
 	mimic.Name = "Monster_MimicChest"
 	alignBottom(mimic, state.SurfacePosition, state.Yaw)
 	mimic.Parent = state.Island
@@ -248,6 +319,20 @@ local function activateChest(chest, player)
 		DifficultyTier = state.DifficultyTier,
 		CoinReward = state.CoinReward,
 		ScoreReward = 15 + state.DifficultyTier * 2,
+		NormalChestPivot = state.NormalChestPivot,
+		OnDormant = function(mimicModel, normalChestPivot)
+			return createDormantMimicDisguise(
+				mimicModel,
+				state.NormalTemplate,
+				state.Island,
+				normalChestPivot
+			)
+		end,
+		OnAwake = function(_, disguise)
+			if typeof(disguise) == "Instance" and disguise.Parent then
+				disguise:Destroy()
+			end
+		end,
 	})
 	if not success then
 		warn("[ChestService] Falha ao ativar Mimico: " .. tostring(reason))
@@ -257,10 +342,6 @@ end
 
 local function spawnChest(parent, island, record, index, isMimic, coinReward, random, normalTemplate, mimicTemplate, tier)
 	local chest = normalTemplate:Clone()
-
-	local AnimeOutline = require(
-	    ServerScriptService.MVPSystems.AnimeOutline
-    )
 
 	local root = getRoot(chest, false)
 	if not root then
@@ -289,6 +370,8 @@ local function spawnChest(parent, island, record, index, isMimic, coinReward, ra
 	active[chest] = {
 		Island = island,
 		MimicTemplate = mimicTemplate,
+		NormalTemplate = normalTemplate,
+		NormalChestPivot = chest:GetPivot(),
 		SurfacePosition = record.SurfacePosition,
 		Yaw = yaw,
 		IsMimic = isMimic,

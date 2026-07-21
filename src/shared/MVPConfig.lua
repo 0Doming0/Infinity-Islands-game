@@ -126,11 +126,11 @@ local Config = {
 	ExampleAssets = {
 		-- IDs publicos/provisorios. Troque por animacoes do proprietario do jogo.
 		Animations = {
-			Equip = "rbxassetid://507768375",
-			Idle = "rbxassetid://507768375",
-			Attack1 = "rbxassetid://522635514",
-			Attack2 = "rbxassetid://522638767",
-			Attack3 = "rbxassetid://522635514",
+			Equip = "rbxassetid://96866767074255",
+			Idle = "rbxassetid://79702064630382",
+			Attack1 = "rbxassetid://81659072454315",
+			Attack2 = "rbxassetid://132913736223890",
+			Attack3 = "rbxassetid://123474143630732",
 		},
 		Sounds = {
 			Equip = "rbxasset://sounds/unsheath.wav",
