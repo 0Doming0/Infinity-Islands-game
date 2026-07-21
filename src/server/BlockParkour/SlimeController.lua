@@ -14,6 +14,7 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
 local SlimeAnimator = require(script.Parent.SlimeAnimator)
+local MobEventModifiers = require(script.Parent.MobEventModifiers)
 
 local SlimeController = {}
 
@@ -612,9 +613,12 @@ end
 
 local function setAggro(state, player)
 	state.AggroPlayer = player
+	if player == nil then
+		state.AggroFromWorldEvent = false
+	end
 	state.LastTargetSeenAt = serverTime()
 	state.Model:SetAttribute("AggroUserId", player and player.UserId or nil)
-	state.Model:SetAttribute("Peaceful", player == nil)
+	state.Model:SetAttribute("Peaceful", player == nil and state.BasePeaceful or false)
 	state.WanderDestination = nil
 	state.CombatDestination = nil
 	clearMovement(state)
@@ -626,7 +630,26 @@ end
 
 local function updateNeutralAggro(state)
 	if state.AggroPlayer then
+		if state.AggroFromWorldEvent and not MobEventModifiers.IsForcedAggressive(state.Model) then
+			local lastAttacker = state.Model:GetAttribute("LastDamagedByUserId")
+				or state.Model:GetAttribute("LastHitUserId")
+			if lastAttacker == state.AggroPlayer.UserId then
+				state.AggroFromWorldEvent = false
+			else
+				setAggro(state, nil)
+			end
+		end
 		return
+	end
+	local forcedAggressive = MobEventModifiers.IsForcedAggressive(state.Model)
+	if forcedAggressive or not state.BasePeaceful then
+		local aggroRange = MobEventModifiers.GetAggroRange(state.Model, state.Definition.AggroRange or 55)
+		local player = nearestPlayer(state.Root.Position, aggroRange)
+		if player then
+			setAggro(state, player)
+			state.AggroFromWorldEvent = forcedAggressive and state.BasePeaceful
+			return
+		end
 	end
 	local userId = state.Model:GetAttribute("LastDamagedByUserId")
 	if typeof(userId) ~= "number" then
@@ -684,7 +707,8 @@ local function thinkGreen(state, now)
 	end
 
 	local distance = horizontalDistance(state.Root.Position, targetRoot.Position)
-	if distance > state.Definition.AggroRange then
+	local aggroRange = MobEventModifiers.GetAggroRange(state.Model, state.Definition.AggroRange)
+	if distance > aggroRange then
 		if now - state.LastTargetSeenAt >= state.Definition.CalmAfter then
 			setAggro(state, nil)
 		end
@@ -785,7 +809,8 @@ local function thinkBlue(state, now)
 	end
 
 	local distance = (targetRoot.Position - state.Root.Position).Magnitude
-	if distance > state.Definition.AggroRange then
+	local aggroRange = MobEventModifiers.GetAggroRange(state.Model, state.Definition.AggroRange)
+	if distance > aggroRange then
 		if now - state.LastTargetSeenAt >= state.Definition.CalmAfter then
 			setAggro(state, nil)
 		end
@@ -804,7 +829,11 @@ end
 
 local function thinkRed(state, now)
 	local definition = state.Definition
-	local player, targetRoot = nearestPlayer(state.Root.Position, definition.DetectionRange or definition.AttackRange)
+	local detectionRange = MobEventModifiers.GetAggroRange(
+		state.Model,
+		definition.DetectionRange or definition.AttackRange
+	)
+	local player, targetRoot = nearestPlayer(state.Root.Position, detectionRange)
 	if not targetRoot then
 		state.CombatDestination = nil
 		thinkWander(state, now)
@@ -927,6 +956,45 @@ local function goldenTeleport(state)
 	end)
 end
 
+local function thinkGoldenFury(state, now)
+	local baseAggroRange = tonumber(state.Model:GetAttribute("AggroRange")) or 45
+	local aggroRange = MobEventModifiers.GetAggroRange(state.Model, baseAggroRange)
+	local player, targetRoot = nearestPlayer(state.Root.Position, aggroRange)
+	local _, targetHumanoid = getLivingCharacter(player)
+	if not targetRoot or not targetHumanoid then
+		state.CombatDestination = nil
+		return false
+	end
+
+	local attackRange = tonumber(state.Model:GetAttribute("AttackRange")) or 5
+	local distance = horizontalDistance(state.Root.Position, targetRoot.Position)
+	if distance <= attackRange
+		and math.abs(state.Root.Position.Y - targetRoot.Position.Y) <= MELEE_HEIGHT_TOLERANCE
+	then
+		stopMoving(state, "Melee")
+		if now >= state.NextAttackAt and not state.Busy then
+			facePosition(state, targetRoot.Position)
+			state.Busy = true
+			state.NextAttackAt = now + (tonumber(state.Model:GetAttribute("AttackCooldown")) or 1.4)
+			task.delay(0.2, function()
+				if isAlive(state) and targetHumanoid.Parent and targetHumanoid.Health > 0 and targetRoot.Parent then
+					local stillClose = horizontalDistance(state.Root.Position, targetRoot.Position) <= attackRange + 1.3
+					if stillClose and math.abs(state.Root.Position.Y - targetRoot.Position.Y) <= MELEE_HEIGHT_TOLERANCE then
+						targetHumanoid:TakeDamage(math.max(1, tonumber(state.Model:GetAttribute("AttackDamage")) or 8))
+						createBurst(targetRoot.Position, state.Definition.Color, 0.75)
+					end
+				end
+				state.Busy = false
+			end)
+		end
+		return true
+	end
+
+	local destination = chooseCellNearPosition(state, targetRoot.Position)
+	requestMove(state, destination, 1, "Chase", PATH_RECOMPUTE_INTERVAL)
+	return true
+end
+
 local function thinkGolden(state, now)
 	if now >= state.ExpiresAt then
 		state.Model:SetAttribute("ExpiredWithoutReward", true)
@@ -935,6 +1003,9 @@ local function thinkGolden(state, now)
 		return
 	end
 	if state.Busy then
+		return
+	end
+	if MobEventModifiers.IsForcedAggressive(state.Model) and thinkGoldenFury(state, now) then
 		return
 	end
 	if now >= state.NextTeleportAt then
@@ -984,7 +1055,9 @@ function SlimeController.Start(entry, definition, random, callbacks)
 		Random = Random.new(random:NextInteger(1, 2147483646)),
 		Callbacks = callbacks,
 		BaseWalkSpeed = math.max(4, entry.Humanoid.WalkSpeed),
+		BasePeaceful = entry.Model:GetAttribute("Peaceful") == true,
 		AggroPlayer = nil,
+		AggroFromWorldEvent = false,
 		LastTargetSeenAt = now,
 		NextAttackAt = now + 0.75,
 		NextTeleportAt = definition.TeleportInterval and (now + definition.TeleportInterval) or math.huge,

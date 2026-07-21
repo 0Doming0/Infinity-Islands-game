@@ -5,6 +5,8 @@ local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
+local MobEventModifiers = require(script.Parent.BlockParkour:WaitForChild("MobEventModifiers"))
+
 local THINK_INTERVAL = 0.20
 local DEFAULT_AGGRO_RANGE = 55
 local DEFAULT_LEASH_RANGE = 42
@@ -99,7 +101,7 @@ RunService.Heartbeat:Connect(function(dt)
 		if model:GetAttribute("CombatStunned") == true then
 			continue
 		end
-		local forceAggressive = workspace:GetAttribute("AllMobsAggressive") == true
+		local forceAggressive = MobEventModifiers.IsForcedAggressive(model)
 		local controller = model:GetAttribute("AIController")
 		local ownedByGenericAI = controller == "Generic"
 			or (controller == nil and model:GetAttribute("UseCentralAI") == true)
@@ -107,11 +109,8 @@ RunService.Heartbeat:Connect(function(dt)
 			continue
 		end
 
-		local eventHunt = workspace:GetAttribute("MonsterHuntActive") == true
-		local aggro = tonumber(model:GetAttribute("AggroRange")) or DEFAULT_AGGRO_RANGE
-		if eventHunt then
-			aggro *= 1.45
-		end
+		local baseAggro = tonumber(model:GetAttribute("AggroRange")) or DEFAULT_AGGRO_RANGE
+		local aggro = MobEventModifiers.GetAggroRange(model, baseAggro)
 		local targetHumanoid, targetRoot, distance
 		if forceAggressive or model:GetAttribute("Peaceful") ~= true then
 			targetHumanoid, targetRoot, distance = nearestPlayer(root.Position, aggro)

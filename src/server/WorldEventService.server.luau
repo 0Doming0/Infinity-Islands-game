@@ -4,6 +4,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
+local MobEventModifiers = require(script.Parent.BlockParkour:WaitForChild("MobEventModifiers"))
 local CURRENCY_SYMBOL = MVPConfig.Currency.Symbol
 local eventRemote = ReplicatedStorage:FindFirstChild("WorldEvent") or Instance.new("RemoteEvent")
 eventRemote.Name = "WorldEvent"
@@ -72,6 +73,7 @@ workspace:SetAttribute(MVPConfig.Water.EventMultiplierAttribute, 1)
 workspace:SetAttribute("CoinRewardMultiplier", 1)
 workspace:SetAttribute("MonsterHuntActive", false)
 workspace:SetAttribute("AllMobsAggressive", false)
+MobEventModifiers.Start()
 
 local function chooseEvent()
 	local candidates = {}

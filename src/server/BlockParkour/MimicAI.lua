@@ -8,6 +8,7 @@ local RunService = game:GetService("RunService")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local ScoreService = require(script.Parent.ScoreService_SkyDungeon_V10)
+local MobEventModifiers = require(script.Parent.MobEventModifiers)
 local InventoryService = require(script.Parent.Parent.MVPSystems:WaitForChild("InventoryService"))
 local AnimeOutline = require(ServerScriptService.MVPSystems:WaitForChild("AnimeOutline"))
 ScoreService.Start()
@@ -143,7 +144,8 @@ local function connectHeartbeat()
 			if model:GetAttribute("CombatStunned") == true then
 				continue
 			end
-			local targetHumanoid, targetRoot, distance = nearestPlayer(state.Root.Position, state.AggroRange)
+			local aggroRange = MobEventModifiers.GetAggroRange(model, state.AggroRange)
+			local targetHumanoid, targetRoot, distance = nearestPlayer(state.Root.Position, aggroRange)
 			state.TargetHumanoid = targetHumanoid
 			state.TargetRoot = targetRoot
 			if (state.Root.Position - state.Home).Magnitude > state.LeashRange then
@@ -182,6 +184,7 @@ function MimicAI.Activate(model, options)
 	model:SetAttribute("MonsterId", "MimicChest")
 	model:SetAttribute("DisplayName", "Bau Mimico")
 	model:SetAttribute("UseCentralAI", false)
+	model:SetAttribute("AIController", "Mimic")
 	local island = model:FindFirstAncestorWhichIsA("Model")
 	while island and island:GetAttribute("IsSkyIsland") ~= true do
 		island = island:FindFirstAncestorWhichIsA("Model")
@@ -191,6 +194,7 @@ function MimicAI.Activate(model, options)
 	model:SetAttribute("IsMimic", true)
 	model:SetAttribute("HomePosition", root.Position)
 	CollectionService:AddTag(model, "CombatTarget")
+	MobEventModifiers.Apply(model)
 	AnimeOutline.Apply(model)
 	pcall(function()
 		movementRoot:SetNetworkOwner(nil)
