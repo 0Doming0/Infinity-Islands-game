@@ -159,6 +159,10 @@ function IslandContentService.Start()
 	started = true
 
 	CollectionService:GetInstanceAddedSignal(CHUNK_TAG):Connect(registerChunk)
+	-- O ChunkManager pode retirar a tag antes de mover uma ilha para o pool de
+	-- geometria. Como o casco nao e destruido, a remocao da tag e o sinal
+	-- confiavel para descartar celulas, reservas e conexoes da vida anterior.
+	CollectionService:GetInstanceRemovedSignal(ISLAND_TAG):Connect(unregisterIsland)
 	for _, chunk in ipairs(CollectionService:GetTagged(CHUNK_TAG)) do
 		registerChunk(chunk)
 	end

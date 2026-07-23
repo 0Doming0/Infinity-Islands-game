@@ -1,6 +1,7 @@
 -- Configuracao compartilhada de corrida e agachamento seguro.
 
 return {
+	Version = "V7_CLIENT_EDGE_BARRIER",
 	DoubleTapWindow = 0.30,
 	SpeedMultiplier = 1.25,
 	MaximumSprintSpeed = 34,
@@ -23,9 +24,15 @@ return {
 	SneakWalkMinimumSpeed = 0.25,
 	SneakAnimationFadeTime = 0.15,
 	SneakAnimationPriority = Enum.AnimationPriority.Action,
-	EdgeProbeMargin = 0.15,
 	EdgeProbeDepth = 4.25,
 	EdgeGroundHeightTolerance = 0.65,
+	SneakEdgeFootprintInset = 0.08,
+	SneakEdgeForwardProbeDistance = 1.2,
+	SneakEdgeForwardProbeMargin = 0.18,
+	SneakEdgeBarrierWidth = 4,
+	SneakEdgeBarrierHeight = 6,
+	SneakEdgeBarrierThickness = 0.35,
+	SneakEdgeBarrierMinimumDistance = 1.15,
 	StaminaBarSize = UDim2.fromOffset(180, 7),
 	StaminaBarPosition = UDim2.new(1, -28, 1, -34),
 }

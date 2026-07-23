@@ -20,6 +20,7 @@
 ]]
 
 local RunService = game:GetService("RunService")
+local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 
 local BONE_NAME = "Bone"
@@ -41,17 +42,29 @@ local DEFAULT_POSITION_SCALE = 1
 
 local FRAME_SPAN = FRAME_END - FRAME_START
 local LOOP_DURATION = FRAME_SPAN / FPS
+local NORMAL_UPDATE_FPS = 24
+local PERFORMANCE_UPDATE_FPS = 15
+local NORMAL_MAX_DISTANCE = 240
+local PERFORMANCE_MAX_DISTANCE = 150
+local FORCE_ACTIVE_DISTANCE = 55
+local NORMAL_VISIBILITY_INTERVAL = 0.25
+local PERFORMANCE_VISIBILITY_INTERVAL = 0.4
 
 local activeBones = {}
 local pendingBones = setmetatable({}, { __mode = "k" })
+local player = Players.LocalPlayer
+local updateAccumulator = 0
 
 local function findRuntimeModel(bone)
 	local current = bone.Parent
 	while current and current ~= workspace do
-		if current:IsA("Model") and (
-			current:GetAttribute("IsScoreCollectible") == true
-			or current:GetAttribute("UseBlenderProceduralAnimation") == true
-		) then
+		if
+			current:IsA("Model")
+			and (
+				current:GetAttribute("IsScoreCollectible") == true
+				or current:GetAttribute("UseBlenderProceduralAnimation") == true
+			)
+		then
 			return current
 		end
 		current = current.Parent
@@ -82,6 +95,10 @@ local function stopRobloxAnimationTracks(runtime)
 			end
 		end
 	end
+end
+
+local function rootOf(runtime)
+	return runtime.PrimaryPart or runtime:FindFirstChildWhichIsA("BasePart", true)
 end
 
 local function registerBone(bone)
@@ -115,8 +132,11 @@ local function registerBone(bone)
 		bone.Transform = CFrame.identity
 		activeBones[bone] = {
 			Runtime = runtime,
+			Root = rootOf(runtime),
 			StartedAt = os.clock(),
 			PositionScale = getPositionScale(runtime),
+			Visible = true,
+			NextVisibilityCheck = 0,
 		}
 	end)
 end
@@ -124,20 +144,12 @@ end
 local function evaluateBlenderPosition(frame)
 	if frame <= PEAK_FRAME then
 		local alpha = (frame - FRAME_START) / (PEAK_FRAME - FRAME_START)
-		local eased = TweenService:GetValue(
-			math.clamp(alpha, 0, 1),
-			Enum.EasingStyle.Back,
-			Enum.EasingDirection.Out
-		)
+		local eased = TweenService:GetValue(math.clamp(alpha, 0, 1), Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 		return PEAK_DISTANCE * eased
 	end
 
 	local alpha = (frame - PEAK_FRAME) / (FRAME_END - PEAK_FRAME)
-	local eased = TweenService:GetValue(
-		math.clamp(alpha, 0, 1),
-		Enum.EasingStyle.Bounce,
-		Enum.EasingDirection.Out
-	)
+	local eased = TweenService:GetValue(math.clamp(alpha, 0, 1), Enum.EasingStyle.Bounce, Enum.EasingDirection.Out)
 	return PEAK_DISTANCE * (1 - eased)
 end
 
@@ -153,15 +165,59 @@ workspace.DescendantAdded:Connect(function(descendant)
 	end
 end)
 
-RunService.RenderStepped:Connect(function()
+local function isCollectibleVisible(state, camera, performanceMode)
+	local root = state.Root
+	if not root or not root:IsDescendantOf(workspace) then
+		root = rootOf(state.Runtime)
+		state.Root = root
+	end
+	if not root or not camera then
+		return false
+	end
+
+	local offset = root.Position - camera.CFrame.Position
+	local distanceSquared = offset:Dot(offset)
+	if distanceSquared <= FORCE_ACTIVE_DISTANCE * FORCE_ACTIVE_DISTANCE then
+		return true
+	end
+	local maxDistance = performanceMode and PERFORMANCE_MAX_DISTANCE or NORMAL_MAX_DISTANCE
+	if distanceSquared > maxDistance * maxDistance then
+		return false
+	end
+
+	local viewportPoint, onScreen = camera:WorldToViewportPoint(root.Position)
+	return onScreen and viewportPoint.Z > 0
+end
+
+RunService.RenderStepped:Connect(function(dt)
+	local performanceMode = player:GetAttribute("PerformanceMode") == true
+	local targetFPS = performanceMode and PERFORMANCE_UPDATE_FPS or NORMAL_UPDATE_FPS
+	local updateInterval = 1 / targetFPS
+	updateAccumulator += dt
+	if updateAccumulator < updateInterval then
+		return
+	end
+	updateAccumulator %= updateInterval
+
 	local now = os.clock()
+	local camera = workspace.CurrentCamera
+	local visibilityInterval = performanceMode and PERFORMANCE_VISIBILITY_INTERVAL or NORMAL_VISIBILITY_INTERVAL
 
 	for bone, state in pairs(activeBones) do
-		if not bone:IsDescendantOf(workspace)
+		if
+			not bone:IsDescendantOf(workspace)
 			or not state.Runtime.Parent
 			or state.Runtime:GetAttribute("Claimed") == true
 		then
 			activeBones[bone] = nil
+			continue
+		end
+
+		if now >= state.NextVisibilityCheck then
+			state.Visible = isCollectibleVisible(state, camera, performanceMode)
+			state.NextVisibilityCheck = now + visibilityInterval
+		end
+		if not state.Visible then
 			continue
 		end
 

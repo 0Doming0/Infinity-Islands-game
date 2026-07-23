@@ -1,4 +1,7 @@
--- Shift/R3/botao de toque: agachamento com protecao contra queda de bordas.
+-- Shift/R3/botao de toque: agachamento no estilo Minecraft.
+-- Um raycast acompanha a direcao do input. Quando nao existe piso adiante,
+-- uma barreira invisivel criada somente neste cliente impede a queda sem
+-- cancelar o input, teleportar ou alterar a velocidade do personagem.
 
 local ContextActionService = game:GetService("ContextActionService")
 local Players = game:GetService("Players")
@@ -12,20 +15,61 @@ local SprintConfig = require(ReplicatedStorage:WaitForChild("SprintConfig"))
 local sprintRemote = ReplicatedStorage:WaitForChild("SprintRequest")
 local sneakRemote = ReplicatedStorage:WaitForChild("SneakRequest")
 
+local VERSION = "V7_CLIENT_EDGE_BARRIER"
 local ACTION_NAME = "SkyDungeonSneak"
+script:SetAttribute("ControllerVersion", VERSION)
 local crouchWanted = false
 local lastRequestAt = -math.huge
 local character
 local humanoid
 local root
 local raycastParams
-local lastSafePosition
-local lastSafeGroundY
+local sneakGroundY
+local footprintOffsets = { Vector3.zero }
+local edgeBarrier
 local cameraTween
 local sneakIdleAnimation
 local sneakWalkAnimation
 local sneakIdleTrack
 local sneakWalkTrack
+
+local function removeEdgeBarrier()
+	if edgeBarrier then
+		edgeBarrier:Destroy()
+		edgeBarrier = nil
+	end
+end
+
+local function getEdgeBarrier()
+	if edgeBarrier then
+		return edgeBarrier
+	end
+
+	local barrier = Instance.new("Part")
+	barrier.Name = "SneakEdgeBarrier_V7_LocalOnly"
+	barrier.Anchored = true
+	barrier.CanCollide = true
+	barrier.CanQuery = false
+	barrier.CanTouch = false
+	barrier.CastShadow = false
+	barrier.Massless = true
+	barrier.Transparency = 1
+	barrier.Size = Vector3.new(
+		SprintConfig.SneakEdgeBarrierWidth,
+		SprintConfig.SneakEdgeBarrierHeight,
+		SprintConfig.SneakEdgeBarrierThickness
+	)
+	edgeBarrier = barrier
+	return barrier
+end
+
+local function hideEdgeBarrier()
+	if edgeBarrier then
+		-- Fora do Workspace a peca deixa de participar da fisica, mas pode ser
+		-- reutilizada no proximo frame sem criar outra Instance.
+		edgeBarrier.Parent = nil
+	end
+end
 
 local function destroyAnimationTrack(track)
 	if track then
@@ -190,6 +234,9 @@ local function requestCrouch(enabled, force)
 	end
 	sneakRemote:FireServer(enabled)
 	setCameraCrouched(enabled)
+	if not enabled then
+		hideEdgeBarrier()
+	end
 	updateSneakAnimation()
 end
 
@@ -211,14 +258,107 @@ local function getGround(position)
 	return result.Instance == workspace.Terrain and result or nil
 end
 
-local function hasSameLevelGround(position, expectedGroundY)
-	local result = getGround(position)
-	return result ~= nil
-		and expectedGroundY ~= nil
-		and math.abs(result.Position.Y - expectedGroundY) <= SprintConfig.EdgeGroundHeightTolerance
+local function rebuildFootprintOffsets()
+	if not root then
+		footprintOffsets = { Vector3.zero }
+		return
+	end
+
+	-- O pequeno recuo permite que parte do corpo fique para fora, como no
+	-- Minecraft, sem exigir que o centro do personagem continue sobre o piso.
+	local radius = math.max(0.15, math.max(root.Size.X, root.Size.Z) * 0.5 - SprintConfig.SneakEdgeFootprintInset)
+	footprintOffsets = {
+		Vector3.zero,
+		Vector3.new(radius, 0, 0),
+		Vector3.new(-radius, 0, 0),
+		Vector3.new(0, 0, radius),
+		Vector3.new(0, 0, -radius),
+		Vector3.new(radius, 0, radius),
+		Vector3.new(radius, 0, -radius),
+		Vector3.new(-radius, 0, radius),
+		Vector3.new(-radius, 0, -radius),
+	}
+end
+
+local function findFootSupport(position, expectedGroundY)
+	for _, offset in ipairs(footprintOffsets) do
+		local result = getGround(position + offset)
+		if
+			result
+			and (
+				expectedGroundY == nil
+				-- Subir continua permitido. Apenas uma queda maior que a
+				-- tolerancia e tratada como uma borda sem apoio.
+				or result.Position.Y >= expectedGroundY - SprintConfig.EdgeGroundHeightTolerance
+			)
+		then
+			return result
+		end
+	end
+	return nil
+end
+
+local function hasGroundInMovementDirection(position, direction, expectedGroundY)
+	local rootRadius = math.max(root.Size.X, root.Size.Z) * 0.5
+	local probeDistance =
+		math.max(SprintConfig.SneakEdgeForwardProbeDistance, rootRadius + SprintConfig.SneakEdgeForwardProbeMargin)
+	local probePosition = position + direction * probeDistance
+	local result = getGround(probePosition)
+	if not result then
+		return false
+	end
+
+	return expectedGroundY == nil or result.Position.Y >= expectedGroundY - SprintConfig.EdgeGroundHeightTolerance
+end
+
+local function getDistanceToPartEdge(part, position, direction)
+	if not part or not part:IsA("BasePart") then
+		return nil
+	end
+
+	local localPosition = part.CFrame:PointToObjectSpace(position)
+	local localDirection = part.CFrame:VectorToObjectSpace(direction)
+	local halfSize = part.Size * 0.5
+	local distances = {}
+
+	if math.abs(localDirection.X) > 0.0001 then
+		local boundaryX = localDirection.X > 0 and halfSize.X or -halfSize.X
+		local distanceX = (boundaryX - localPosition.X) / localDirection.X
+		if distanceX >= 0 then
+			table.insert(distances, distanceX)
+		end
+	end
+	if math.abs(localDirection.Z) > 0.0001 then
+		local boundaryZ = localDirection.Z > 0 and halfSize.Z or -halfSize.Z
+		local distanceZ = (boundaryZ - localPosition.Z) / localDirection.Z
+		if distanceZ >= 0 then
+			table.insert(distances, distanceZ)
+		end
+	end
+
+	if #distances == 0 then
+		return nil
+	end
+	return math.min(table.unpack(distances))
+end
+
+local function showEdgeBarrier(direction, groundResult)
+	local barrier = getEdgeBarrier()
+	local rootRadius = math.max(root.Size.X, root.Size.Z) * 0.5
+	local edgeDistance = getDistanceToPartEdge(groundResult.Instance, root.Position, direction)
+	local fallbackDistance = math.max(SprintConfig.SneakEdgeBarrierMinimumDistance, rootRadius + barrier.Size.Z * 0.5)
+	local wallDistance = edgeDistance and (edgeDistance + barrier.Size.Z * 0.5) or fallbackDistance
+	local center = Vector3.new(root.Position.X, groundResult.Position.Y + barrier.Size.Y * 0.5, root.Position.Z)
+		+ direction * wallDistance
+
+	-- O eixo Z (espessura) aponta para a direcao bloqueada. A largura fica
+	-- perpendicular ao input, permitindo que a fisica deslize pela parede.
+	barrier.CFrame = CFrame.lookAt(center, center + direction, Vector3.yAxis)
+	barrier.Parent = workspace
 end
 
 local function bindCharacter(newCharacter)
+	removeEdgeBarrier()
 	stopSneakAnimations()
 	character = newCharacter
 	humanoid = newCharacter:WaitForChild("Humanoid", 10)
@@ -232,9 +372,9 @@ local function bindCharacter(newCharacter)
 	raycastParams.FilterDescendantsInstances = { newCharacter }
 	raycastParams.IgnoreWater = true
 	raycastParams.RespectCanCollide = true
-	lastSafePosition = root.Position
-	local initialGround = getGround(root.Position)
-	lastSafeGroundY = initialGround and initialGround.Position.Y or nil
+	rebuildFootprintOffsets()
+	local initialGround = findFootSupport(root.Position, nil)
+	sneakGroundY = initialGround and initialGround.Position.Y or nil
 	loadSneakAnimations()
 
 	humanoid.Died:Connect(function()
@@ -242,8 +382,8 @@ local function bindCharacter(newCharacter)
 			return
 		end
 		crouchWanted = false
-		lastSafePosition = nil
-		lastSafeGroundY = nil
+		sneakGroundY = nil
+		hideEdgeBarrier()
 		updateSneakAnimation()
 	end)
 
@@ -300,6 +440,7 @@ end
 
 RunService.PreSimulation:Connect(function()
 	if not crouchWanted or not character or not humanoid or not root or humanoid.Health <= 0 then
+		hideEdgeBarrier()
 		return
 	end
 
@@ -307,55 +448,49 @@ RunService.PreSimulation:Connect(function()
 	local velocity = root.AssemblyLinearVelocity
 	local humanoidState = humanoid:GetState()
 
-	-- Um salto iniciado pelo jogador pode sair da borda normalmente.
+	-- Assim como no Minecraft, agachar nao impede um salto deliberado nem
+	-- interfere em escalada ou natacao.
 	if
 		velocity.Y > 2
 		or humanoidState == Enum.HumanoidStateType.Jumping
+		or humanoidState == Enum.HumanoidStateType.Freefall
 		or humanoidState == Enum.HumanoidStateType.Climbing
 		or humanoidState == Enum.HumanoidStateType.Swimming
 	then
+		hideEdgeBarrier()
 		return
-	end
-
-	local currentGround = getGround(currentPosition)
-	if currentGround and lastSafeGroundY == nil then
-		lastSafeGroundY = currentGround.Position.Y
 	end
 
 	local movement = humanoid.MoveDirection
 	if movement.Magnitude <= 0.01 then
-		if
-			currentGround
-			and (
-				lastSafeGroundY == nil
-				or math.abs(currentGround.Position.Y - lastSafeGroundY) <= SprintConfig.EdgeGroundHeightTolerance
-			)
-		then
-			lastSafePosition = currentPosition
-			lastSafeGroundY = currentGround.Position.Y
+		hideEdgeBarrier()
+		local stationarySupport = findFootSupport(currentPosition, sneakGroundY)
+		if stationarySupport then
+			sneakGroundY = stationarySupport.Position.Y
 		end
 		return
 	end
 
-	local forward = Vector3.new(movement.X, 0, movement.Z).Unit
-	local rootRadius = math.max(root.Size.X, root.Size.Z) * 0.5
-	local probeDistance = rootRadius + SprintConfig.EdgeProbeMargin
-	local expectedGroundY = currentGround and currentGround.Position.Y or lastSafeGroundY
-	local probePosition = currentPosition + forward * probeDistance
+	local currentSupport = findFootSupport(currentPosition, sneakGroundY)
+	if not currentSupport then
+		-- O personagem ja nao possui apoio (queda, impulso ou plataforma
+		-- removida). Nao o puxa de volta artificialmente.
+		hideEdgeBarrier()
+		return
+	end
+	sneakGroundY = currentSupport.Position.Y
 
-	if currentGround and hasSameLevelGround(probePosition, expectedGroundY) then
-		lastSafePosition = currentPosition
-		lastSafeGroundY = currentGround.Position.Y
+	local horizontalMovement = Vector3.new(movement.X, 0, movement.Z)
+	if horizontalMovement.Magnitude <= 0.01 then
+		hideEdgeBarrier()
 		return
 	end
 
-	-- Cancela o passo antes de a capsula do personagem ultrapassar a borda.
-	humanoid:Move(Vector3.zero, false)
-	root.AssemblyLinearVelocity = Vector3.new(0, math.min(velocity.Y, 0), 0)
-
-	if lastSafePosition then
-		local rotation = root.CFrame.Rotation
-		root.CFrame = CFrame.new(lastSafePosition.X, currentPosition.Y, lastSafePosition.Z) * rotation
+	local direction = horizontalMovement.Unit
+	if hasGroundInMovementDirection(currentPosition, direction, sneakGroundY) then
+		hideEdgeBarrier()
+	else
+		showEdgeBarrier(direction, currentSupport)
 	end
 end)
 
@@ -377,3 +512,4 @@ player.CharacterAdded:Connect(bindCharacter)
 if player.Character then
 	task.spawn(bindCharacter, player.Character)
 end
+

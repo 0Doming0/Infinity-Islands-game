@@ -85,6 +85,9 @@ local templateCache = {}
 local warnedTemplates = {}
 
 local DEFAULT_COLLECT_SOUND_ID = "rbxasset://sounds/electronicpingshort.wav"
+local PROCEDURAL_BONE_NAME = "Bone"
+local PROCEDURAL_ANIMATION_DRIVER = "ProceduralBlender"
+local ROBLOX_ANIMATION_DRIVER = "RobloxAnimator"
 
 local function normalizedSeed(value)
 	local seed = math.floor(math.abs(tonumber(value) or 1)) % 2147483647
@@ -137,6 +140,11 @@ end
 
 local function hasBasePart(instance)
 	return instance:IsA("BasePart") or instance:FindFirstChildWhichIsA("BasePart", true) ~= nil
+end
+
+local function usesProceduralBlenderAnimation(instance)
+	local bone = instance:FindFirstChild(PROCEDURAL_BONE_NAME, true)
+	return bone ~= nil and bone:IsA("Bone")
 end
 
 local function findVisualTemplate(definition)
@@ -360,8 +368,6 @@ local function createCollectible(parent, surfacePosition, definition, sourceName
 	local runtime = Instance.new("Model")
 	runtime.Name = definition.Id
 
-    runtime.Parent = parent
-    
 	local AnimeOutline = require(
 	    ServerScriptService.MVPSystems.AnimeOutline
     )
@@ -418,12 +424,20 @@ local function createCollectible(parent, surfacePosition, definition, sourceName
 		instance:SetAttribute("Claimed", false)
 	end
 	runtime:SetAttribute("UsesCustomModel", template ~= nil)
+	local usesProceduralAnimation = usesProceduralBlenderAnimation(runtime)
+	runtime:SetAttribute(
+		"CollectibleAnimationDriver",
+		usesProceduralAnimation and PROCEDURAL_ANIMATION_DRIVER or ROBLOX_ANIMATION_DRIVER
+	)
+	runtime:SetAttribute("UseBlenderProceduralAnimation", usesProceduralAnimation)
 	if typeof(targetUserId) == "number" then
 		runtime:SetAttribute("TutorialTargetUserId", targetUserId)
 		part:SetAttribute("TutorialTargetUserId", targetUserId)
 	end
 	runtime.Parent = parent
-	playCollectibleAnimation(runtime)
+	if not usesProceduralAnimation then
+		playCollectibleAnimation(runtime)
+	end
 	AnimeOutline.Apply(runtime)
 	local particleColor = template and template:GetAttribute("ParticleColor")
 	local collectSoundId = template and template:GetAttribute("CollectSoundId")
@@ -460,7 +474,8 @@ local function populateIsland(island, random)
 	if island:GetAttribute("CanSpawnItem") ~= true then
 		return 0
 	end
-	if random:NextNumber() > CONFIG.ISLAND_SPAWN_CHANCE then
+	local chanceMultiplier = math.max(0, tonumber(island:GetAttribute("CollectibleChanceMultiplier")) or 1)
+	if random:NextNumber() > math.clamp(CONFIG.ISLAND_SPAWN_CHANCE * chanceMultiplier, 0, 1) then
 		island:SetAttribute("ScoreCollectibleCount", 0)
 		return 0
 	end
@@ -522,9 +537,12 @@ local function populateRoutes(chunk, random)
 	local selectedParts = {}
 	local selectedPositions = {}
 	local selectedSet = {}
+	local chanceMultiplier = math.max(0, tonumber(chunk:GetAttribute("CollectibleChanceMultiplier")) or 1)
+	local minimumPerRound = math.max(1, math.floor(CONFIG.ROUTE_MIN_PER_ROUND * chanceMultiplier + 0.5))
+	local maximumPerRound = math.max(minimumPerRound, math.floor(CONFIG.ROUTE_MAX_PER_ROUND * chanceMultiplier + 0.5))
 
 	local function trySelect(part, requireChance)
-		if #selectedParts >= CONFIG.ROUTE_MAX_PER_ROUND or selectedSet[part] then
+		if #selectedParts >= maximumPerRound or selectedSet[part] then
 			return false
 		end
 		if not isFarEnough(part.Position, selectedPositions, CONFIG.ROUTE_MIN_SPACING_STUDS) then
@@ -534,6 +552,7 @@ local function populateRoutes(chunk, random)
 			local chance = part:GetAttribute("PathType") == "MainRoute"
 				and CONFIG.MAIN_ROUTE_CHANCE
 				or CONFIG.BRANCH_ROUTE_CHANCE
+			chance = math.clamp(chance * chanceMultiplier, 0, 1)
 			if random:NextNumber() > chance then
 				return false
 			end
@@ -547,9 +566,9 @@ local function populateRoutes(chunk, random)
 	for _, part in ipairs(candidates) do
 		trySelect(part, true)
 	end
-	if #selectedParts < CONFIG.ROUTE_MIN_PER_ROUND then
+	if #selectedParts < minimumPerRound then
 		for _, part in ipairs(candidates) do
-			if #selectedParts >= CONFIG.ROUTE_MIN_PER_ROUND then
+			if #selectedParts >= minimumPerRound then
 				break
 			end
 			trySelect(part, false)

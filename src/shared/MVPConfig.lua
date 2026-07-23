@@ -57,6 +57,14 @@ local Config = {
 		InventoryRandomSalt = 526133,
 	},
 
+	SafeZones = {
+		Enabled = true,
+		CheckIntervalSeconds = 0.10,
+		HorizontalPaddingStuds = 0.75,
+		VerticalPaddingStuds = 12,
+		ShieldVisible = true,
+	},
+
 	Difficulty = {
 		RoundsPerTier = 4,
 		MaximumTier = 8,
@@ -79,7 +87,7 @@ local Config = {
 
 	Chests = {
 		NormalIslandChance = 0.18,
-		MimicChance = 0.08,
+		MimicChance = 0.1,
 		NormalMinimumCoins = 15,
 		NormalMaximumCoins = 40,
 		MimicMinimumCoins = 40,
@@ -126,11 +134,11 @@ local Config = {
 	ExampleAssets = {
 		-- IDs publicos/provisorios. Troque por animacoes do proprietario do jogo.
 		Animations = {
-			Equip = "",
-			Idle = "",
+			Equip = "rbxassetid://507768375",
+			Idle = "rbxassetid://507768375",
 			Attack1 = "rbxassetid://137981608525978",
 			Attack2 = "rbxassetid://128834898913145",
-			Attack3 = "rbxassetid://134725485403964",
+			Attack3 = "rbxassetid://134725485403964"
 		},
 		Sounds = {
 			Equip = "rbxasset://sounds/unsheath.wav",

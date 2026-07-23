@@ -103,6 +103,11 @@ local Config = {
 	FRONTIER_MYSTERY_FAR_INTENSITY = 0.72,
 	FRONTIER_WATER_SAFETY_LEVELS = 2,
 	FRONTIER_CLEANUP_MARGIN_STUDS = 15,
+	-- Geometria submersa volta para um estoque fora do Workspace. O estoque e
+	-- limitado para reduzir criacao/GC sem crescer indefinidamente na memoria.
+	FRONTIER_GEOMETRY_POOL_ENABLED = true,
+	FRONTIER_MAX_POOLED_ISLANDS = 12,
+	FRONTIER_MAX_POOLED_CONNECTIONS = 20,
 	-- Compatibilidade temporaria com o script da agua anterior.
 	MIN_ACTIVE_CYCLES = 12,
 	MAX_SECTOR_ACTIVATIONS_PER_UPDATE = 2,

@@ -25,6 +25,20 @@ local decorationTemplateCache
 local grassTemplateCache
 local spawnGrassModel
 
+local function clearAttributes(instance)
+	for name in pairs(instance:GetAttributes()) do
+		instance:SetAttribute(name, nil)
+	end
+end
+
+local function destroyChildrenExcept(parent, keep)
+	for _, child in ipairs(parent:GetChildren()) do
+		if not keep[child] then
+			child:Destroy()
+		end
+	end
+end
+
 local CARDINAL_DIRECTIONS = {
 	Vector3.new(1, 0, 0),
 	Vector3.new(-1, 0, 0),
@@ -666,7 +680,13 @@ end
 
 local function createConnector(parent, cell, pathType, pathId, pathName, sequence, roundIndex, grassTemplates, options)
 	options = options or {}
-	local part = Instance.new("Part")
+	local part = options.RecycledPart
+	if part then
+		clearAttributes(part)
+		destroyChildrenExcept(part, {})
+	else
+		part = Instance.new("Part")
+	end
 	part.Name = string.format("%s_%02d_%03d", pathName, pathId, sequence)
 	part.Size = Vector3.new(Config.GRID_SIZE, Config.GRID_SIZE, Config.GRID_SIZE)
 	part.Position = gridToWorld(cell)
@@ -1052,7 +1072,17 @@ local function createIsland(parent, island, roundIndex, previousCenter, grassTem
 		* Config.GRID_SIZE
 	local approximateRadius = math.max(island.Width, island.Depth) * Config.GRID_SIZE / 2
 	local edgeGap = math.max(0, horizontalCenterDistance - approximateRadius)
-	local model = Instance.new("Model")
+	local model = options.RecycledIsland
+	local floor
+	if model then
+		floor = model:FindFirstChild("IslandFloor")
+		assert(floor and floor:IsA("Part"), "[SkyDungeon] Ilha reciclada sem IslandFloor valido.")
+		destroyChildrenExcept(model, { [floor] = true })
+		clearAttributes(model)
+		clearAttributes(floor)
+	else
+		model = Instance.new("Model")
+	end
 	model.Name = string.format("Terrain_%02d_%s_%s", island.Id, island.SizeName, island.Role)
 	model:SetAttribute("IsSkyIsland", true)
 	model:SetAttribute("TerrainId", island.Id)
@@ -1081,7 +1111,7 @@ local function createIsland(parent, island, roundIndex, previousCenter, grassTem
 	model:SetAttribute("AnchorPathIndex", 0)
 	model.Parent = parent
 
-	local floor = Instance.new("Part")
+	floor = floor or Instance.new("Part")
 	floor.Name = "IslandFloor"
 	floor.Size = Vector3.new(
 		(island.MaxX - island.MinX + 1) * Config.GRID_SIZE,
@@ -1495,6 +1525,72 @@ local function styleFrontierSanctuary(islandModel)
 	Instance.new("UICorner", label).CornerRadius = UDim.new(0, 8)
 end
 
+-- Remove todo estado dinamico e preserva apenas o casco estrutural reutilizavel.
+-- O modelo fica fora do Workspace enquanto estiver no pool, portanto nao participa
+-- de fisica, renderizacao, consultas espaciais ou scripts de gameplay.
+function Generator.PrepareFrontierNodeForPool(model)
+	if not model or not model:IsA("Model") then
+		return nil
+	end
+	local terrainFolder = model:FindFirstChild("TerrainAreas")
+	local islandModel = terrainFolder and terrainFolder:FindFirstChildWhichIsA("Model")
+	local floor = islandModel and islandModel:FindFirstChild("IslandFloor")
+	if not terrainFolder or not islandModel or not floor or not floor:IsA("Part") then
+		return nil
+	end
+	local sizeName = tostring(islandModel:GetAttribute("TerrainSize") or "")
+	if sizeName == "" then
+		return nil
+	end
+	destroyChildrenExcept(model, { [terrainFolder] = true })
+	destroyChildrenExcept(terrainFolder, { [islandModel] = true })
+	destroyChildrenExcept(islandModel, { [floor] = true })
+	clearAttributes(model)
+	clearAttributes(islandModel)
+	clearAttributes(floor)
+	model.PrimaryPart = floor
+	model.Name = "PooledIsland_" .. sizeName
+	islandModel.Name = "PooledTerrain_" .. sizeName
+	floor.Name = "IslandFloor"
+	floor.Anchored = true
+	floor.CanCollide = false
+	floor.CanTouch = false
+	floor.CanQuery = false
+	return sizeName
+end
+
+function Generator.PrepareFrontierConnectionForPool(model)
+	if not model or not model:IsA("Model") then
+		return nil
+	end
+	local parts = {}
+	for _, child in ipairs(model:GetChildren()) do
+		if child:IsA("Part") and child:GetAttribute("IsRoundConnector") == true then
+			table.insert(parts, child)
+		else
+			child:Destroy()
+		end
+	end
+	if #parts == 0 then
+		return nil
+	end
+	table.sort(parts, function(a, b)
+		return a.Name < b.Name
+	end)
+	clearAttributes(model)
+	model.Name = string.format("PooledConnection_%d", #parts)
+	for index, part in ipairs(parts) do
+		destroyChildrenExcept(part, {})
+		clearAttributes(part)
+		part.Name = string.format("PooledConnector_%03d", index)
+		part.Anchored = true
+		part.CanCollide = false
+		part.CanTouch = false
+		part.CanQuery = false
+	end
+	return tostring(#parts)
+end
+
 -- Cria somente uma ilha da malha. O modelo externo preserva o contrato de
 -- PopulateRuntimeContent, mas a unidade de geracao agora e uma unica ilha.
 function Generator.CreateFrontierNode(parent, spec, options)
@@ -1514,7 +1610,22 @@ function Generator.CreateFrontierNode(parent, spec, options)
 	)
 	reserveFrontierGateways(island)
 
-	local model = Instance.new("Model")
+	local model = options.RecycledModel
+	local terrainFolder
+	local recycledIsland
+	if model then
+		terrainFolder = model:FindFirstChild("TerrainAreas")
+		recycledIsland = terrainFolder and terrainFolder:FindFirstChildWhichIsA("Model")
+		assert(terrainFolder and recycledIsland, "[SkyDungeon] Casco de ilha reciclada invalido.")
+		destroyChildrenExcept(model, { [terrainFolder] = true })
+		destroyChildrenExcept(terrainFolder, { [recycledIsland] = true })
+		clearAttributes(model)
+	else
+		model = Instance.new("Model")
+		terrainFolder = Instance.new("Folder")
+		terrainFolder.Name = "TerrainAreas"
+		terrainFolder.Parent = model
+	end
 	model.Name = "IslandNode_" .. spec.Key
 	model:SetAttribute("Seed", spec.Seed)
 	model:SetAttribute("ChunkIndex", options.NodeSerial or roundIndex)
@@ -1536,12 +1647,12 @@ function Generator.CreateFrontierNode(parent, spec, options)
 	model:SetAttribute("Expanded", false)
 	model:SetAttribute("VisualContentDeferred", options.DeferVisualContent == true)
 	model:SetAttribute("VisualContentPopulated", options.DeferVisualContent ~= true)
+	model:SetAttribute("GeometryReused", options.RecycledModel ~= nil)
 
-	local terrainFolder = Instance.new("Folder")
 	terrainFolder.Name = "TerrainAreas"
-	terrainFolder.Parent = model
 	local islandModel = createIsland(terrainFolder, island, roundIndex, spec.Center, getGrassTemplates(), {
 		DeferVisualContent = options.DeferVisualContent == true,
+		RecycledIsland = recycledIsland,
 	})
 	islandModel:SetAttribute("IslandNodeKey", spec.Key)
 	islandModel:SetAttribute("LogicalLevel", spec.Level)
@@ -1610,7 +1721,27 @@ function Generator.CreateFrontierConnection(parent, connectionPlan, options)
 		assert(valid, "Salto invalido na conexao: " .. tostring(reason))
 	end
 
-	local model = Instance.new("Model")
+	local model = options.RecycledModel
+	local recycledParts = {}
+	if model then
+		for _, child in ipairs(model:GetChildren()) do
+			if child:IsA("Part") then
+				table.insert(recycledParts, child)
+			else
+				child:Destroy()
+			end
+		end
+		table.sort(recycledParts, function(a, b)
+			return a.Name < b.Name
+		end)
+		assert(
+			#recycledParts == #connectionPlan.Cells - 2,
+			"[SkyDungeon] Casco de conexao reciclada possui quantidade incompatível de blocos."
+		)
+		clearAttributes(model)
+	else
+		model = Instance.new("Model")
+	end
 	model.Name = "Connection_" .. connectionPlan.Key
 	model:SetAttribute("IsFrontierConnection", true)
 	model:SetAttribute("EdgeKey", connectionPlan.Key)
@@ -1623,6 +1754,7 @@ function Generator.CreateFrontierConnection(parent, connectionPlan, options)
 	model:SetAttribute("LogicalLevel", options.LogicalLevel or 0)
 	model:SetAttribute("VisualContentDeferred", false)
 	model:SetAttribute("OptimizedEssentialRoute", options.DeferVisualContent == true)
+	model:SetAttribute("GeometryReused", options.RecycledModel ~= nil)
 	local grassTemplates = options.DeferVisualContent == true and {} or getGrassTemplates()
 	local roundIndex = (options.LogicalLevel or 0) + 1
 	for index = 2, #connectionPlan.Cells - 1 do
@@ -1639,6 +1771,7 @@ function Generator.CreateFrontierConnection(parent, connectionPlan, options)
 				DeferVisualContent = options.DeferVisualContent == true,
 				Seed = options.Seed,
 				YieldCallback = options.YieldCallback,
+				RecycledPart = recycledParts[index - 1],
 			}
 		)
 		part:SetAttribute("EdgeKey", connectionPlan.Key)
