@@ -674,15 +674,22 @@ local function targetWasLost(state, now, player, targetRoot)
 end
 
 local function beginMeleeAttack(state, targetHumanoid, targetRoot)
-	if state.Busy then
+	if state.Busy or state.Model:GetAttribute("CombatStunned") == true then
 		return
 	end
 	stopMoving(state, "Melee")
 	facePosition(state, targetRoot.Position)
 	state.Busy = true
+	local interruptSerial = state.Model:GetAttribute("CombatInterruptSerial") or 0
 	state.NextAttackAt = serverTime() + state.Definition.AttackCooldown
 	task.delay(0.2, function()
-		if isAlive(state) and targetHumanoid.Parent and targetHumanoid.Health > 0 and targetRoot.Parent then
+		if isAlive(state)
+			and (state.Model:GetAttribute("CombatInterruptSerial") or 0) == interruptSerial
+			and state.Model:GetAttribute("CombatStunned") ~= true
+			and targetHumanoid.Parent
+			and targetHumanoid.Health > 0
+			and targetRoot.Parent
+		then
 			local closeEnough = horizontalDistance(state.Root.Position, targetRoot.Position)
 				<= state.Definition.AttackRange + 1.3
 			if closeEnough and math.abs(state.Root.Position.Y - targetRoot.Position.Y) <= MELEE_HEIGHT_TOLERANCE then
@@ -740,14 +747,19 @@ local function thinkGreen(state, now)
 end
 
 local function beginBlueAttack(state, targetRoot)
-	if state.Busy then
+	if state.Busy or state.Model:GetAttribute("CombatStunned") == true then
 		return
 	end
 	stopMoving(state, "RangedAttack")
 	facePosition(state, targetRoot.Position)
 	state.Busy = true
+	local interruptSerial = state.Model:GetAttribute("CombatInterruptSerial") or 0
 	task.delay(0.16, function()
-		if isAlive(state) and targetRoot.Parent then
+		if isAlive(state)
+			and (state.Model:GetAttribute("CombatInterruptSerial") or 0) == interruptSerial
+			and state.Model:GetAttribute("CombatStunned") ~= true
+			and targetRoot.Parent
+		then
 			straightProjectileAttack(state, targetRoot)
 		end
 		state.Busy = false
@@ -975,9 +987,16 @@ local function thinkGoldenFury(state, now)
 		if now >= state.NextAttackAt and not state.Busy then
 			facePosition(state, targetRoot.Position)
 			state.Busy = true
+			local interruptSerial = state.Model:GetAttribute("CombatInterruptSerial") or 0
 			state.NextAttackAt = now + (tonumber(state.Model:GetAttribute("AttackCooldown")) or 1.4)
 			task.delay(0.2, function()
-				if isAlive(state) and targetHumanoid.Parent and targetHumanoid.Health > 0 and targetRoot.Parent then
+				if isAlive(state)
+					and (state.Model:GetAttribute("CombatInterruptSerial") or 0) == interruptSerial
+					and state.Model:GetAttribute("CombatStunned") ~= true
+					and targetHumanoid.Parent
+					and targetHumanoid.Health > 0
+					and targetRoot.Parent
+				then
 					local stillClose = horizontalDistance(state.Root.Position, targetRoot.Position) <= attackRange + 1.3
 					if stillClose and math.abs(state.Root.Position.Y - targetRoot.Position.Y) <= MELEE_HEIGHT_TOLERANCE then
 						targetHumanoid:TakeDamage(math.max(1, tonumber(state.Model:GetAttribute("AttackDamage")) or 8))

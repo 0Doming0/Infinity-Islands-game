@@ -1,3 +1,4 @@
+-- Sky Dungeon WaterRiseSystem V12 - Party Wipe Rescue Island
 -- A agua usa a media protegida do coletivo. Sua superficie visual e dividida
 -- em tiles proximos aos jogadores, pois a fronteira pode crescer em qualquer X/Z.
 
@@ -52,6 +53,13 @@ local CONFIG = {
 	SAFE_RESPAWN_HRP_OFFSET = 3,
 	SAFE_RESPAWN_SEARCH_RETRIES = 10,
 	SAFE_RESPAWN_RETRY_DELAY = 0.1,
+	RESCUE_ISLAND_WAIT_SECONDS = 12,
+	RESCUE_ISLAND_POLL_SECONDS = 0.25,
+	SAFE_RESPAWN_PROTECTION_SECONDS = 3,
+	TEMP_RESPAWN_PLATFORM_SIZE = Vector3.new(18, 1, 18),
+	TEMP_RESPAWN_EXTRA_CLEARANCE = 8,
+	TEMP_RESPAWN_RESCUE_RETRIES = 20,
+	TEMP_RESPAWN_RESCUE_DELAY = 0.5,
 	WATER_TILE_SIZE = 1024,
 	WATER_TILE_OVERLAP = 8,
 	WATER_TILE_UPDATE_RATE = 0.5,
@@ -92,6 +100,13 @@ local waterTilesFolder = Instance.new("Folder")
 waterTilesFolder.Name = "WaterTiles"
 waterTilesFolder.Parent = workspace
 local waterTiles = {}
+
+local safeRespawnFolder = workspace:FindFirstChild("SafeRespawnPlatforms")
+if not safeRespawnFolder then
+	safeRespawnFolder = Instance.new("Folder")
+	safeRespawnFolder.Name = "SafeRespawnPlatforms"
+	safeRespawnFolder.Parent = workspace
+end
 
 local currentWaterY = CONFIG.WATER_START_SURFACE_Y
 local currentWaterSpeed = 0
@@ -235,7 +250,11 @@ local function findSafeRoutePart()
 	local bestPart
 	local bestSurfaceY = math.huge
 	for _, descendant in ipairs(worldModel:GetDescendants()) do
-		if descendant:IsA("BasePart") and descendant:GetAttribute("IsMainRoute") == true then
+		if descendant:IsA("BasePart")
+			and descendant.Anchored
+			and descendant.CanCollide
+			and descendant:GetAttribute("IsMainRoute") == true
+		then
 			local surfaceY = descendant.Position.Y + descendant.Size.Y / 2
 			if surfaceY >= minimumSurfaceY and surfaceY < bestSurfaceY then
 				bestPart = descendant
@@ -246,9 +265,52 @@ local function findSafeRoutePart()
 	return bestPart
 end
 
-local function getSafeRespawnCFrame()
-	if CONFIG.RESPAWN_HEIGHT >= currentWaterY + CONFIG.SAFE_RESPAWN_CLEARANCE then
-		return CFrame.new(MapConfig.CENTER_WORLD.X, CONFIG.RESPAWN_HEIGHT, MapConfig.CENTER_WORLD.Z)
+local function validateSpawnCFrame(candidateCFrame, character, allowTemporaryPlatform)
+	if not candidateCFrame then
+		return nil
+	end
+
+	local raycastParams = RaycastParams.new()
+	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+	local excludedInstances = { water, waterTilesFolder }
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player.Character then
+			table.insert(excludedInstances, player.Character)
+		end
+	end
+	if character and not table.find(excludedInstances, character) then
+		table.insert(excludedInstances, character)
+	end
+	raycastParams.FilterDescendantsInstances = excludedInstances
+	raycastParams.IgnoreWater = true
+
+	local rayOrigin = candidateCFrame.Position + Vector3.new(0, 6, 0)
+	local rayDistance = 6 + CONFIG.SAFE_RESPAWN_HRP_OFFSET + 30
+	local result = workspace:Raycast(rayOrigin, Vector3.new(0, -rayDistance, 0), raycastParams)
+	if not result
+		or not result.Instance:IsA("BasePart")
+		or not result.Instance.Anchored
+		or not result.Instance.CanCollide
+	then
+		return nil
+	end
+	if result.Instance:GetAttribute("TemporarySafeRespawn") == true and not allowTemporaryPlatform then
+		return nil
+	end
+
+	local minimumSurfaceY = currentWaterY + CONFIG.SAFE_RESPAWN_CLEARANCE
+	if result.Position.Y < minimumSurfaceY then
+		return nil
+	end
+
+	return CFrame.new(result.Position + Vector3.new(0, CONFIG.SAFE_RESPAWN_HRP_OFFSET, 0))
+end
+
+local function findPermanentSafeRespawn(character, allowRetries)
+	local initialCFrame = CFrame.new(MapConfig.CENTER_WORLD.X, CONFIG.RESPAWN_HEIGHT, MapConfig.CENTER_WORLD.Z)
+	local validatedInitial = validateSpawnCFrame(initialCFrame, character)
+	if validatedInitial then
+		return validatedInitial
 	end
 
 	local sanctuaryCFrame = ChunkManager.GetSafeRespawnCFrame(
@@ -256,35 +318,198 @@ local function getSafeRespawnCFrame()
 		CONFIG.SAFE_RESPAWN_CLEARANCE,
 		CONFIG.SAFE_RESPAWN_HRP_OFFSET
 	)
-	if sanctuaryCFrame then
-		return sanctuaryCFrame
+	local validatedSanctuary = validateSpawnCFrame(sanctuaryCFrame, character)
+	if validatedSanctuary then
+		return validatedSanctuary
 	end
 
 	ChunkManager.EnsureRoundsAheadOfWater(currentWaterY, CONFIG.SAFE_ROUND_BUFFER, CONFIG.MAX_ROUNDS_PER_REQUEST)
-	for _ = 1, CONFIG.SAFE_RESPAWN_SEARCH_RETRIES do
+	local attempts = allowRetries and CONFIG.SAFE_RESPAWN_SEARCH_RETRIES or 1
+	for attempt = 1, attempts do
 		local routePart = findSafeRoutePart()
 		if routePart then
 			local position = routePart.Position
 				+ Vector3.new(0, routePart.Size.Y / 2 + CONFIG.SAFE_RESPAWN_HRP_OFFSET, 0)
-			return CFrame.new(position)
+			local validatedRoute = validateSpawnCFrame(CFrame.new(position), character)
+			if validatedRoute then
+				return validatedRoute
+			end
 		end
-		task.wait(CONFIG.SAFE_RESPAWN_RETRY_DELAY)
+		if attempt < attempts then
+			task.wait(CONFIG.SAFE_RESPAWN_RETRY_DELAY)
+		end
 	end
+	return nil
+end
 
-	warn("[WaterRiseSystem] Nenhuma superficie segura encontrada; usando respawn temporario.")
-	return CFrame.new(
+local function createTemporaryRespawnPlatform(player)
+	local platform = Instance.new("Part")
+	platform.Name = string.format("EmergencySpawn_%d", player.UserId)
+	platform.Size = CONFIG.TEMP_RESPAWN_PLATFORM_SIZE
+	platform.Anchored = true
+	platform.CanCollide = true
+	platform.CanTouch = false
+	platform.CanQuery = true
+	platform.CastShadow = false
+	platform.Transparency = 0.35
+	platform.Material = Enum.Material.ForceField
+	platform.Color = Color3.fromRGB(90, 210, 255)
+	platform:SetAttribute("TemporarySafeRespawn", true)
+
+	local surfaceY = currentWaterY
+		+ CONFIG.SAFE_RESPAWN_CLEARANCE
+		+ CONFIG.TEMP_RESPAWN_EXTRA_CLEARANCE
+	platform.Position = Vector3.new(
 		MapConfig.CENTER_WORLD.X,
-		currentWaterY + CONFIG.SAFE_RESPAWN_CLEARANCE + CONFIG.SAFE_RESPAWN_HRP_OFFSET,
+		surfaceY - platform.Size.Y / 2,
 		MapConfig.CENTER_WORLD.Z
 	)
+	platform.Parent = safeRespawnFolder
+
+	local spawnCFrame = CFrame.new(platform.Position + Vector3.new(
+		0,
+		platform.Size.Y / 2 + CONFIG.SAFE_RESPAWN_HRP_OFFSET,
+		0
+	))
+	return platform, spawnCFrame
+end
+
+local function getSafeRespawnCFrame(player, character)
+	local permanentCFrame = findPermanentSafeRespawn(character, true)
+	if permanentCFrame then
+		return permanentCFrame, nil
+	end
+
+	local deadline = os.clock() + CONFIG.RESCUE_ISLAND_WAIT_SECONDS
+	local lastRequestReason
+	repeat
+		local _, reason = ChunkManager.RequestSafeRespawnIsland(
+			currentWaterY,
+			CONFIG.SAFE_RESPAWN_CLEARANCE
+		)
+		lastRequestReason = reason
+		task.wait(CONFIG.RESCUE_ISLAND_POLL_SECONDS)
+		permanentCFrame = findPermanentSafeRespawn(character, false)
+	until permanentCFrame or os.clock() >= deadline or player.Character ~= character
+
+	if permanentCFrame then
+		print("[WaterRiseSystem] Ilha de resgate pronta para " .. player.Name)
+		return permanentCFrame, nil
+	end
+
+	warn(string.format(
+		"[WaterRiseSystem] Geracao da ilha de resgate excedeu o limite (%s); usando plataforma temporaria para %s",
+		tostring(lastRequestReason),
+		player.Name
+	))
+	local platform, temporaryCFrame = createTemporaryRespawnPlatform(player)
+	return temporaryCFrame, platform
 end
 
 local playerData = {}
+
+local function addSpawnProtection(character)
+	local existing = character:FindFirstChild("SafeRespawnProtection")
+	if existing then
+		existing:Destroy()
+	end
+	local forceField = Instance.new("ForceField")
+	forceField.Name = "SafeRespawnProtection"
+	forceField.Visible = false
+	forceField.Parent = character
+	task.delay(CONFIG.SAFE_RESPAWN_PROTECTION_SECONDS, function()
+		if forceField.Parent then
+			forceField:Destroy()
+		end
+	end)
+end
+
+local function rescueFromTemporaryPlatform(player, character, platform)
+	task.spawn(function()
+		local attempts = 0
+		while platform.Parent and player.Character == character do
+			task.wait(CONFIG.TEMP_RESPAWN_RESCUE_DELAY)
+			local humanoid = character:FindFirstChildOfClass("Humanoid")
+			local rootPart = character:FindFirstChild("HumanoidRootPart")
+			if not humanoid or humanoid.Health <= 0 or not rootPart then
+				break
+			end
+
+			local platformSurfaceY = platform.Position.Y + platform.Size.Y / 2
+			local requiredSurfaceY = currentWaterY
+				+ CONFIG.SAFE_RESPAWN_CLEARANCE
+				+ CONFIG.TEMP_RESPAWN_EXTRA_CLEARANCE
+			if platformSurfaceY < requiredSurfaceY then
+				local rise = requiredSurfaceY - platformSurfaceY
+				platform.Position += Vector3.new(0, rise, 0)
+				if math.abs(rootPart.Position.X - platform.Position.X) <= platform.Size.X / 2
+					and math.abs(rootPart.Position.Z - platform.Position.Z) <= platform.Size.Z / 2
+				then
+					rootPart.CFrame += Vector3.new(0, rise, 0)
+				end
+			end
+
+			local safeCFrame = findPermanentSafeRespawn(character, false)
+			if safeCFrame then
+				rootPart.AssemblyLinearVelocity = Vector3.zero
+				rootPart.AssemblyAngularVelocity = Vector3.zero
+				rootPart.CFrame = safeCFrame
+				addSpawnProtection(character)
+				local data = playerData[player]
+				if data then
+					local spawnHeight = math.max(0, logicalAltitude(rootPart.Position.Y) - 0.5)
+					data.highestHeightCheckpoint = math.floor(spawnHeight / CONFIG.HEIGHT_CHECKPOINT_STUDS)
+					player:SetAttribute("RunStartLogicalHeight", math.floor(spawnHeight))
+				end
+				platform:Destroy()
+				return
+			end
+
+			ChunkManager.RequestSafeRespawnIsland(currentWaterY, CONFIG.SAFE_RESPAWN_CLEARANCE)
+
+			attempts += 1
+			if attempts == CONFIG.TEMP_RESPAWN_RESCUE_RETRIES then
+				warn("[WaterRiseSystem] Aguardando geracao de ilha segura para " .. player.Name)
+			end
+		end
+
+		if platform.Parent then
+			platform:Destroy()
+		end
+	end)
+end
+
+local function requestRescueIslandAfterPartyWipe()
+	for _, data in pairs(playerData) do
+		if data.alive then
+			return
+		end
+	end
+
+	if ChunkManager.GetSafeRespawnCFrame(
+		currentWaterY,
+		CONFIG.SAFE_RESPAWN_CLEARANCE,
+		CONFIG.SAFE_RESPAWN_HRP_OFFSET
+	) then
+		return
+	end
+
+	local requested, reason = ChunkManager.RequestSafeRespawnIsland(
+		currentWaterY,
+		CONFIG.SAFE_RESPAWN_CLEARANCE
+	)
+	if requested then
+		print("[WaterRiseSystem] Party wipe: geracao antecipada da ilha de resgate (" .. tostring(reason) .. ")")
+	else
+		warn("[WaterRiseSystem] Party wipe: nao foi possivel solicitar ilha de resgate (" .. tostring(reason) .. ")")
+	end
+end
 
 local function onCharacterAdded(player, character)
 	playerData[player] = {
 		alive = true,
 		inWater = false,
+		respawning = true,
 		highestHeightCheckpoint = 0,
 		nextSurvivalScoreAt = os.clock() + CONFIG.SURVIVAL_SCORE_INTERVAL,
 	}
@@ -297,18 +522,45 @@ local function onCharacterAdded(player, character)
 			if playerData[player] then
 				playerData[player].alive = false
 			end
+			task.defer(requestRescueIslandAfterPartyWipe)
 		end)
 	end
 	if rootPart then
+		local data = playerData[player]
+		if data then
+			data.respawning = true
+		end
+		addSpawnProtection(character)
+		local wasAnchored = rootPart.Anchored
+		rootPart.Anchored = true
 		task.wait(0.5)
-		if rootPart.Parent and player.Parent then
-			rootPart.CFrame = getSafeRespawnCFrame()
-			local data = playerData[player]
+		if rootPart.Parent and player.Parent and humanoid and humanoid.Health > 0 then
+			local spawnCFrame, temporaryPlatform = getSafeRespawnCFrame(player, character)
+			local confirmedCFrame = validateSpawnCFrame(spawnCFrame, character, temporaryPlatform ~= nil)
+			if confirmedCFrame then
+				spawnCFrame = confirmedCFrame
+			else
+				if temporaryPlatform and temporaryPlatform.Parent then
+					temporaryPlatform:Destroy()
+				end
+				temporaryPlatform, spawnCFrame = createTemporaryRespawnPlatform(player)
+			end
+			rootPart.AssemblyLinearVelocity = Vector3.zero
+			rootPart.AssemblyAngularVelocity = Vector3.zero
+			rootPart.CFrame = spawnCFrame
+			rootPart.Anchored = wasAnchored
+			addSpawnProtection(character)
+			if temporaryPlatform then
+				rescueFromTemporaryPlatform(player, character, temporaryPlatform)
+			end
 			if data then
 				local spawnHeight = math.max(0, logicalAltitude(rootPart.Position.Y) - 0.5)
 				data.highestHeightCheckpoint = math.floor(spawnHeight / CONFIG.HEIGHT_CHECKPOINT_STUDS)
 				player:SetAttribute("RunStartLogicalHeight", math.floor(spawnHeight))
+				data.respawning = false
 			end
+		elseif rootPart.Parent then
+			rootPart.Anchored = wasAnchored
 		end
 	end
 end
@@ -317,6 +569,7 @@ local function onPlayerAdded(player)
 	playerData[player] = {
 		alive = true,
 		inWater = false,
+		respawning = false,
 		highestHeightCheckpoint = 0,
 		nextSurvivalScoreAt = os.clock() + CONFIG.SURVIVAL_SCORE_INTERVAL,
 	}
@@ -382,7 +635,7 @@ while true do
 	end
 
 	for player, data in pairs(playerData) do
-		if not data.alive then
+		if not data.alive or data.respawning then
 			continue
 		end
 		local character = player.Character

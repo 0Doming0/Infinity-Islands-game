@@ -73,6 +73,54 @@ local function createImpact(position, color, heavy)
 	Debris:AddItem(anchor, 0.30)
 end
 
+local function applyCombatStun(model, humanoid, attack)
+	local stunTokenId = (model:GetAttribute("CombatStunTokenId") or 0) + 1
+	local interruptSerial = (model:GetAttribute("CombatInterruptSerial") or 0) + 1
+	local stunDuration = math.clamp(tonumber(attack.StunDuration) or 0.45, 0.1, 1.25)
+
+	model:SetAttribute("CombatStunTokenId", stunTokenId)
+	-- Nao e apagado no fim do stun: ataques com windup usam este serial para
+	-- saber que foram interrompidos, mesmo se uma task atrasada rodar depois.
+	model:SetAttribute("CombatInterruptSerial", interruptSerial)
+	model:SetAttribute("CombatStunned", true)
+	model:SetAttribute("CombatStunnedUntil", workspace:GetServerTimeNow() + stunDuration)
+
+	-- O primeiro golpe guarda o estado original. Golpes seguintes apenas
+	-- renovam o token e a duracao, sem substituir os valores verdadeiros.
+	if model:GetAttribute("CombatOriginalWalkSpeed") == nil then
+		model:SetAttribute("CombatOriginalWalkSpeed", humanoid.WalkSpeed)
+	end
+	if model:GetAttribute("CombatOriginalAutoRotate") == nil then
+		model:SetAttribute("CombatOriginalAutoRotate", humanoid.AutoRotate)
+	end
+
+	humanoid.WalkSpeed = 0
+	humanoid.AutoRotate = false
+	humanoid:Move(Vector3.zero)
+
+	task.delay(stunDuration, function()
+		if not model.Parent or model:GetAttribute("CombatStunTokenId") ~= stunTokenId then
+			return
+		end
+		model:SetAttribute("CombatStunned", nil)
+		model:SetAttribute("CombatStunTokenId", nil)
+		model:SetAttribute("CombatStunnedUntil", nil)
+		model:SetAttribute("CombatKnockbackUntil", nil)
+		if humanoid.Parent and humanoid.Health > 0 then
+			local originalSpeed = model:GetAttribute("CombatOriginalWalkSpeed")
+			local originalAutoRotate = model:GetAttribute("CombatOriginalAutoRotate")
+			if typeof(originalSpeed) == "number" then
+				humanoid.WalkSpeed = originalSpeed
+			end
+			if typeof(originalAutoRotate) == "boolean" then
+				humanoid.AutoRotate = originalAutoRotate
+			end
+		end
+		model:SetAttribute("CombatOriginalWalkSpeed", nil)
+		model:SetAttribute("CombatOriginalAutoRotate", nil)
+	end)
+end
+
 local function applyKnockback(attackerRoot, model, humanoid, root, attack)
 	-- Um unico membro ancorado prende toda a assembly. Mobs de combate precisam
 	-- estar fisicos para reagir enquanto vivos, nao apenas depois de morrer.
@@ -116,23 +164,7 @@ local function applyKnockback(attackerRoot, model, humanoid, root, attack)
 
 	local velocity = direction * horizontalForce + Vector3.new(0, upwardForce, 0)
 
-	-- Token-based stun: each hit increments a token so consecutive hits
-	-- extend the stun instead of ending it prematurely
-	local stunTokenId = (model:GetAttribute("CombatStunTokenId") or 0) + 1
-	model:SetAttribute("CombatStunTokenId", stunTokenId)
-	model:SetAttribute("CombatStunned", true)
 	model:SetAttribute("CombatKnockbackUntil", workspace:GetServerTimeNow() + 0.22)
-
-	-- Store original walk speed before zeroing (only if not already stored
-	-- from a previous stun that hasn't been cleaned up yet)
-	if not model:GetAttribute("CombatOriginalWalkSpeed") then
-		model:SetAttribute("CombatOriginalWalkSpeed", humanoid.WalkSpeed)
-	end
-
-	-- Disable AI movement
-	humanoid.WalkSpeed = 0
-	humanoid.AutoRotate = false
-	humanoid:Move(Vector3.zero)
 
 	-- Remove old knockback objects from previous hits
 	for _, child in ipairs(root:GetChildren()) do
@@ -159,32 +191,9 @@ local function applyKnockback(attackerRoot, model, humanoid, root, attack)
 	linearVelocity.Parent = root
 
 	local velocityDuration = 0.15
-	local stunDuration = 0.20
 
 	Debris:AddItem(linearVelocity, velocityDuration + 0.02)
 	Debris:AddItem(attachment, velocityDuration + 0.04)
-
-	-- Remove stun after duration, but only if the token hasn't changed.
-	-- A newer hit extends the stun and takes over cleanup.
-	task.delay(stunDuration, function()
-		if not model or not model.Parent then
-			return
-		end
-		if model:GetAttribute("CombatStunTokenId") ~= stunTokenId then
-			return -- A newer hit is in charge; let it handle cleanup
-		end
-		model:SetAttribute("CombatStunned", nil)
-		model:SetAttribute("CombatStunTokenId", nil)
-		model:SetAttribute("CombatKnockbackUntil", nil)
-		if humanoid and humanoid.Parent then
-			local originalSpeed = model:GetAttribute("CombatOriginalWalkSpeed")
-			if originalSpeed then
-				humanoid.WalkSpeed = originalSpeed
-			end
-			humanoid.AutoRotate = true
-		end
-		model:SetAttribute("CombatOriginalWalkSpeed", nil)
-	end)
 end
 
 function DamageService.IsFriendly(attacker, targetModel, friendlyFire)
@@ -229,6 +238,11 @@ function DamageService.ApplySwordHit(attacker, attackerRoot, target, attack)
 	model:SetAttribute("LastSwordHitAt", workspace:GetServerTimeNow())
 
 	humanoid:TakeDamage(attack.Damage)
+	if humanoid.Health > 0 then
+		-- Stun e knockback sao independentes. Assim bosses ou modelos marcados
+		-- com NoKnockback ainda têm o ataque interrompido durante o combo.
+		applyCombatStun(model, humanoid, attack)
+	end
 	if model:GetAttribute("NoKnockback") ~= true then
 		applyKnockback(attackerRoot, model, humanoid, root, attack)
 	end

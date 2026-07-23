@@ -382,11 +382,23 @@ local function executeHit(player, tool, comboIndex, token)
 	) * combo.DamageMultiplier
 	local knockbackMultiplier = Config.GetClampedNumber(tool, "KnockbackMultiplier", 1, 0, 3)
 	local scoreMultiplier = Config.GetClampedNumber(tool, "ScoreMultiplier", 1, 1, 100)
+	local attackSpeed = Config.GetAttackSpeed(tool)
+	local nextCombo = Config.Combo[comboIndex % Config.ComboCount + 1]
+	-- Mantem o alvo interrompido ate a primeira janela real do proximo golpe.
+	-- A duracao acompanha AttackSpeed, portanto espadas lentas nao deixam um
+	-- pequeno intervalo no meio do combo em que o mob consegue atacar.
+	local stunDuration
+	if comboIndex < Config.ComboCount then
+		stunDuration = (combo.Recovery + nextCombo.Windup) / attackSpeed + 0.08
+	else
+		stunDuration = math.max(0.42, combo.Recovery / attackSpeed + 0.08)
+	end
 	local attack = {
 		Damage = math.clamp(damage, Config.DamageLimits.Min, Config.DamageLimits.Max),
 		Knockback = combo.Knockback * knockbackMultiplier,
 		UpwardKnockback = combo.UpwardKnockback * knockbackMultiplier,
 		ScoreMultiplier = scoreMultiplier,
+		StunDuration = stunDuration,
 		Heavy = combo.Heavy,
 	}
 

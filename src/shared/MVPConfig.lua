@@ -79,7 +79,7 @@ local Config = {
 
 	Chests = {
 		NormalIslandChance = 0.18,
-		MimicChance = 0.20,
+		MimicChance = 0.08,
 		NormalMinimumCoins = 15,
 		NormalMaximumCoins = 40,
 		MimicMinimumCoins = 40,
@@ -126,11 +126,11 @@ local Config = {
 	ExampleAssets = {
 		-- IDs publicos/provisorios. Troque por animacoes do proprietario do jogo.
 		Animations = {
-			Equip = "rbxassetid://96866767074255",
-			Idle = "rbxassetid://79702064630382",
-			Attack1 = "rbxassetid://81659072454315",
-			Attack2 = "rbxassetid://132913736223890",
-			Attack3 = "rbxassetid://123474143630732",
+			Equip = "",
+			Idle = "",
+			Attack1 = "rbxassetid://137981608525978",
+			Attack2 = "rbxassetid://128834898913145",
+			Attack3 = "rbxassetid://134725485403964",
 		},
 		Sounds = {
 			Equip = "rbxasset://sounds/unsheath.wav",

@@ -130,6 +130,17 @@ local ambientDangerous = isDangerousWorldEvent()
 local lastTrack
 local random = Random.new()
 
+local musicGroup = SoundService:FindFirstChild("SkyDungeonMusic")
+if musicGroup and not musicGroup:IsA("SoundGroup") then
+	musicGroup:Destroy()
+	musicGroup = nil
+end
+if not musicGroup then
+	musicGroup = Instance.new("SoundGroup")
+	musicGroup.Name = "SkyDungeonMusic"
+	musicGroup.Parent = SoundService
+end
+
 local forestContainer = folder:FindFirstChild(MVPConfig.Atmosphere.ForestAmbienceName)
 if not forestContainer then
 	forestContainer = Instance.new("Folder")
@@ -296,6 +307,7 @@ local function playAmbientTrack(template)
 	music.Looped = false
 	music:SetAttribute("BaseVolume", math.clamp(template.Volume, 0, 1))
 	music.Volume = 0
+	music.SoundGroup = musicGroup
 	music.Parent = SoundService
 	ambientMusic = music
 
@@ -359,6 +371,7 @@ if dangerTemplate and dangerTemplate:IsA("Sound") and dangerTemplate.SoundId ~= 
 	dangerMusic.Name = "SkyDungeonDangerMusic"
 	dangerMusic.Looped = true
 	dangerMusic.Volume = 0
+	dangerMusic.SoundGroup = musicGroup
 	dangerMusic.Parent = SoundService
 	if not dangerMusic.Playing then
 		dangerMusic:Play()

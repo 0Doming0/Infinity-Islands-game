@@ -354,9 +354,9 @@ local function ensureMaterials(player)
 	return folder
 end
 
-local function awardRewards(player, scoreAmount, coinAmount)
+local function awardRewards(player, scoreAmount, coinAmount, worldPosition)
 	if player then
-		ScoreService.AwardRewards(player, scoreAmount, coinAmount, "Monster")
+		ScoreService.AwardRewards(player, scoreAmount, coinAmount, "Monster", worldPosition)
 	end
 end
 
@@ -441,7 +441,7 @@ local function createMarker(pointsFolder, cellRecord, index, template, spawnMode
 	return marker
 end
 
-local function spawnClone(template, parent, island, cellRecord, marker, random, spawnMode, selectedSlimeVariant)
+local function spawnClone(template, parent, island, cellRecord, marker, random, spawnMode, slimeVariantForSpawn)
 	local elite = island:GetAttribute("IslandType") == "Elite"
 	if monsterCount >= getSpawnLimit(elite) then
 		return false
@@ -467,7 +467,7 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 		clone,
 		template,
 		random,
-		selectedSlimeVariant
+		slimeVariantForSpawn
 	)
 	local monsterId = slimeDefinition and slimeDefinition.MonsterId
 		or template:GetAttribute("MonsterId")
@@ -627,9 +627,10 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 			end
 		end
 
+		local deathPosition = root.Position
 		local damager = getRecordedDamager(entry, clone, humanoid)
 		if damager then
-			awardRewards(damager, entry.ScoreValue, entry.CoinValue)
+			awardRewards(damager, entry.ScoreValue, entry.CoinValue, deathPosition)
 			if clone:GetAttribute("IsElite") == true and random:NextNumber() <= 0.25 then
 				InventoryService.GrantItem(damager, "HealthPotion", 1)
 			end
@@ -858,14 +859,7 @@ function MonsterSpawner.PopulateIsland(island, freeCells, context)
 		return 0
 	end
 
-	local selectedSlimeVariant = SlimeVariants.IsSlime(template)
-		and SlimeVariants.SelectVariant(template, random, { DisallowGolden = eliteIsland })
-		or nil
 	local amount, spawnMode, groupMinimum = getSpawnAmount(template, random)
-	if selectedSlimeVariant == "Golden" then
-		-- O dourado e um evento raro Solo, mas nao e Boss e nao bloqueia a ilha.
-		amount, spawnMode, groupMinimum = 1, "Solo", 1
-	end
 	if eliteIsland then
 		-- Elite e uma classificacao do monstro/ilha, nao um SpawnMode. Manter um
 		-- modo valido evita quebrar consumidores que aceitam apenas Solo/Group/Boss.
@@ -896,20 +890,28 @@ function MonsterSpawner.PopulateIsland(island, freeCells, context)
 	pointsFolder.Name = "MonsterSpawnPoints"
 	pointsFolder:SetAttribute("SpawnMode", spawnMode)
 	pointsFolder:SetAttribute("MonsterId", template:GetAttribute("MonsterId") or template.Name)
-	pointsFolder:SetAttribute("SlimeVariant", selectedSlimeVariant)
+	if SlimeVariants.IsSlime(template) then
+		pointsFolder:SetAttribute("SlimeVariant", "Mixed")
+	end
 	pointsFolder.Parent = island
 
 	local monsterFolder = Instance.new("Folder")
 	monsterFolder.Name = spawnMode == "Boss" and "MVPBoss" or "MVPMonsters"
 	monsterFolder:SetAttribute("SpawnMode", spawnMode)
 	monsterFolder:SetAttribute("MonsterId", template:GetAttribute("MonsterId") or template.Name)
-	monsterFolder:SetAttribute("SlimeVariant", selectedSlimeVariant)
+	if SlimeVariants.IsSlime(template) then
+		monsterFolder:SetAttribute("SlimeVariant", "Mixed")
+	end
 	monsterFolder.Parent = island
 
 	local spawned = 0
 	for index, cellRecord in ipairs(selectedCells) do
 		local marker = createMarker(pointsFolder, cellRecord, index, template, spawnMode)
 		local monsterSeed = normalizedSeed(seed + index * 101)
+		local monsterRandom = Random.new(monsterSeed)
+		local slimeVariant = SlimeVariants.IsSlime(template)
+			and SlimeVariants.SelectVariant(template, monsterRandom, { DisallowGolden = eliteIsland })
+			or nil
 		if
 			spawnClone(
 				template,
@@ -917,9 +919,9 @@ function MonsterSpawner.PopulateIsland(island, freeCells, context)
 				island,
 				cellRecord,
 				marker,
-				Random.new(monsterSeed),
+				monsterRandom,
 				spawnMode,
-				selectedSlimeVariant
+				slimeVariant
 			)
 		then
 			spawned += 1

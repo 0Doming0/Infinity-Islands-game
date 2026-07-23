@@ -139,7 +139,7 @@ function ScoreService.Award(player, baseAmount, source)
 	return awarded
 end
 
-function ScoreService.AwardCoins(player, baseAmount, source)
+function ScoreService.AwardCoins(player, baseAmount, source, worldPosition)
 	local multiplier = math.max(1, tonumber(workspace:GetAttribute("CoinRewardMultiplier")) or 1)
 	local awarded = math.max(0, math.floor((tonumber(baseAmount) or 0) * multiplier))
 	if awarded <= 0 then
@@ -157,6 +157,7 @@ function ScoreService.AwardCoins(player, baseAmount, source)
 		Amount = awarded,
 		Balance = balance,
 		Source = tostring(source or "Unknown"),
+		WorldPosition = if typeof(worldPosition) == "Vector3" then worldPosition else nil,
 	})
 	return awarded
 end
@@ -171,8 +172,9 @@ function ScoreService.RefundCoins(player, amount, source)
 	return success, balance
 end
 
-function ScoreService.AwardRewards(player, scoreAmount, coinAmount, source)
-	return ScoreService.Award(player, scoreAmount, source), ScoreService.AwardCoins(player, coinAmount, source)
+function ScoreService.AwardRewards(player, scoreAmount, coinAmount, source, worldPosition)
+	return ScoreService.Award(player, scoreAmount, source),
+		ScoreService.AwardCoins(player, coinAmount, source, worldPosition)
 end
 
 function ScoreService.TrySpendCoins(player, amount)

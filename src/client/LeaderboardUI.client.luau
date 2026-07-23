@@ -4,13 +4,14 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
 local remote = ReplicatedStorage:WaitForChild("GlobalLeaderboardRequest")
 
 local gui = Instance.new("ScreenGui")
 gui.Name = "GlobalLeaderboardUI"
 gui.ResetOnSpawn = false
 gui.DisplayOrder = 12
-gui.Parent = player:WaitForChild("PlayerGui")
+gui.Parent = playerGui
 
 local button = Instance.new("TextButton")
 button.Name = "RankingButton"
@@ -114,6 +115,7 @@ end
 button.MouseButton1Click:Connect(function()
 	panel.Visible = not panel.Visible
 	if panel.Visible then
+		playerGui:SetAttribute("SkyDungeonExclusivePanel", "Leaderboard")
 		title.Text = "⌛ CARREGANDO..."
 		local success, data = pcall(function()
 			return remote:InvokeServer()
@@ -124,5 +126,11 @@ button.MouseButton1Click:Connect(function()
 		else
 			personal.Text = "Ranking indisponivel agora"
 		end
+	end
+end)
+
+playerGui:GetAttributeChangedSignal("SkyDungeonExclusivePanel"):Connect(function()
+	if playerGui:GetAttribute("SkyDungeonExclusivePanel") ~= "Leaderboard" then
+		panel.Visible = false
 	end
 end)

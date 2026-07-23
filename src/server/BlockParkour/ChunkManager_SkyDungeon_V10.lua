@@ -1476,6 +1476,73 @@ function ChunkManager.GetSafeRespawnCFrame(waterSurfaceY, clearanceStuds, rootOf
 	return CFrame.new(surfacePosition)
 end
 
+-- A geracao normal depende da aproximacao de um jogador vivo. Em um party wipe
+-- nao existe jogador para abrir a fronteira, portanto o respawn precisa poder
+-- solicitar explicitamente o proximo round de ilhas.
+function ChunkManager.RequestSafeRespawnIsland(waterSurfaceY, clearanceStuds)
+	if not running or not worldModel then
+		return false, "ChunkManagerNotRunning"
+	end
+
+	latestWaterY = waterSurfaceY
+	if ChunkManager.GetSafeRespawnCFrame(waterSurfaceY, clearanceStuds, 3) then
+		return true, "AlreadyAvailable"
+	end
+
+	local bestFrontier
+	for _, record in pairs(nodesByKey) do
+		if record.Model and record.Model.Parent and not record.Expanded then
+			if not bestFrontier
+				or record.Spec.Level > bestFrontier.Spec.Level
+				or (record.Spec.Level == bestFrontier.Spec.Level and record.TopWorldY > bestFrontier.TopWorldY)
+			then
+				bestFrontier = record
+			end
+		end
+	end
+
+	-- Se o cleanup removeu todos os filhos de uma ilha que ja havia sido
+	-- expandida, reabre a ilha mais alta para reconstruir a rota deterministica.
+	if not bestFrontier then
+		for _, record in pairs(nodesByKey) do
+			if record.Model and record.Model.Parent and record.OutboundCount <= 0 then
+				if not bestFrontier
+					or record.Spec.Level > bestFrontier.Spec.Level
+					or (record.Spec.Level == bestFrontier.Spec.Level and record.TopWorldY > bestFrontier.TopWorldY)
+				then
+					bestFrontier = record
+				end
+			end
+		end
+		if bestFrontier and bestFrontier.Expanded then
+			bestFrontier.Expanded = false
+			bestFrontier.Model:SetAttribute("Expanded", false)
+			bestFrontier.Model:SetAttribute("ExpansionState", "RescueReopened")
+		end
+	end
+
+	if not bestFrontier then
+		return false, "NoFrontierAvailable"
+	end
+
+	-- A requisicao e idempotente. Se o no ja pertence a um round em andamento,
+	-- apenas eleva a prioridade desse round em vez de criar trabalho duplicado.
+	for _, job in ipairs(expansionQueue) do
+		if job.ScheduledKeys[bestFrontier.Key] then
+			job.Priority = math.max(job.Priority, 1000000)
+			return true, "GenerationInProgress"
+		end
+	end
+
+	local queued = enqueueExpansion(bestFrontier, "EmergencySafeRespawn", 1000000)
+	if queued then
+		bestFrontier.Model:SetAttribute("EmergencyRespawnExpansion", true)
+		return true, "GenerationRequested"
+	end
+
+	return false, "GenerationRequestRejected"
+end
+
 function ChunkManager.CleanupBelowWater(waterSurfaceY, marginStuds, minimumActiveIslands)
 	if not running or not worldModel then
 		return 0, activeNodeCount
@@ -1491,6 +1558,8 @@ function ChunkManager.CleanupBelowWater(waterSurfaceY, marginStuds, minimumActiv
 		if not record.Spec.IsStart
 			and record.TopWorldY + margin < waterSurfaceY
 			and not hasAlivePlayerNear(record)
+			and not record.Expanding
+			and not record.ScheduledExpansionRoundId
 		then
 			table.insert(removable, record)
 		end
