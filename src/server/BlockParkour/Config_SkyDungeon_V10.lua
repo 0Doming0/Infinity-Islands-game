@@ -1,3 +1,4 @@
+-- VERSION: V11_GEOMETRY_POOL_ACTIVE
 -- Sky Dungeon - configuracao da fronteira vertical gerada por ilha.
 
 local Config = {

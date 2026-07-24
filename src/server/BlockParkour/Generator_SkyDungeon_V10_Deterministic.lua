@@ -1,5 +1,7 @@
 --[[
-	Sky Dungeon V10 - Generator Deterministico
+	VERSION: V11_GEOMETRY_POOL_ACTIVE
+
+	Sky Dungeon V11 - Generator Deterministico com reutilizacao de geometria
 
 	Cada chamada gera um round vertical completo:
 	1. sala principal grande;

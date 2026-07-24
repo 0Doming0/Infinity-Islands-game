@@ -1,4 +1,6 @@
 --[[
+	VERSION: V11_GEOMETRY_POOL_ACTIVE
+
 	BlockParkour MVP - IslandContentService
 
 	Descobre as Terrain_* geradas e oferece uma grade reservavel aos quatro sistemas.

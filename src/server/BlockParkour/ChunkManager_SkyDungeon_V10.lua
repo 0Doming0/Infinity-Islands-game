@@ -1,4 +1,6 @@
 --[[
+	VERSION: V11_GEOMETRY_POOL_ACTIVE
+
 	Sky Dungeon - fronteira vertical reativa em rounds de ilhas.
 
 	Cada ilha continua sendo um no compartilhado da malha, mas uma geracao cria
@@ -11,6 +13,7 @@
 local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local ServerStorage = game:GetService("ServerStorage")
 
 local Config = require(script.Parent.Config_SkyDungeon_V10)
 local Generator = require(script.Parent.Generator_SkyDungeon_V10_Deterministic)
@@ -55,6 +58,13 @@ local lastGeometryOperationAt = -math.huge
 local enqueueDetail
 local spatialIndex = SpatialHash.new(Config.FRONTIER_SPATIAL_HASH_CELL_STUDS)
 local activeSimulationRecords = {}
+local geometryPoolFolder
+local nodePoolBySignature = {}
+local edgePoolBySignature = {}
+local pooledNodeCount = 0
+local pooledEdgeCount = 0
+local reusedNodeCount = 0
+local reusedEdgeCount = 0
 local lastWorldAttributeUpdateAt = -math.huge
 local playerVisitedNodes = setmetatable({}, { __mode = "k" })
 local playerApproachIntents = setmetatable({}, { __mode = "k" })
@@ -105,6 +115,8 @@ local function validateConfig()
 	assert(Config.FRONTIER_SPATIAL_QUERY_PADDING_STUDS > 0)
 	assert(Config.FRONTIER_DIAGNOSTIC_UPDATE_SECONDS >= 0.1)
 	assert(Config.FRONTIER_MAX_ACTIVE_ISLANDS >= 32)
+	assert(Config.FRONTIER_MAX_POOLED_ISLANDS >= 0)
+	assert(Config.FRONTIER_MAX_POOLED_CONNECTIONS >= 0)
 	assert(Config.FRONTIER_SIMULATION_UPDATE_SECONDS >= 0.1)
 	assert(Config.FRONTIER_SIMULATION_ACTIVATION_DISTANCE_STUDS > 0)
 	assert(
@@ -182,6 +194,11 @@ local function updateWorldAttributes(force)
 	worldModel:SetAttribute("RemovedChunkCount", removedNodeCount)
 	worldModel:SetAttribute("RemovedIslandCount", removedNodeCount)
 	worldModel:SetAttribute("RemovedConnectionCount", removedEdgeCount)
+	worldModel:SetAttribute("GeometryPoolEnabled", Config.FRONTIER_GEOMETRY_POOL_ENABLED == true)
+	worldModel:SetAttribute("PooledIslandCount", pooledNodeCount)
+	worldModel:SetAttribute("PooledConnectionCount", pooledEdgeCount)
+	worldModel:SetAttribute("ReusedIslandCount", reusedNodeCount)
+	worldModel:SetAttribute("ReusedConnectionCount", reusedEdgeCount)
 	worldModel:SetAttribute("FrontierIslandCount", countFrontierNodes())
 	worldModel:SetAttribute("ConvergenceIslandCount", countConvergences())
 	worldModel:SetAttribute("SanctuaryCount", countSanctuaries())
@@ -244,6 +261,110 @@ local function prepareWorld()
 	connectionsFolder = Instance.new("Folder")
 	connectionsFolder.Name = "IslandConnections"
 	connectionsFolder.Parent = worldModel
+
+	local oldPool = ServerStorage:FindFirstChild("SkyDungeonGeometryPool")
+	if oldPool then
+		oldPool:Destroy()
+	end
+	geometryPoolFolder = Instance.new("Folder")
+	geometryPoolFolder.Name = "SkyDungeonGeometryPool"
+	geometryPoolFolder.Parent = ServerStorage
+end
+
+local function removeAllTags(instance)
+	for _, tag in ipairs(CollectionService:GetTags(instance)) do
+		CollectionService:RemoveTag(instance, tag)
+	end
+	for _, descendant in ipairs(instance:GetDescendants()) do
+		for _, tag in ipairs(CollectionService:GetTags(descendant)) do
+			CollectionService:RemoveTag(descendant, tag)
+		end
+	end
+end
+
+local function takePooledNode(sizeName)
+	if Config.FRONTIER_GEOMETRY_POOL_ENABLED ~= true then
+		return nil
+	end
+	local bucket = nodePoolBySignature[sizeName]
+	local model = bucket and table.remove(bucket)
+	if not model then
+		return nil
+	end
+	pooledNodeCount = math.max(0, pooledNodeCount - 1)
+	reusedNodeCount += 1
+	return model
+end
+
+local function takePooledEdge(blockCount)
+	if Config.FRONTIER_GEOMETRY_POOL_ENABLED ~= true then
+		return nil
+	end
+	local signature = tostring(blockCount)
+	local bucket = edgePoolBySignature[signature]
+	local model = bucket and table.remove(bucket)
+	if not model then
+		return nil
+	end
+	pooledEdgeCount = math.max(0, pooledEdgeCount - 1)
+	reusedEdgeCount += 1
+	return model
+end
+
+local function recycleNodeModel(model)
+	if not model then
+		return false
+	end
+	if Config.FRONTIER_GEOMETRY_POOL_ENABLED ~= true
+		or not geometryPoolFolder
+		or pooledNodeCount >= Config.FRONTIER_MAX_POOLED_ISLANDS
+	then
+		model:Destroy()
+		return false
+	end
+	removeAllTags(model)
+	local signature = Generator.PrepareFrontierNodeForPool(model)
+	if not signature then
+		model:Destroy()
+		return false
+	end
+	local bucket = nodePoolBySignature[signature]
+	if not bucket then
+		bucket = {}
+		nodePoolBySignature[signature] = bucket
+	end
+	model.Parent = geometryPoolFolder
+	table.insert(bucket, model)
+	pooledNodeCount += 1
+	return true
+end
+
+local function recycleEdgeModel(model)
+	if not model then
+		return false
+	end
+	if Config.FRONTIER_GEOMETRY_POOL_ENABLED ~= true
+		or not geometryPoolFolder
+		or pooledEdgeCount >= Config.FRONTIER_MAX_POOLED_CONNECTIONS
+	then
+		model:Destroy()
+		return false
+	end
+	removeAllTags(model)
+	local signature = Generator.PrepareFrontierConnectionForPool(model)
+	if not signature then
+		model:Destroy()
+		return false
+	end
+	local bucket = edgePoolBySignature[signature]
+	if not bucket then
+		bucket = {}
+		edgePoolBySignature[signature] = bucket
+	end
+	model.Parent = geometryPoolFolder
+	table.insert(bucket, model)
+	pooledEdgeCount += 1
+	return true
 end
 
 local function createNode(spec, reason)
@@ -256,10 +377,12 @@ local function createNode(spec, reason)
 	end
 
 	nodeSerial += 1
+	local recycledModel = takePooledNode(spec.SizeName)
 	local model, metadata = Generator.CreateFrontierNode(nodesFolder, spec, {
 		NodeSerial = nodeSerial,
 		DeferRuntimeContent = true,
 		DeferVisualContent = true,
+		RecycledModel = recycledModel,
 	})
 	model:SetAttribute("GenerationReason", reason or "Unknown")
 	model:SetAttribute("NodeSerial", nodeSerial)
@@ -303,8 +426,8 @@ local function destroyOrphanNode(record)
 	if not record or record.InboundCount > 0 or record.Spec.IsStart then
 		return
 	end
-	if record.Model and record.Model.Parent then
-		record.Model:Destroy()
+	if record.Model then
+		recycleNodeModel(record.Model)
 	end
 	nodesByKey[record.Key] = nil
 	spatialIndex:Remove(record.Key)
@@ -333,6 +456,7 @@ local function createEdge(source, target, directionId)
 		end
 	end
 	geometryOperationActive = true
+	local recycledModel = takePooledEdge(#plan.Cells - 2)
 	local success, modelOrError, metadata = pcall(Generator.CreateFrontierConnection, connectionsFolder, plan, {
 		LogicalLevel = target.Spec.Level,
 		PathId = source.OutboundCount + 1,
@@ -341,9 +465,13 @@ local function createEdge(source, target, directionId)
 		DeferVisualContent = true,
 		Seed = target.Spec.Seed,
 		YieldCallback = yieldGeometrySlice,
+		RecycledModel = recycledModel,
 	})
 	geometryOperationActive = false
 	if not success then
+		if recycledModel then
+			recycledModel:Destroy()
+		end
 		error(modelOrError, 0)
 	end
 	local model = modelOrError
@@ -1227,8 +1355,8 @@ local function removeEdge(record)
 			end
 		end
 	end
-	if record.Model and record.Model.Parent then
-		record.Model:Destroy()
+	if record.Model then
+		recycleEdgeModel(record.Model)
 	end
 	edgesByKey[record.Key] = nil
 	local outgoing = outgoingEdgesBySource[record.SourceKey]
@@ -1243,13 +1371,14 @@ local function removeEdge(record)
 end
 
 local function removeNode(record)
-	if record.Model and record.Model.Parent then
-		record.Model:Destroy()
+	if record.Model then
+		recycleNodeModel(record.Model)
 	end
 	nodesByKey[record.Key] = nil
 	spatialIndex:Remove(record.Key)
 	activeSimulationRecords[record.Key] = nil
 	queuedForExpansion[record.Key] = nil
+	queuedForDetail[record.Key] = nil
 	activeNodeCount -= 1
 	removedNodeCount += 1
 end
@@ -1276,6 +1405,39 @@ function ChunkManager.GetPlayerWorldContext(position)
 				LaneZ = record.Spec.LaneZ,
 				IsConvergence = record.InboundCount >= 2,
 			}
+		end
+	end
+	return best
+end
+
+function ChunkManager.GetSafeZoneContext(position, horizontalPadding, verticalPadding)
+	if typeof(position) ~= "Vector3" then
+		return nil
+	end
+	horizontalPadding = math.max(0, tonumber(horizontalPadding) or 0)
+	verticalPadding = math.max(0, tonumber(verticalPadding) or 12)
+
+	local best
+	local bestDistance = math.huge
+	for _, record in ipairs(queryNearbyRecords(position, horizontalPadding + 8)) do
+		local isSanctuary = record.Spec.IsSanctuary == true
+			or record.Model:GetAttribute("IsSanctuary") == true
+			or record.IslandModel:GetAttribute("IsSanctuary") == true
+		local isVillage = record.Model:GetAttribute("VillageSpawned") == true
+			or record.IslandModel:GetAttribute("VillageSpawned") == true
+		if (isSanctuary or isVillage)
+			and pointInsideIsland(record, position, horizontalPadding, verticalPadding)
+		then
+			local distance = (position - record.Floor.Position).Magnitude
+			if distance < bestDistance then
+				bestDistance = distance
+				best = {
+					IslandKey = record.Key,
+					IsSanctuary = isSanctuary,
+					IsVillage = isVillage,
+					ZoneType = isVillage and "Village" or "Sanctuary",
+				}
+			end
 		end
 	end
 	return best
@@ -1314,6 +1476,12 @@ function ChunkManager.Start()
 	lastGeometryOperationAt = -math.huge
 	spatialIndex = SpatialHash.new(Config.FRONTIER_SPATIAL_HASH_CELL_STUDS)
 	activeSimulationRecords = {}
+	nodePoolBySignature = {}
+	edgePoolBySignature = {}
+	pooledNodeCount = 0
+	pooledEdgeCount = 0
+	reusedNodeCount = 0
+	reusedEdgeCount = 0
 	lastWorldAttributeUpdateAt = -math.huge
 	playerVisitedNodes = setmetatable({}, { __mode = "k" })
 	playerApproachIntents = setmetatable({}, { __mode = "k" })
@@ -1425,6 +1593,10 @@ function ChunkManager.GetFrontierStatus()
 	return {
 		ActiveIslands = activeNodeCount,
 		ActiveConnections = activeEdgeCount,
+		PooledIslands = pooledNodeCount,
+		PooledConnections = pooledEdgeCount,
+		ReusedIslands = reusedNodeCount,
+		ReusedConnections = reusedEdgeCount,
 		FrontierIslands = countFrontierNodes(),
 		CompletedGenerationRounds = completedGenerationRounds,
 		GenerationRoundDepth = Config.FRONTIER_ROUND_DEPTH_LEVELS,
@@ -1589,7 +1761,13 @@ function ChunkManager.CleanupBelowWater(waterSurfaceY, marginStuds, minimumActiv
 		removeEdge(edge)
 	end
 	if removedNow > 0 then
-		print(string.format("[SkyDungeon] Agua removeu %d ilha(s); %d continuam ativas.", removedNow, activeNodeCount))
+		print(string.format(
+			"[SkyDungeon] Agua reciclou/removeu %d ilha(s); %d ativas | pool: %d ilhas, %d conexoes.",
+			removedNow,
+			activeNodeCount,
+			pooledNodeCount,
+			pooledEdgeCount
+		))
 	end
 	updateWorldAttributes()
 	return removedNow, activeNodeCount
