@@ -122,21 +122,6 @@ local function applyCombatStun(model, humanoid, attack)
 end
 
 local function applyKnockback(attackerRoot, model, humanoid, root, attack)
-	-- Um unico membro ancorado prende toda a assembly. Mobs de combate precisam
-	-- estar fisicos para reagir enquanto vivos, nao apenas depois de morrer.
-	-- Pecas Massless (decorativas, conectadas via Bone) sao puladas para nao
-	-- destacar do modelo nem conflitar com scripts de acompanhamento.
-	for _, descendant in ipairs(model:GetDescendants()) do
-		if descendant:IsA("BasePart") and not descendant.Massless then
-			descendant.Anchored = false
-		end
-	end
-
-	-- Garante autoridade do servidor durante o pequeno stun.
-	pcall(function()
-		root:SetNetworkOwner(nil)
-	end)
-
 	-- Consecutive hit tracking for knockback scaling
 	local now = os.clock()
 	local lastHitAt = model:GetAttribute("CombatLastHitAt") or 0
@@ -165,8 +150,34 @@ local function applyKnockback(attackerRoot, model, humanoid, root, attack)
 	end
 
 	local velocity = direction * horizontalForce + Vector3.new(0, upwardForce, 0)
-
 	model:SetAttribute("CombatKnockbackUntil", workspace:GetServerTimeNow() + 0.22)
+
+	-- Inimigos movidos por PivotTo nao podem ser desancorados para receber
+	-- LinearVelocity: isso faz a fisica disputar com a IA e causa saltos. Eles
+	-- recebem um recuo horizontal curto que o proprio controlador valida contra
+	-- obstaculos e bordas da ilha.
+	if model:GetAttribute("KinematicMovement") == true then
+		local displacement = math.clamp(horizontalForce * 0.065, 0.9, 2.4)
+		model:SetAttribute("KinematicKnockbackRequest", direction * displacement)
+		model:SetAttribute(
+			"KinematicKnockbackSerial",
+			(model:GetAttribute("KinematicKnockbackSerial") or 0) + 1
+		)
+		return
+	end
+
+	-- Um unico membro ancorado prende toda a assembly. Mobs fisicos comuns
+	-- precisam ser desancorados para reagir ao LinearVelocity.
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant:IsA("BasePart") and not descendant.Massless then
+			descendant.Anchored = false
+		end
+	end
+
+	-- Garante autoridade do servidor durante o pequeno stun.
+	pcall(function()
+		root:SetNetworkOwner(nil)
+	end)
 
 	-- Remove old knockback objects from previous hits
 	for _, child in ipairs(root:GetChildren()) do

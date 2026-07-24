@@ -110,6 +110,40 @@ local function nearestPlayer(position, maximumDistance)
 	return closestPlayer, closestRoot, closestDistance
 end
 
+local function hasLineOfSight(state, targetCharacter, targetRoot)
+	if not targetCharacter or not targetRoot or not targetRoot.Parent then
+		return false
+	end
+
+	local origin = state.Root.Position + Vector3.new(0, math.max(1, state.Root.Size.Y * 0.45), 0)
+	local destination = targetRoot.Position + Vector3.new(0, 0.5, 0)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = { state.Model }
+	params.IgnoreWater = true
+	params.RespectCanCollide = true
+	local result = workspace:Raycast(origin, destination - origin, params)
+	return result == nil or result.Instance:IsDescendantOf(targetCharacter)
+end
+
+local function nearestVisiblePlayer(state, maximumDistance)
+	local closestPlayer = nil
+	local closestRoot = nil
+	local closestDistance = maximumDistance
+	for _, player in ipairs(Players:GetPlayers()) do
+		local character, _, root = getLivingCharacter(player)
+		if root then
+			local distance = (root.Position - state.Root.Position).Magnitude
+			if distance <= closestDistance and hasLineOfSight(state, character, root) then
+				closestPlayer = player
+				closestRoot = root
+				closestDistance = distance
+			end
+		end
+	end
+	return closestPlayer, closestRoot, closestDistance
+end
+
 local function copyValidCells(cells)
 	local result = {}
 	for _, record in ipairs(cells or {}) do
@@ -464,17 +498,41 @@ local function findGround(position, exclusions)
 	params.FilterType = Enum.RaycastFilterType.Exclude
 	params.FilterDescendantsInstances = exclusions
 	params.IgnoreWater = true
-	local result = workspace:Raycast(position + Vector3.new(0, 30, 0), Vector3.new(0, -90, 0), params)
-	return result and result.Position or nil
+	params.RespectCanCollide = true
+	-- Comecar perto dos pes impede que uma ilha suspensa acima do jogador seja
+	-- confundida com o piso onde o morteiro deve atingir.
+	local result = workspace:Raycast(position + Vector3.new(0, 2, 0), Vector3.new(0, -18, 0), params)
+	if
+		result
+		and result.Instance:IsA("BasePart")
+		and result.Instance.CanCollide
+		and result.Normal.Y >= 0.55
+	then
+		return result.Position
+	end
+	return nil
 end
 
-local function damagePlayersInRadius(position, radius, damage)
+local function impactCanReachCharacter(position, character, root, sourceModel)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = sourceModel and { sourceModel } or {}
+	params.IgnoreWater = true
+	params.RespectCanCollide = true
+	local origin = position + Vector3.new(0, 0.6, 0)
+	local destination = root.Position + Vector3.new(0, 0.5, 0)
+	local result = workspace:Raycast(origin, destination - origin, params)
+	return result == nil or result.Instance:IsDescendantOf(character)
+end
+
+local function damagePlayersInRadius(position, radius, damage, sourceModel)
 	for _, player in ipairs(Players:GetPlayers()) do
-		local _, humanoid, root = getLivingCharacter(player)
+		local character, humanoid, root = getLivingCharacter(player)
 		if
 			humanoid
 			and horizontalDistance(root.Position, position) <= radius
 			and math.abs(root.Position.Y - position.Y) <= 10
+			and impactCanReachCharacter(position, character, root, sourceModel)
 		then
 			humanoid:TakeDamage(damage)
 		end
@@ -483,6 +541,9 @@ end
 
 local function mortarAttack(state, targetCharacter, targetRoot)
 	local definition = state.Definition
+	if not hasLineOfSight(state, targetCharacter, targetRoot) then
+		return false
+	end
 	local velocity = targetRoot.AssemblyLinearVelocity
 	local prediction = Vector3.new(velocity.X, 0, velocity.Z)
 		* math.min(0.45, definition.MortarWarningTime * 0.3)
@@ -547,7 +608,7 @@ local function mortarAttack(state, targetCharacter, targetRoot)
 			marker:Destroy()
 			return
 		end
-		damagePlayersInRadius(impactPosition, definition.ImpactRadius, definition.AttackDamage)
+		damagePlayersInRadius(impactPosition, definition.ImpactRadius, definition.AttackDamage, state.Model)
 		createBurst(impactPosition + Vector3.new(0, 0.5, 0), Color3.fromRGB(255, 55, 45), 2.2)
 		projectile:Destroy()
 		marker:Destroy()
@@ -848,7 +909,7 @@ local function thinkRed(state, now)
 		state.Model,
 		definition.DetectionRange or definition.AttackRange
 	)
-	local player, targetRoot = nearestPlayer(state.Root.Position, detectionRange)
+	local player, targetRoot = nearestVisiblePlayer(state, detectionRange)
 	if not targetRoot then
 		state.CombatDestination = nil
 		thinkWander(state, now)

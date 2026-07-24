@@ -109,7 +109,8 @@ local function getTemplates()
 end
 
 local function getRoot(model, mimic)
-	local root = mimic and model:FindFirstChild("MimicRoot", true)
+	local root = mimic and model:FindFirstChild("Cube.002", true)
+		or mimic and model:FindFirstChild("MimicRoot", true)
 		or mimic and model:FindFirstChild("HumanoidRootPart", true)
 		or model:FindFirstChild("Root", true)
 		or model.PrimaryPart
@@ -306,9 +307,8 @@ local function activateChest(chest, player)
 		return
 	end
 	mimic.PrimaryPart = root
-	-- O MimicChest pode animar suas pecas diretamente por CFrame. Preserve a
-	-- ancoragem configurada no template; MimicAI desancora somente MimicRoot e
-	-- a raiz tecnica usada pelo Humanoid.
+	-- O rig atual anima os Bones dentro de Cube.002. Preserve a ancoragem do
+	-- template; MimicAI assume o movimento cinemático do MeshPart inteiro.
 	prepare(mimic, false, true, true)
 	mimic.Name = "Monster_MimicChest"
 	alignBottom(mimic, state.SurfacePosition, state.Yaw)

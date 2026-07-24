@@ -1,5 +1,6 @@
 -- Coloque este LocalScript em StarterPlayer/StarterPlayerScripts.
--- Cada cliente anima visualmente todos os mimicos transmitidos para ele.
+-- Compatibilidade para o rig antigo de varias pecas. O rig atual usa o
+-- MeshPart skinned Cube.002 e recebe a animacao de Bones pelo Animator.
 
 local CollectionService = game:GetService("CollectionService")
 local RunService = game:GetService("RunService")
@@ -121,6 +122,12 @@ local function tryRegister(model)
 		return
 	end
 	if model:GetAttribute("IsMimic") ~= true and model:GetAttribute("MonsterId") ~= "MimicChest" then
+		return
+	end
+	local skinnedRoot = model:FindFirstChild("Cube.002", true)
+	if skinnedRoot and skinnedRoot:IsA("BasePart") then
+		-- MimicAI carrega a AnimationTrack no servidor, que replica para todos os
+		-- clientes. Nao aplique os Motor6D procedurais do rig antigo por cima.
 		return
 	end
 	if model:GetAttribute("MimicRigReady") ~= true then

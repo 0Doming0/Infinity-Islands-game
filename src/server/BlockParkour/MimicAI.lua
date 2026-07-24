@@ -1,7 +1,8 @@
 -- V12: IA exclusiva do bau Mimico com navegacao segura contra blocos e quedas.
 -- Movimento, combate e animacao esqueletica em loop
 -- ficam todos neste unico ModuleScript. Nenhum Script interno e necessario.
--- O Model pode usar o MeshPart MimicRoot, a PrimaryPart ou seu unico BasePart.
+-- O Model atual usa o MeshPart skinned Cube.002 como raiz; os fallbacks antigos
+-- continuam aceitos para nao quebrar templates de desenvolvimento.
 
 local CollectionService = game:GetService("CollectionService")
 local Debris = game:GetService("Debris")
@@ -24,7 +25,10 @@ local STATE_AWAKE = "Awake"
 local STATE_RETURNING = "Returning"
 local STATE_DORMANT = "Dormant"
 local HOME_SNAP_DISTANCE = 1.75
-local MOVEMENT_STEP_INTERVAL = 1 / 30
+local MAX_MOVEMENT_DELTA_TIME = 1 / 20
+local UNREACHABLE_RETURN_DELAY_DEFAULT = 1.1
+local KINEMATIC_KNOCKBACK_DURATION_DEFAULT = 0.16
+local KINEMATIC_KNOCKBACK_MAX_DISTANCE_DEFAULT = 2.8
 
 local ATTACK_WINDUP_DEFAULT = 0.28
 local ATTACK_LUNGE_DURATION_DEFAULT = 0.12
@@ -132,6 +136,10 @@ local function synchronizeAnimation(state)
 end
 
 local function getRoot(model)
+	local skinnedRoot = model:FindFirstChild("Cube.002", true)
+	if skinnedRoot and skinnedRoot:IsA("BasePart") then
+		return skinnedRoot
+	end
 	return model:FindFirstChild("MimicRoot", true)
 		or model:FindFirstChild("HumanoidRootPart", true)
 		or model.PrimaryPart
@@ -259,8 +267,8 @@ local function moveModelTowards(state, destination, speed, dt, stopDistance)
 	local offset = horizontalOffset(state.Position, destination)
 	local distance = offset.Magnitude
 	stopDistance = math.max(0, stopDistance or 0)
-	faceHorizontal(state, destination)
 	if distance <= stopDistance + 0.001 then
+		faceHorizontal(state, destination)
 		return 0
 	end
 	local stepDistance = math.min(distance - stopDistance, math.max(0, speed) * dt)
@@ -276,9 +284,47 @@ local function moveModelTowards(state, destination, speed, dt, stopDistance)
 	end
 
 	state.NavigationBlockedSince = nil
-	state.Model:PivotTo(state.Model:GetPivot() + delta)
+	-- Uma unica escrita de PivotTo por frame evita a microtravada causada pela
+	-- antiga sequencia "girar e depois mover" em dois pivots consecutivos.
+	local pivot = state.Model:GetPivot()
+	local newPosition = pivot.Position + delta
+	local yawOffset = math.rad(tonumber(state.Model:GetAttribute("FacingYawOffset")) or 0)
+	state.Model:PivotTo(
+		CFrame.lookAt(newPosition, newPosition + offset.Unit, Vector3.yAxis)
+			* CFrame.Angles(0, yawOffset, 0)
+	)
 	state.Position += delta
 	return stepDistance, nil
+end
+
+local function updateKinematicKnockback(state, dt)
+	local remaining = state.KnockbackRemaining
+	if typeof(remaining) ~= "Vector3" or remaining.Magnitude <= 0.001 then
+		state.KnockbackRemaining = Vector3.zero
+		state.KnockbackTimeRemaining = 0
+		return false
+	end
+
+	local timeRemaining = math.max(dt, state.KnockbackTimeRemaining)
+	local alpha = math.clamp(dt / timeRemaining, 0, 1)
+	local delta = remaining * alpha
+	local destination = state.Position + delta
+	if pathIsBlocked(state, destination, delta.Magnitude + state.ObstaclePadding)
+		or not hasSafeGround(state, destination)
+	then
+		state.KnockbackRemaining = Vector3.zero
+		state.KnockbackTimeRemaining = 0
+		return false
+	end
+
+	state.Model:PivotTo(state.Model:GetPivot() + delta)
+	state.Position += delta
+	state.KnockbackRemaining -= delta
+	state.KnockbackTimeRemaining = math.max(0, state.KnockbackTimeRemaining - dt)
+	if state.KnockbackTimeRemaining <= 0.001 then
+		state.KnockbackRemaining = Vector3.zero
+	end
+	return true
 end
 
 local function getDamager(model, humanoid)
@@ -389,6 +435,8 @@ local function setMimicState(state, newState)
 	state.Model:SetAttribute("MimicAwake", newState ~= STATE_DORMANT)
 
 	if newState == STATE_AWAKE then
+		state.ForceDormantOnReturn = false
+		state.UnreachableSince = nil
 		if state.OnAwake then
 			local ok, reason = pcall(state.OnAwake, state.Model, state.DormantDisguise)
 			if not ok then
@@ -417,6 +465,10 @@ local function setMimicState(state, newState)
 	else
 		state.TargetHumanoid = nil
 		state.TargetRoot = nil
+		state.ForceDormantOnReturn = false
+		state.UnreachableSince = nil
+		state.KnockbackRemaining = Vector3.zero
+		state.KnockbackTimeRemaining = 0
 		state.Humanoid.AutoRotate = false
 		state.Humanoid.WalkSpeed = 0
 		state.Humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
@@ -599,14 +651,9 @@ local function connectHeartbeat()
 		return
 	end
 	heartbeatConnected = true
-	local accumulated = 0
 	RunService.Heartbeat:Connect(function(dt)
-		accumulated += dt
-		if accumulated < MOVEMENT_STEP_INTERVAL then
-			return
-		end
-		local step = accumulated
-		accumulated = 0
+		local step = math.min(dt, MAX_MOVEMENT_DELTA_TIME)
+		local now = os.clock()
 		for model, state in pairs(states) do
 			if not model.Parent or state.Humanoid.Health <= 0 or not state.Root.Parent then
 				states[model] = nil
@@ -621,7 +668,13 @@ local function connectHeartbeat()
 				end
 				continue
 			end
-			if updateAttack(state, os.clock(), step) then
+			if updateKinematicKnockback(state, step) then
+				if state.AttackPhase then
+					cancelAttack(state)
+				end
+				continue
+			end
+			if updateAttack(state, now, step) then
 				continue
 			end
 			if model:GetAttribute("CombatStunned") == true then
@@ -631,14 +684,15 @@ local function connectHeartbeat()
 				continue
 			end
 			local aggroRange = MobEventModifiers.GetAggroRange(model, state.AggroRange)
-			local targetHumanoid, targetRoot, distance, originIslandOccupied =
+			local targetHumanoid, targetRoot, _, originIslandOccupied =
 				nearestPlayer(state.Position, aggroRange, state)
 
 			if not originIslandOccupied and state.State == STATE_AWAKE then
+				state.ForceDormantOnReturn = false
 				setMimicState(state, STATE_RETURNING)
 			end
 			if state.State == STATE_RETURNING then
-				if originIslandOccupied and targetRoot then
+				if not state.ForceDormantOnReturn and originIslandOccupied and targetRoot then
 					setMimicState(state, STATE_AWAKE)
 				else
 					returnHomeSafely(state, step)
@@ -675,13 +729,25 @@ local function connectHeartbeat()
 					cancelAttack(state)
 					state.TargetHumanoid = nil
 					state.TargetRoot = nil
-					if (state.Position - state.Home).Magnitude > HOME_SNAP_DISTANCE then
+					state.UnreachableSince = state.UnreachableSince or now
+					if now - state.UnreachableSince >= state.UnreachableReturnDelay then
+						state.ForceDormantOnReturn = true
+						if (state.Position - state.Home).Magnitude <= HOME_SNAP_DISTANCE then
+							setMimicState(state, STATE_DORMANT)
+						else
+							setMimicState(state, STATE_RETURNING)
+						end
+					elseif (state.Position - state.Home).Magnitude > HOME_SNAP_DISTANCE then
 						returnHomeSafely(state, step)
 					end
-				elseif horizontalDistance <= state.AttackRange then
+				else
+					state.UnreachableSince = nil
+				end
+
+				if targetReachable and horizontalDistance <= state.AttackRange then
 					faceHorizontal(state, destination)
 					beginAttack(state)
-				else
+				elseif targetReachable then
 					local moved, blockedReason = moveModelTowards(
 						state,
 						destination,
@@ -696,6 +762,7 @@ local function connectHeartbeat()
 					end
 				end
 			else
+				state.UnreachableSince = nil
 				returnHomeSafely(state, step)
 			end
 		end
@@ -707,7 +774,7 @@ function MimicAI.Activate(model, options)
 	local humanoid = model:FindFirstChildWhichIsA("Humanoid", true)
 	local root = getRoot(model)
 	if not humanoid or not root or not root:IsA("BasePart") then
-		return false, "MimicChest precisa de Humanoid e pelo menos um MeshPart/BasePart"
+		return false, "MimicChest precisa de Humanoid e do MeshPart Cube.002 (ou uma PrimaryPart valida)"
 	end
 	local animationTrack, animationReason = loadLoopTrack(model, humanoid)
 	if not animationTrack then
@@ -726,6 +793,7 @@ function MimicAI.Activate(model, options)
 	model:SetAttribute("DisplayName", "Bau Mimico")
 	model:SetAttribute("UseCentralAI", false)
 	model:SetAttribute("AIController", "Mimic")
+	model:SetAttribute("KinematicMovement", true)
 	local island = model:FindFirstAncestorWhichIsA("Model")
 	while island and island:GetAttribute("IsSkyIsland") ~= true do
 		island = island:FindFirstAncestorWhichIsA("Model")
@@ -787,6 +855,11 @@ function MimicAI.Activate(model, options)
 		end
 	end
 
+	local configuredWalkSpeed = tonumber(model:GetAttribute("WalkSpeed"))
+	local originalWalkSpeed = configuredWalkSpeed or humanoid.WalkSpeed
+	if originalWalkSpeed <= 0 then
+		originalWalkSpeed = 9
+	end
 	local state = {
 		Model = model,
 		Humanoid = humanoid,
@@ -805,8 +878,8 @@ function MimicAI.Activate(model, options)
 		IslandFallbackRadius = tonumber(model:GetAttribute("IslandFallbackRadius")) or 52,
 		State = STATE_AWAKE,
 		ProceduralScripts = proceduralScripts,
-		OriginalWalkSpeed = humanoid.WalkSpeed,
-		ReturnWalkSpeed = tonumber(model:GetAttribute("ReturnWalkSpeed")) or math.max(10, humanoid.WalkSpeed),
+		OriginalWalkSpeed = originalWalkSpeed,
+		ReturnWalkSpeed = tonumber(model:GetAttribute("ReturnWalkSpeed")) or math.max(10, originalWalkSpeed),
 		AggroRange = tonumber(model:GetAttribute("AggroRange")) or 58,
 		LeashRange = tonumber(model:GetAttribute("LeashRange")) or 46,
 		AttackRange = tonumber(model:GetAttribute("AttackRange")) or 5.5,
@@ -819,6 +892,8 @@ function MimicAI.Activate(model, options)
 		AttackHitExtraRange = tonumber(model:GetAttribute("AttackHitExtraRange")) or 0.75,
 		AttackVerticalTolerance = tonumber(model:GetAttribute("AttackVerticalTolerance")) or 4,
 		MaxChaseVerticalDifference = tonumber(model:GetAttribute("MaxChaseVerticalDifference")) or 3.5,
+		UnreachableReturnDelay = tonumber(model:GetAttribute("UnreachableReturnDelay"))
+			or UNREACHABLE_RETURN_DELAY_DEFAULT,
 		ObstacleLookAhead = tonumber(model:GetAttribute("ObstacleLookAhead")) or 4,
 		ObstaclePadding = tonumber(model:GetAttribute("ObstaclePadding")) or 0.75,
 		GroundProbeHeight = tonumber(model:GetAttribute("GroundProbeHeight"))
@@ -826,6 +901,14 @@ function MimicAI.Activate(model, options)
 		GroundProbeDepth = tonumber(model:GetAttribute("GroundProbeDepth")) or 10,
 		BlockedRecoveryDelay = tonumber(model:GetAttribute("BlockedRecoveryDelay")) or 0.75,
 		NavigationBlockedSince = nil,
+		UnreachableSince = nil,
+		ForceDormantOnReturn = false,
+		KnockbackRemaining = Vector3.zero,
+		KnockbackTimeRemaining = 0,
+		KinematicKnockbackDuration = tonumber(model:GetAttribute("KinematicKnockbackDuration"))
+			or KINEMATIC_KNOCKBACK_DURATION_DEFAULT,
+		KinematicKnockbackMaxDistance = tonumber(model:GetAttribute("KinematicKnockbackMaxDistance"))
+			or KINEMATIC_KNOCKBACK_MAX_DISTANCE_DEFAULT,
 		NextAttackAt = os.clock() + 0.75,
 		AttackSerial = 0,
 		AttackPhase = nil,
@@ -836,6 +919,7 @@ function MimicAI.Activate(model, options)
 		RestartingAnimation = false,
 	}
 	states[model] = state
+	humanoid.WalkSpeed = originalWalkSpeed
 	model:SetAttribute("MimicState", STATE_AWAKE)
 	model:SetAttribute("MimicAwake", true)
 	model:SetAttribute("MimicAttacking", false)
@@ -864,13 +948,33 @@ function MimicAI.Activate(model, options)
 			synchronizeAnimation(state)
 		end
 	end)
+	model:GetAttributeChangedSignal("KinematicKnockbackSerial"):Connect(function()
+		if not states[model] then
+			return
+		end
+		local request = model:GetAttribute("KinematicKnockbackRequest")
+		if typeof(request) ~= "Vector3" then
+			return
+		end
+		request = Vector3.new(request.X, 0, request.Z)
+		if request.Magnitude <= 0.001 then
+			return
+		end
+		local combined = state.KnockbackRemaining + request
+		if combined.Magnitude > state.KinematicKnockbackMaxDistance then
+			combined = combined.Unit * state.KinematicKnockbackMaxDistance
+		end
+		state.KnockbackRemaining = combined
+		state.KnockbackTimeRemaining = state.KinematicKnockbackDuration
+		cancelAttack(state)
+	end)
 	model:GetAttributeChangedSignal("CombatStunned"):Connect(function()
 		if not states[model] then return end
 		if model:GetAttribute("CombatStunned") == true then
 			cancelAttack(state)
 		else
-			-- Stun ended: CombatDamageService unanchored all parts for knockback.
-			-- Without re-anchoring, PivotTo conflicts with physics and the model flies.
+			-- Protecao para forcas externas ou templates antigos. O knockback normal
+			-- do Mimico agora e cinemático e nao desancora Cube.002.
 			if state.Root and state.Root.Parent then
 				for _, descendant in ipairs(state.Model:GetDescendants()) do
 					if descendant:IsA("BasePart") then
