@@ -182,6 +182,20 @@ local function logicalAltitude(physicalY)
 	return physicalY + (tonumber(workspace:GetAttribute("LogicalAltitudeOffsetStuds")) or 0)
 end
 
+local function removeSafeZoneProtection(player, character)
+	local forceField = character and character:FindFirstChild("SafeZoneProtection")
+	if forceField then
+		forceField:Destroy()
+	end
+	if character then
+		character:SetAttribute("SafeZoneProtected", false)
+		character:SetAttribute("SafeZoneType", nil)
+	end
+	player:SetAttribute("InSafeZone", false)
+	player:SetAttribute("SafeZoneType", nil)
+	player:SetAttribute("SafeZoneIslandKey", nil)
+end
+
 local function calculateTargetWaterSpeed()
 	if #Players:GetPlayers() == 0 then
 		return 0, "Waiting", 0, 0, 0
@@ -513,6 +527,7 @@ local function onCharacterAdded(player, character)
 		highestHeightCheckpoint = 0,
 		nextSurvivalScoreAt = os.clock() + CONFIG.SURVIVAL_SCORE_INTERVAL,
 	}
+	player:SetAttribute("WaterContacting", false)
 	ScoreService.ResetRun(player)
 
 	local humanoid = character:WaitForChild("Humanoid", 10)
@@ -646,13 +661,18 @@ while true do
 		end
 
 		local playerY = rootPart.Position.Y
-		if playerY < currentWaterY then
+		local feetY = playerY - humanoid.HipHeight - rootPart.Size.Y / 2
+			+ math.max(0, tonumber(MVPConfig.SafeZones.WaterContactFootOffsetStuds) or 0.5)
+		if feetY <= currentWaterY then
 			data.inWater = true
+			player:SetAttribute("WaterContacting", true)
+			removeSafeZoneProtection(player, character)
 			if player:GetAttribute("TutorialWaterProtection") ~= true then
 				humanoid:TakeDamage(CONFIG.DAMAGE_PER_SECOND * dt)
 			end
 		else
 			data.inWater = false
+			player:SetAttribute("WaterContacting", false)
 		end
 
 		if now >= data.nextSurvivalScoreAt then

@@ -7,11 +7,17 @@ local Players = game:GetService("Players")
 
 local PLAYER_GROUP = "MVPPlayers"
 local MONSTER_GROUP = "MVPMonsters"
+local ELITE_BOUNDARY_GROUP = "EliteIslandBoundary"
 
 pcall(PhysicsService.RegisterCollisionGroup, PhysicsService, PLAYER_GROUP)
 pcall(PhysicsService.RegisterCollisionGroup, PhysicsService, MONSTER_GROUP)
+pcall(PhysicsService.RegisterCollisionGroup, PhysicsService, ELITE_BOUNDARY_GROUP)
 PhysicsService:CollisionGroupSetCollidable(PLAYER_GROUP, MONSTER_GROUP, false)
 PhysicsService:CollisionGroupSetCollidable(MONSTER_GROUP, MONSTER_GROUP, false)
+PhysicsService:CollisionGroupSetCollidable(ELITE_BOUNDARY_GROUP, MONSTER_GROUP, true)
+PhysicsService:CollisionGroupSetCollidable(ELITE_BOUNDARY_GROUP, PLAYER_GROUP, false)
+PhysicsService:CollisionGroupSetCollidable(ELITE_BOUNDARY_GROUP, ELITE_BOUNDARY_GROUP, false)
+PhysicsService:CollisionGroupSetCollidable(ELITE_BOUNDARY_GROUP, "Default", false)
 
 local function applyGroup(instance, group)
 	if instance:IsA("BasePart") then

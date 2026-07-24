@@ -62,6 +62,7 @@ local Config = {
 		CheckIntervalSeconds = 0.10,
 		HorizontalPaddingStuds = 0.75,
 		VerticalPaddingStuds = 12,
+		WaterContactFootOffsetStuds = 0.5,
 		ShieldVisible = true,
 	},
 
@@ -71,9 +72,31 @@ local Config = {
 		HealthPerTier = 0.18,
 		DamagePerTier = 0.12,
 		RewardPerTier = 0.10,
-		EliteHealthMultiplier = 2.6,
+		EliteHealthMultiplier = 3.6,
 		EliteDamageMultiplier = 1.65,
 		EliteRewardMultiplier = 3,
+		EliteSpeedMultiplier = 1.28,
+		EliteAttackCooldownMultiplier = 0.72,
+	},
+
+	Party = {
+		MaxMembers = 4,
+		InviteLifetimeSeconds = 30,
+		IndicatorDistanceStuds = 70,
+		Mission = {
+			Id = "PartyExpedition",
+			Title = "EXPEDIÇÃO EM GRUPO",
+			MobDefeatedGoal = 5,
+			IslandVisitedGoal = 3,
+		},
+	},
+
+	Tutorial = {
+		-- Ative para repetir o tutorial para todos durante testes. Por padrao,
+		-- a opcao so tem efeito no Studio e nao altera o progresso persistente.
+		ForceForAllPlayers = false,
+		ForceForAllPlayersOnlyInStudio = true,
+		PersistForcedCompletion = false,
 	},
 
 	SpecialIslands = {

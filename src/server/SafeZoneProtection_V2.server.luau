@@ -13,6 +13,7 @@ local FORCE_FIELD_NAME = "SafeZoneProtection"
 local CHECK_INTERVAL = math.max(0.05, tonumber(CONFIG.CheckIntervalSeconds) or 0.10)
 local HORIZONTAL_PADDING = math.max(0, tonumber(CONFIG.HorizontalPaddingStuds) or 0.75)
 local VERTICAL_PADDING = math.max(4, tonumber(CONFIG.VerticalPaddingStuds) or 12)
+local WATER_CONTACT_FOOT_OFFSET = math.max(0, tonumber(CONFIG.WaterContactFootOffsetStuds) or 0.5)
 local SPAWN_SEARCH_SECONDS = 4
 
 local playerStates = setmetatable({}, { __mode = "k" })
@@ -240,6 +241,19 @@ local function updatePlayer(player)
 	local root = character and character:FindFirstChild("HumanoidRootPart")
 
 	if not character or not humanoid or humanoid.Health <= 0 or not root then
+		removeProtection(player, character)
+		return
+	end
+
+	if player:GetAttribute("WaterContacting") == true then
+		removeProtection(player, character)
+		return
+	end
+
+	local water = workspace:FindFirstChild("Water")
+	local waterSurfaceY = water and tonumber(water:GetAttribute("SurfaceY"))
+	local feetY = root.Position.Y - humanoid.HipHeight - root.Size.Y / 2 + WATER_CONTACT_FOOT_OFFSET
+	if waterSurfaceY and feetY <= waterSurfaceY then
 		removeProtection(player, character)
 		return
 	end

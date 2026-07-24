@@ -10,6 +10,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 local PlayerDataService = require(script.Parent.PlayerDataService_SkyDungeon_V10)
+local PartyService = require(script.Parent.PartyService)
 
 local coinRewardRemote = ReplicatedStorage:FindFirstChild("CoinReward")
 if coinRewardRemote and not coinRewardRemote:IsA("RemoteEvent") then
@@ -136,6 +137,7 @@ function ScoreService.Award(player, baseAmount, source)
 	player:SetAttribute("LastScoreSource", tostring(source or "Unknown"))
 	player:SetAttribute("LastScoreAward", awarded)
 	player:SetAttribute("LastScoreSerial", (player:GetAttribute("LastScoreSerial") or 0) + 1)
+	PartyService.RecordScore(player, awarded, source)
 	return awarded
 end
 
@@ -246,6 +248,7 @@ function ScoreService.Start()
 		return
 	end
 	started = true
+	PartyService.Start()
 	Players.PlayerAdded:Connect(setupPlayer)
 	Players.PlayerRemoving:Connect(function(player)
 		ScoreService.CommitBest(player)

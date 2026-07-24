@@ -36,6 +36,7 @@
 
 local Debris = game:GetService("Debris")
 local Players = game:GetService("Players")
+local PhysicsService = game:GetService("PhysicsService")
 local ServerStorage = game:GetService("ServerStorage")
 local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -45,6 +46,7 @@ local InventoryService = require(script.Parent.Parent.MVPSystems:WaitForChild("I
 local ServerScriptService = game:GetService("ServerScriptService")
 local SlimeController = require(script.Parent.SlimeController)
 local SlimeVariants = require(script.Parent.SlimeVariants)
+local PartyService = require(script.Parent.PartyService)
 
 ScoreService.Start()
 InventoryService.Start()
@@ -78,6 +80,8 @@ local CONFIG = {
 
 	RANDOM_SALT = 91373,
 	MAX_SEED = 2147483647,
+	ELITE_BOUNDARY_HEIGHT = 20,
+	ELITE_BOUNDARY_THICKNESS = 2,
 }
 
 local SIZE_RANK = {
@@ -126,6 +130,120 @@ end
 
 local function getHumanoid(model)
 	return model and model:FindFirstChildWhichIsA("Humanoid", true)
+end
+
+local function createMobHealthBar(model, root, humanoid, modelHeight)
+	local old = model:FindFirstChild("MobHealthBar")
+	if old then
+		old:Destroy()
+	end
+
+	humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
+	local billboard = Instance.new("BillboardGui")
+	billboard.Name = "MobHealthBar"
+	billboard.Adornee = root
+	billboard.Size = UDim2.fromOffset(66, 8)
+	billboard.StudsOffsetWorldSpace = Vector3.new(0, math.max(3.2, modelHeight * 0.55 + 1.1), 0)
+	billboard.AlwaysOnTop = true
+	billboard.LightInfluence = 0
+	billboard.MaxDistance = 90
+	billboard.Enabled = false
+	billboard.Parent = model
+
+	local background = Instance.new("Frame")
+	background.Name = "Background"
+	background.Size = UDim2.fromScale(1, 1)
+	background.BackgroundColor3 = Color3.fromRGB(18, 24, 22)
+	background.BackgroundTransparency = 0.15
+	background.BorderSizePixel = 0
+	background.ClipsDescendants = true
+	background.Parent = billboard
+	Instance.new("UICorner", background).CornerRadius = UDim.new(1, 0)
+
+	local fill = Instance.new("Frame")
+	fill.Name = "Fill"
+	fill.Size = UDim2.fromScale(1, 1)
+	fill.BackgroundColor3 = Color3.fromRGB(50, 220, 90)
+	fill.BorderSizePixel = 0
+	fill.Parent = background
+	Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(7, 12, 9)
+	stroke.Thickness = 1
+	stroke.Transparency = 0.12
+	stroke.Parent = background
+
+	local function update()
+		local maximum = math.max(1, humanoid.MaxHealth)
+		local ratio = math.clamp(humanoid.Health / maximum, 0, 1)
+		fill.Size = UDim2.fromScale(ratio, 1)
+		billboard.Enabled = humanoid.Health > 0 and ratio < 0.999
+	end
+	humanoid.HealthChanged:Connect(update)
+	humanoid:GetPropertyChangedSignal("MaxHealth"):Connect(update)
+	update()
+end
+
+local function ensureEliteBoundary(island)
+	if island:GetAttribute("IslandType") ~= "Elite" or island:FindFirstChild("EliteMobBoundary") then
+		return
+	end
+	local floor = island:FindFirstChild("IslandFloor")
+	if not floor or not floor:IsA("BasePart") then
+		return
+	end
+
+	pcall(PhysicsService.RegisterCollisionGroup, PhysicsService, "EliteIslandBoundary")
+	local folder = Instance.new("Folder")
+	folder.Name = "EliteMobBoundary"
+	folder.Parent = island
+	local thickness = CONFIG.ELITE_BOUNDARY_THICKNESS
+	local height = CONFIG.ELITE_BOUNDARY_HEIGHT
+	local centerY = floor.Size.Y / 2 + height / 2
+	local barriers = {
+		{
+			Name = "North",
+			Size = Vector3.new(floor.Size.X + thickness * 2, height, thickness),
+			Offset = Vector3.new(0, centerY, -(floor.Size.Z / 2 + thickness / 2)),
+		},
+		{
+			Name = "South",
+			Size = Vector3.new(floor.Size.X + thickness * 2, height, thickness),
+			Offset = Vector3.new(0, centerY, floor.Size.Z / 2 + thickness / 2),
+		},
+		{
+			Name = "West",
+			Size = Vector3.new(thickness, height, floor.Size.Z),
+			Offset = Vector3.new(-(floor.Size.X / 2 + thickness / 2), centerY, 0),
+		},
+		{
+			Name = "East",
+			Size = Vector3.new(thickness, height, floor.Size.Z),
+			Offset = Vector3.new(floor.Size.X / 2 + thickness / 2, centerY, 0),
+		},
+	}
+	for _, definition in ipairs(barriers) do
+		local barrier = Instance.new("Part")
+		barrier.Name = definition.Name
+		barrier.Size = definition.Size
+		barrier.CFrame = floor.CFrame * CFrame.new(definition.Offset)
+		barrier.Anchored = true
+		barrier.CanCollide = true
+		barrier.CanTouch = false
+		barrier.CanQuery = false
+		barrier.CastShadow = false
+		barrier.Transparency = 1
+		barrier:SetAttribute("EliteMobBoundary", true)
+		local assigned = pcall(function()
+			barrier.CollisionGroup = "EliteIslandBoundary"
+		end)
+		if not assigned then
+			barrier.CanCollide = false
+			warn("[MonsterSpawner] Grupo EliteIslandBoundary indisponivel; barreira desativada.")
+		end
+		barrier.Parent = folder
+	end
 end
 
 local function getMonsterFolder()
@@ -518,13 +636,12 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 	humanoid.DisplayName = displayName
 	humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.Viewer
 	humanoid.NameDisplayDistance = 18
-	humanoid.HealthDisplayDistance = 16
-	humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.DisplayWhenDamaged
 	humanoid.BreakJointsOnDeath = false
 	humanoid.WalkSpeed = math.clamp(
-		numberAttribute(template, "WalkSpeed", humanoid.WalkSpeed) * (elite and 1.08 or 1),
+		numberAttribute(template, "WalkSpeed", humanoid.WalkSpeed)
+			* (elite and MVPConfig.Difficulty.EliteSpeedMultiplier or 1),
 		4,
-		24
+		28
 	)
 
 	clone.Name = "Monster_" .. monsterId
@@ -536,6 +653,14 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 	clone:SetAttribute("AttackDamage", attackDamage)
 	clone:SetAttribute("DifficultyTier", difficultyTier)
 	clone:SetAttribute("IsElite", elite)
+	if elite then
+		local baseAttackCooldown = slimeDefinition and slimeDefinition.AttackCooldown
+			or numberAttribute(template, "AttackCooldown", 1.15)
+		clone:SetAttribute(
+			"AttackCooldown",
+			math.max(0.25, baseAttackCooldown * MVPConfig.Difficulty.EliteAttackCooldownMultiplier)
+		)
+	end
 	clone:SetAttribute("HomePosition", cellRecord.SurfacePosition)
 	local initiallyPeaceful = template:GetAttribute("Peaceful") == true
 	if slimeDefinition then
@@ -592,6 +717,7 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 		CFrame.new(cellRecord.SurfacePosition.X, desiredBottomY - bottomOffset, cellRecord.SurfacePosition.Z)
 			* CFrame.Angles(0, random:NextNumber(0, math.pi * 2), 0)
 	)
+	createMobHealthBar(clone, root, humanoid, boundingSize.Y)
 
 	local entry = {
 		Model = clone,
@@ -609,6 +735,12 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 	}
 	if entry.SlimeDefinition then
 		entry.SlimeDefinition.AttackDamage = attackDamage
+		if elite and entry.SlimeDefinition.AttackCooldown then
+			entry.SlimeDefinition.AttackCooldown = math.max(
+				0.25,
+				entry.SlimeDefinition.AttackCooldown * MVPConfig.Difficulty.EliteAttackCooldownMultiplier
+			)
+		end
 	end
 	activeMonsters[clone] = entry
 	monsterCount += 1
@@ -631,6 +763,7 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 		local damager = getRecordedDamager(entry, clone, humanoid)
 		if damager then
 			awardRewards(damager, entry.ScoreValue, entry.CoinValue, deathPosition)
+			PartyService.RecordMissionProgress(damager, "MobDefeated", 1, clone)
 			if clone:GetAttribute("IsElite") == true and random:NextNumber() <= 0.25 then
 				InventoryService.GrantItem(damager, "HealthPotion", 1)
 			end
@@ -813,6 +946,9 @@ function MonsterSpawner.PopulateIsland(island, freeCells, context)
 	SlimeController.RegisterIsland(island, freeCells)
 
 	local eliteIsland = island:GetAttribute("IslandType") == "Elite"
+	if eliteIsland then
+		ensureEliteBoundary(island)
+	end
 	if
 		island:GetAttribute("CanSpawnMonster") ~= true
 		or island:GetAttribute("HasBoss") == true

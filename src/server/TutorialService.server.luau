@@ -4,11 +4,13 @@
 local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 local blockParkour = script.Parent:WaitForChild("BlockParkour")
 local mvpSystems = script.Parent:WaitForChild("MVPSystems")
 local PlayerDataService = require(blockParkour:WaitForChild("PlayerDataService_SkyDungeon_V10"))
 local CollectibleService = require(mvpSystems:WaitForChild("CollectibleService"))
+local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 
 local tutorialEvent = ReplicatedStorage:FindFirstChild("TutorialEvent")
 if tutorialEvent and not tutorialEvent:IsA("RemoteEvent") then
@@ -59,6 +61,14 @@ local STAGES = {
 
 local states = {}
 local setupStarted = {}
+
+local function forceTutorialForTesting()
+	local config = MVPConfig.Tutorial or {}
+	if config.ForceForAllPlayers ~= true then
+		return false
+	end
+	return config.ForceForAllPlayersOnlyInStudio ~= true or RunService:IsStudio()
+end
 
 local function getLivingRoot(player)
 	local character = player.Character
@@ -313,9 +323,11 @@ local function advanceStage(player, state)
 	end
 
 	state.Stage += 1
-	PlayerDataService.SetTutorialProgress(player, state.Stage, false)
 	player:SetAttribute("TutorialStage", state.Stage)
-	task.spawn(PlayerDataService.Save, player, false)
+	if not state.ForcedForTesting or (MVPConfig.Tutorial or {}).PersistForcedCompletion == true then
+		PlayerDataService.SetTutorialProgress(player, state.Stage, false)
+		task.spawn(PlayerDataService.Save, player, false)
+	end
 	task.delay(0.45, function()
 		if player.Parent == Players and state.Active then
 			state.Advancing = false
@@ -333,13 +345,17 @@ finishTutorial = function(player, state, skipped)
 	player:SetAttribute("TutorialWaterProtection", false)
 	player:SetAttribute("TutorialCompleted", true)
 	player:SetAttribute("TutorialStage", TOTAL_STAGES)
-	PlayerDataService.SetTutorialProgress(player, TOTAL_STAGES, true)
+	if not state.ForcedForTesting or (MVPConfig.Tutorial or {}).PersistForcedCompletion == true then
+		PlayerDataService.SetTutorialProgress(player, TOTAL_STAGES, true)
+	end
 	tutorialEvent:FireClient(player, {
 		Action = skipped and "Skipped" or "Complete",
 		Title = skipped and "TUTORIAL ENCERRADO" or "VOCÊ ESTÁ PRONTO!",
 		Instruction = skipped and "Continue subindo e sobreviva." or "Continue subindo!",
 	})
-	task.spawn(PlayerDataService.Save, player, false)
+	if not state.ForcedForTesting or (MVPConfig.Tutorial or {}).PersistForcedCompletion == true then
+		task.spawn(PlayerDataService.Save, player, false)
+	end
 end
 
 setupStage = function(player, state, preserveBaselines)
@@ -456,7 +472,8 @@ local function setupPlayer(player)
 	player:SetAttribute("TutorialWaterProtection", true)
 	local data = PlayerDataService.Load(player)
 	local stage, completed = PlayerDataService.GetTutorialProgress(player)
-	if completed then
+	local forcedForTesting = forceTutorialForTesting()
+	if completed and not forcedForTesting then
 		player:SetAttribute("TutorialActive", false)
 		player:SetAttribute("TutorialWaterProtection", false)
 		player:SetAttribute("TutorialCompleted", true)
@@ -467,7 +484,9 @@ local function setupPlayer(player)
 	local state = {
 		Active = true,
 		Advancing = false,
-		Stage = math.clamp(tonumber(stage) or data.TutorialStage or 1, 1, TOTAL_STAGES),
+		Stage = forcedForTesting and 1
+			or math.clamp(tonumber(stage) or data.TutorialStage or 1, 1, TOTAL_STAGES),
+		ForcedForTesting = forcedForTesting,
 		Token = 0,
 		StageReady = false,
 		Jumped = false,

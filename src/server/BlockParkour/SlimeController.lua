@@ -33,6 +33,9 @@ local WANDER_MIN_DISTANCE = 6
 local WANDER_MAX_DISTANCE = 30
 local MELEE_HEIGHT_TOLERANCE = 7
 local PROJECTILE_SIZE = 1.1
+local GOLDEN_MAX_TELEPORT_DISTANCE = 175
+local GOLDEN_WATER_CLEARANCE = 5
+local GOLDEN_NEAREST_DESTINATION_COUNT = 3
 
 local active = {}
 local islandCells = setmetatable({}, { __mode = "k" })
@@ -887,22 +890,51 @@ end
 
 local function chooseTeleportDestination(state)
 	local candidates = {}
+	local water = workspace:FindFirstChild("Water")
+	local waterY = water and tonumber(water:GetAttribute("SurfaceY")) or -math.huge
 	for island, positions in pairs(islandCells) do
-		if island.Parent and island ~= state.Island and #positions > 0 then
-			table.insert(candidates, { Island = island, Positions = positions })
-		end
-	end
-	if #candidates == 0 then
-		for island, positions in pairs(islandCells) do
-			if island.Parent and #positions > 0 then
-				table.insert(candidates, { Island = island, Positions = positions })
+		if island:IsDescendantOf(workspace)
+			and island ~= state.Island
+			and island:GetAttribute("SimulationActive") ~= false
+			and #positions > 0
+		then
+			local safePositions = {}
+			for _, position in ipairs(positions) do
+				if position.Y > waterY + GOLDEN_WATER_CLEARANCE then
+					table.insert(safePositions, position)
+				end
+			end
+			local anchor = island.PrimaryPart or island:FindFirstChild("IslandFloor")
+			local distance = anchor and horizontalDistance(state.Root.Position, anchor.Position) or math.huge
+			if #safePositions > 0 and distance <= GOLDEN_MAX_TELEPORT_DISTANCE then
+				table.insert(candidates, {
+					Island = island,
+					Positions = safePositions,
+					Distance = distance,
+				})
 			end
 		end
 	end
 	if #candidates == 0 then
+		local currentPositions = islandCells[state.Island] or {}
+		local safePositions = {}
+		if state.Island:IsDescendantOf(workspace) then
+			for _, position in ipairs(currentPositions) do
+				if position.Y > waterY + GOLDEN_WATER_CLEARANCE then
+					table.insert(safePositions, position)
+				end
+			end
+		end
+		if #safePositions > 0 then
+			return state.Island, safePositions[state.Random:NextInteger(1, #safePositions)]
+		end
 		return nil
 	end
-	local destination = candidates[state.Random:NextInteger(1, #candidates)]
+	table.sort(candidates, function(left, right)
+		return left.Distance < right.Distance
+	end)
+	local selectionCount = math.min(GOLDEN_NEAREST_DESTINATION_COUNT, #candidates)
+	local destination = candidates[state.Random:NextInteger(1, selectionCount)]
 	return destination.Island, destination.Positions[state.Random:NextInteger(1, #destination.Positions)]
 end
 

@@ -18,6 +18,7 @@ local ServerStorage = game:GetService("ServerStorage")
 local Config = require(script.Parent.Config_SkyDungeon_V10)
 local Generator = require(script.Parent.Generator_SkyDungeon_V10_Deterministic)
 local IslandGraphPlanner = require(script.Parent.IslandGraphPlanner)
+local PartyService = require(script.Parent.PartyService)
 local CollectiveProgressService = require(script.Parent.CollectiveProgressService)
 local SpatialHash = require(script.Parent.SpatialHash)
 
@@ -1049,6 +1050,7 @@ local function visitNode(player, record)
 	if not visited[record.Key] then
 		visited[record.Key] = true
 		player:SetAttribute("UniqueIslandsVisited", (player:GetAttribute("UniqueIslandsVisited") or 0) + 1)
+		PartyService.RecordMissionProgress(player, "IslandVisited", 1, record.Key)
 	end
 	player:SetAttribute("CurrentIslandKey", record.Key)
 	player:SetAttribute("CurrentLogicalLevel", record.Spec.Level)
