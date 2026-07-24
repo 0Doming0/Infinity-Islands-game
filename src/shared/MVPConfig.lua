@@ -110,7 +110,7 @@ local Config = {
 
 	Chests = {
 		NormalIslandChance = 0.18,
-		MimicChance = 0.1,
+		MimicChance = 1,
 		NormalMinimumCoins = 15,
 		NormalMaximumCoins = 40,
 		MimicMinimumCoins = 40,

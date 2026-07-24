@@ -865,8 +865,22 @@ function MimicAI.Activate(model, options)
 		end
 	end)
 	model:GetAttributeChangedSignal("CombatStunned"):Connect(function()
-		if states[model] and model:GetAttribute("CombatStunned") == true then
+		if not states[model] then return end
+		if model:GetAttribute("CombatStunned") == true then
 			cancelAttack(state)
+		else
+			-- Stun ended: CombatDamageService unanchored all parts for knockback.
+			-- Without re-anchoring, PivotTo conflicts with physics and the model flies.
+			if state.Root and state.Root.Parent then
+				for _, descendant in ipairs(state.Model:GetDescendants()) do
+					if descendant:IsA("BasePart") then
+						descendant.AssemblyLinearVelocity = Vector3.zero
+						descendant.AssemblyAngularVelocity = Vector3.zero
+					end
+				end
+				state.Root.Anchored = true
+				state.Position = state.Root.Position
+			end
 		end
 	end)
 	synchronizeAnimation(state)

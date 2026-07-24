@@ -124,8 +124,10 @@ end
 local function applyKnockback(attackerRoot, model, humanoid, root, attack)
 	-- Um unico membro ancorado prende toda a assembly. Mobs de combate precisam
 	-- estar fisicos para reagir enquanto vivos, nao apenas depois de morrer.
+	-- Pecas Massless (decorativas, conectadas via Bone) sao puladas para nao
+	-- destacar do modelo nem conflitar com scripts de acompanhamento.
 	for _, descendant in ipairs(model:GetDescendants()) do
-		if descendant:IsA("BasePart") then
+		if descendant:IsA("BasePart") and not descendant.Massless then
 			descendant.Anchored = false
 		end
 	end
