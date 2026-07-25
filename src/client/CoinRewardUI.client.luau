@@ -34,7 +34,7 @@ card.AnchorPoint = Vector2.new(1, 0)
 card.Position = HIDDEN_POSITION
 card.Size = UDim2.fromOffset(150, 42)
 card.BackgroundColor3 = Color3.fromRGB(31, 27, 18)
-card.BackgroundTransparency = 0.18
+card.BackgroundTransparency = 1
 card.BorderSizePixel = 0
 card.GroupTransparency = 1
 card.Visible = false
@@ -48,6 +48,7 @@ local stroke = Instance.new("UIStroke")
 stroke.Color = Color3.fromRGB(255, 205, 72)
 stroke.Thickness = 1
 stroke.Transparency = 0.45
+stroke.Enabled = false
 stroke.Parent = card
 
 local label = Instance.new("TextLabel")

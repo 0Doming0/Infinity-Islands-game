@@ -61,6 +61,15 @@ local function configureSword(sword)
 	if sword:GetAttribute("ScoreMultiplier") == nil then
 		sword:SetAttribute("ScoreMultiplier", 1.0)
 	end
+	if sword:GetAttribute("CoinMultiplier") == nil then
+		sword:SetAttribute("CoinMultiplier", 1.0)
+	end
+	if sword:GetAttribute("RangeMultiplier") == nil then
+		sword:SetAttribute("RangeMultiplier", 1.0)
+	end
+	if sword:GetAttribute("CriticalChance") == nil then
+		sword:SetAttribute("CriticalChance", 0.03)
+	end
 	sword.CanBeDropped = false
 	return sword
 end

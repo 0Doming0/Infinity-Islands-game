@@ -302,16 +302,16 @@ local function populateIsland(island)
 	end
 	local buildingCount = random:NextInteger(VILLAGE_CONFIG.MinimumBuildingCount, VILLAGE_CONFIG.MaximumBuildingCount)
 	local shopIds = VillageShopCatalog.GetShopIds()
-	-- Toda vila mantem o ferreiro para nao bloquear a progressao principal.
-	-- As demais profissoes continuam aleatorias e nunca se repetem na vila.
-	for index, shopId in ipairs(shopIds) do
-		if shopId == "Blacksmith" then
+	-- Toda vila mantém o ferreiro e o guardião de recompensas. As demais
+	-- profissões continuam aleatórias e nunca se repetem.
+	for index = #shopIds, 1, -1 do
+		if shopIds[index] == "Blacksmith" or shopIds[index] == "RewardKeeper" then
 			table.remove(shopIds, index)
-			break
 		end
 	end
 	shuffle(shopIds, random)
 	table.insert(shopIds, 1, "Blacksmith")
+	table.insert(shopIds, 2, "RewardKeeper")
 	local villagerCount = math.min(
 		random:NextInteger(VILLAGE_CONFIG.MinimumVillagerCount, VILLAGE_CONFIG.MaximumVillagerCount),
 		#shopIds

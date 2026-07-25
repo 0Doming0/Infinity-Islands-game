@@ -18,6 +18,62 @@ local Config = {
 		SurvivalScorePerInterval = 1,
 		HeightCheckpointStuds = 15,
 		ScorePerHeightCheckpoint = 5,
+		RunLevel = {
+			FirstLevelEndDistance = 150,
+			SecondLevelEndDistance = 300,
+			DistanceIncreaseAfterSecond = 300,
+			DistanceGrowthAfterSecond = 0.10,
+			DamageTakenPerLevel = 0.10,
+			DamageDealtRetentionPerLevel = 0.90,
+			RewardPerLevel = 0.10,
+			UpgradeSeedSalt = 982451653,
+			TemporaryUpgrades = {
+				{
+					Id = "Haste",
+					DisplayName = "Golpes ageis",
+					AttackSpeedMultiplier = 1.08,
+				},
+				{
+					Id = "Mobility",
+					DisplayName = "Passos leves",
+					WalkSpeed = 1.5,
+				},
+				{
+					Id = "Impact",
+					DisplayName = "Impacto maior",
+					KnockbackMultiplier = 1.15,
+				},
+				{
+					Id = "Critical",
+					DisplayName = "Olho critico",
+					CriticalChance = 0.03,
+				},
+				{
+					Id = "Vitality",
+					DisplayName = "Vitalidade",
+					MaxHealth = 10,
+				},
+			},
+		},
+	},
+
+	Rewards = {
+		Daily = {
+			{ Coins = 50, Score = 10 },
+			{ Coins = 75, Score = 15 },
+			{ Coins = 105, Score = 20 },
+			{ Coins = 140, Score = 25 },
+			{ Coins = 185, Score = 30 },
+			{ Coins = 240, Score = 40 },
+			{ Coins = 350, Score = 60 },
+		},
+		Playtime = {
+			{ Minutes = 5, Coins = 20, Score = 10 },
+			{ Minutes = 10, Coins = 35, Score = 15 },
+			{ Minutes = 20, Coins = 60, Score = 25 },
+			{ Minutes = 30, Coins = 90, Score = 35 },
+			{ Minutes = 60, Coins = 180, Score = 60 },
+		},
 	},
 
 	Water = {
@@ -44,8 +100,8 @@ local Config = {
 		SoloMerchantChance = 0.07,
 		MinimumBuildingCount = 2,
 		MaximumBuildingCount = 3,
-		MinimumVillagerCount = 1,
-		MaximumVillagerCount = 3,
+		MinimumVillagerCount = 2,
+		MaximumVillagerCount = 4,
 		RandomSalt = 73428767,
 		ShopTag = "ProceduralSwordVillager",
 		PromptDistance = 13,
@@ -69,9 +125,11 @@ local Config = {
 	Difficulty = {
 		RoundsPerTier = 4,
 		MaximumTier = 8,
-		HealthPerTier = 0.18,
-		DamagePerTier = 0.12,
-		RewardPerTier = 0.10,
+		-- A escalada normal agora acontece no próprio jogador via RunLevel.
+		-- Elites continuam sendo encontros especiais deliberadamente mais fortes.
+		HealthPerTier = 0,
+		DamagePerTier = 0,
+		RewardPerTier = 0,
 		EliteHealthMultiplier = 3.6,
 		EliteDamageMultiplier = 1.65,
 		EliteRewardMultiplier = 3,
@@ -92,11 +150,20 @@ local Config = {
 	},
 
 	Tutorial = {
-		-- Ative para repetir o tutorial para todos durante testes. Por padrao,
-		-- a opcao so tem efeito no Studio e nao altera o progresso persistente.
+		-- "NewPlayers" usa o progresso salvo; "AllPlayers" repete para todos.
+		-- Por seguranca, AllPlayers so funciona no Studio por padrao.
+		Audience = "NewPlayers",
 		ForceForAllPlayers = false,
 		ForceForAllPlayersOnlyInStudio = true,
 		PersistForcedCompletion = false,
+		HelpDelaySeconds = 6,
+	},
+
+	Death = {
+		PauseSeconds = 8,
+		FreeRespawnDelaySeconds = 4,
+		-- Substitua pelo ID de um Developer Product publicado nesta experiencia.
+		ReviveWithoutCoinLossProductId = 0,
 	},
 
 	SpecialIslands = {
@@ -172,5 +239,49 @@ local Config = {
 		},
 	},
 }
+
+local RunLevel = Config.Progression.RunLevel
+
+function RunLevel.GetLevelLength(level)
+	level = math.max(1, math.floor(tonumber(level) or 1))
+	if level == 1 then
+		return RunLevel.FirstLevelEndDistance
+	elseif level == 2 then
+		return RunLevel.SecondLevelEndDistance - RunLevel.FirstLevelEndDistance
+	end
+	return RunLevel.DistanceIncreaseAfterSecond * (1 + RunLevel.DistanceGrowthAfterSecond) ^ (level - 2)
+end
+
+function RunLevel.GetLevelBounds(level)
+	level = math.max(1, math.floor(tonumber(level) or 1))
+	if level == 1 then
+		return 0, RunLevel.FirstLevelEndDistance
+	elseif level == 2 then
+		return RunLevel.FirstLevelEndDistance, RunLevel.SecondLevelEndDistance
+	end
+
+	local rangeStart = RunLevel.SecondLevelEndDistance
+	for currentLevel = 3, level - 1 do
+		rangeStart += RunLevel.GetLevelLength(currentLevel)
+	end
+	return rangeStart, rangeStart + RunLevel.GetLevelLength(level)
+end
+
+function RunLevel.GetLevelFromDistance(distance)
+	distance = math.max(0, tonumber(distance) or 0)
+	if distance < RunLevel.FirstLevelEndDistance then
+		return 1
+	elseif distance < RunLevel.SecondLevelEndDistance then
+		return 2
+	end
+
+	local level = 3
+	local _, rangeEnd = RunLevel.GetLevelBounds(level)
+	while distance >= rangeEnd do
+		level += 1
+		rangeEnd += RunLevel.GetLevelLength(level)
+	end
+	return level
+end
 
 return table.freeze(Config)

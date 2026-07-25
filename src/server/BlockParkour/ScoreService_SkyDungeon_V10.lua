@@ -107,7 +107,13 @@ local function setupPlayer(player)
 end
 
 function ScoreService.GetMultiplier(player)
-	return math.clamp(tonumber(player:GetAttribute("ScoreMultiplier")) or DEFAULT_MULTIPLIER, MIN_MULTIPLIER, MAX_MULTIPLIER)
+	local swordMultiplier = math.clamp(
+		tonumber(player:GetAttribute("ScoreMultiplier")) or DEFAULT_MULTIPLIER,
+		MIN_MULTIPLIER,
+		MAX_MULTIPLIER
+	)
+	local runMultiplier = math.max(1, tonumber(player:GetAttribute("RunRewardMultiplier")) or 1)
+	return swordMultiplier * runMultiplier
 end
 
 function ScoreService.SetSwordMultiplier(player, multiplier)
@@ -142,7 +148,10 @@ function ScoreService.Award(player, baseAmount, source)
 end
 
 function ScoreService.AwardCoins(player, baseAmount, source, worldPosition)
-	local multiplier = math.max(1, tonumber(workspace:GetAttribute("CoinRewardMultiplier")) or 1)
+	local worldMultiplier = math.max(1, tonumber(workspace:GetAttribute("CoinRewardMultiplier")) or 1)
+	local swordMultiplier = math.max(1, tonumber(player:GetAttribute("SwordCoinMultiplier")) or 1)
+	local runMultiplier = math.max(1, tonumber(player:GetAttribute("RunRewardMultiplier")) or 1)
+	local multiplier = worldMultiplier * swordMultiplier * runMultiplier
 	local awarded = math.max(0, math.floor((tonumber(baseAmount) or 0) * multiplier))
 	if awarded <= 0 then
 		return 0

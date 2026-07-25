@@ -136,7 +136,10 @@ local function configureTemplate(template, definition)
 	template:SetAttribute("BaseDamage", baseDamage)
 	template:SetAttribute("AttackSpeed", definition.AttackSpeed)
 	template:SetAttribute("ScoreMultiplier", definition.ScoreMultiplier)
+	template:SetAttribute("CoinMultiplier", definition.CoinMultiplier)
 	template:SetAttribute("KnockbackMultiplier", definition.KnockbackMultiplier)
+	template:SetAttribute("RangeMultiplier", definition.RangeMultiplier)
+	template:SetAttribute("CriticalChance", definition.CriticalChance)
 	template:SetAttribute("Price", definition.Price)
 
 	local animations = ensureFolder(template, "Animations")
@@ -236,6 +239,7 @@ function SwordProgressionService.DeliverEquippedSword(player, autoEquip)
 	player:SetAttribute("EquippedSword", swordId)
 	player:SetAttribute("EquippedSwordName", definition.DisplayName)
 	ScoreService.SetSwordMultiplier(player, definition.ScoreMultiplier)
+	player:SetAttribute("SwordCoinMultiplier", definition.CoinMultiplier)
 
 	if autoEquip ~= false then
 		task.defer(function()
@@ -263,6 +267,10 @@ function SwordProgressionService.GetShopInventory(player)
 			BaseDamage = baseDamage,
 			AttackSpeed = definition.AttackSpeed,
 			ScoreMultiplier = definition.ScoreMultiplier,
+			CoinMultiplier = definition.CoinMultiplier,
+			KnockbackMultiplier = definition.KnockbackMultiplier,
+			RangeMultiplier = definition.RangeMultiplier,
+			CriticalChance = definition.CriticalChance,
 			Color = definition.Color,
 			Owned = data.OwnedSwords[definition.SwordId] == true,
 			Equipped = data.EquippedSword == definition.SwordId,

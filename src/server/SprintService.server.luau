@@ -23,6 +23,10 @@ end
 
 local states = {}
 
+local function getMaximumStamina(player)
+	return SprintConfig.GetMaximumSprintDuration(player:GetAttribute("Stamina"))
+end
+
 local function publishStamina(state, force)
 	local now = os.clock()
 	if not force and now - state.LastStaminaPublishAt < SprintConfig.StaminaPublishInterval then
@@ -31,8 +35,20 @@ local function publishStamina(state, force)
 	state.LastStaminaPublishAt = now
 	if state.Character.Parent then
 		state.Character:SetAttribute("SprintStamina", state.Stamina)
-		state.Character:SetAttribute("SprintStaminaMax", SprintConfig.SprintDuration)
+		state.Character:SetAttribute("SprintStaminaMax", state.MaximumStamina)
 	end
+end
+
+local function refreshMaximumStamina(state)
+	local newMaximum = getMaximumStamina(state.Player)
+	if math.abs(newMaximum - state.MaximumStamina) <= 0.001 then
+		return
+	end
+
+	local previousMaximum = state.MaximumStamina
+	state.MaximumStamina = newMaximum
+	state.Stamina = math.clamp(state.Stamina + math.max(0, newMaximum - previousMaximum), 0, newMaximum)
+	publishStamina(state, true)
 end
 
 local function setWalkSpeed(state, speed)
@@ -155,6 +171,7 @@ local function bindCharacter(player, character)
 		return
 	end
 
+	local maximumStamina = getMaximumStamina(player)
 	local state = {
 		Player = player,
 		Character = character,
@@ -165,7 +182,8 @@ local function bindCharacter(player, character)
 		WritingSpeed = false,
 		LastAppliedSpeed = humanoid.WalkSpeed,
 		LastMovingAt = os.clock(),
-		Stamina = SprintConfig.SprintDuration,
+		Stamina = maximumStamina,
+		MaximumStamina = maximumStamina,
 		LastSprintEndedAt = -math.huge,
 		LastStaminaPublishAt = -math.huge,
 		ExhaustionLocked = false,
@@ -175,6 +193,13 @@ local function bindCharacter(player, character)
 	states[player] = state
 	clearSprintAttributes(state)
 	publishStamina(state, true)
+
+	table.insert(
+		state.Connections,
+		player:GetAttributeChangedSignal("Stamina"):Connect(function()
+			refreshMaximumStamina(state)
+		end)
+	)
 
 	table.insert(
 		state.Connections,
@@ -290,12 +315,12 @@ RunService.Heartbeat:Connect(function(deltaTime)
 
 		if
 			not state.Sprinting
-			and state.Stamina < SprintConfig.SprintDuration
+			and state.Stamina < state.MaximumStamina
 			and now - state.LastSprintEndedAt >= SprintConfig.StaminaRegenDelay
 		then
-			local regenPerSecond = SprintConfig.SprintDuration / SprintConfig.StaminaRegenDuration
-			state.Stamina = math.min(SprintConfig.SprintDuration, state.Stamina + regenPerSecond * deltaTime)
-			publishStamina(state, state.Stamina >= SprintConfig.SprintDuration)
+			local regenPerSecond = state.MaximumStamina / SprintConfig.StaminaRegenDuration
+			state.Stamina = math.min(state.MaximumStamina, state.Stamina + regenPerSecond * deltaTime)
+			publishStamina(state, state.Stamina >= state.MaximumStamina)
 		end
 	end
 end)

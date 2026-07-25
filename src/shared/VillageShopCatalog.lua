@@ -5,6 +5,7 @@ local Catalog = {}
 
 local SHOP_ORDER = {
 	"Blacksmith",
+	"RewardKeeper",
 	"RelicDealer",
 	"Healer",
 	"Explorer",
@@ -20,8 +21,18 @@ local SHOPS = {
 			{ ItemId = "ClassicSword", ItemType = "Sword" },
 			{ ItemId = "BronzeSword", ItemType = "Sword" },
 			{ ItemId = "CrystalSword", ItemType = "Sword" },
+			{ ItemId = "VoidSword", ItemType = "Sword" },
 			{ ItemId = "RoyalSword", ItemType = "Sword" },
+			{ ItemId = "DragonSword", ItemType = "Sword" },
 		},
+	},
+	RewardKeeper = {
+		ShopId = "RewardKeeper",
+		DisplayName = "Guardiao de Recompensas",
+		Label = "🎁 RECOMPENSAS",
+		Color = Color3.fromRGB(255, 202, 72),
+		SpecialPanel = "Rewards",
+		Items = {},
 	},
 	RelicDealer = {
 		ShopId = "RelicDealer",
@@ -29,8 +40,10 @@ local SHOPS = {
 		Label = "✨ RELIQUIAS",
 		Color = Color3.fromRGB(184, 102, 255),
 		Items = {
-			{ ItemId = "VoidSword", ItemType = "Sword" },
-			{ ItemId = "DragonSword", ItemType = "Sword" },
+			{ ItemId = "LightningRelic", ItemType = "Relic" },
+			{ ItemId = "FireRelic", ItemType = "Relic" },
+			{ ItemId = "IceRelic", ItemType = "Relic" },
+			{ ItemId = "StoneRelic", ItemType = "Relic" },
 		},
 	},
 	Healer = {

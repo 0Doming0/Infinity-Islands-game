@@ -1,5 +1,5 @@
--- ServerScriptService/MVPSystems/CombatDamageService
--- Ponto unico para receber dano, registrar atacante, impacto e impulsao.
+-- V15: dano autoritativo com knockback cinematico estavel para o Mimico.
+-- Preserva dano, impactos e efeitos de reliquias para os demais alvos.
 
 local Players = game:GetService("Players")
 local Debris = game:GetService("Debris")
@@ -18,6 +18,8 @@ local function tagCreator(humanoid, player)
 	creator.Parent = humanoid
 	Debris:AddItem(creator, 3)
 end
+
+DamageService.TagCreator = tagCreator
 
 local function playHitSound(model)
 	local hitSound = model:FindFirstChild("hit", true)
@@ -73,6 +75,11 @@ local function createImpact(position, color, heavy)
 	Debris:AddItem(anchor, 0.30)
 end
 
+local RELIC_IMPACT_COLORS = {
+	LightningRelic = Color3.fromRGB(255, 231, 70),
+	FireRelic = Color3.fromRGB(255, 92, 45),
+}
+
 local function applyCombatStun(model, humanoid, attack)
 	local stunTokenId = (model:GetAttribute("CombatStunTokenId") or 0) + 1
 	local interruptSerial = (model:GetAttribute("CombatInterruptSerial") or 0) + 1
@@ -102,6 +109,9 @@ local function applyCombatStun(model, humanoid, attack)
 		if not model.Parent or model:GetAttribute("CombatStunTokenId") ~= stunTokenId then
 			return
 		end
+		if (tonumber(model:GetAttribute("RelicFrozenUntil")) or 0) > workspace:GetServerTimeNow() then
+			return
+		end
 		model:SetAttribute("CombatStunned", nil)
 		model:SetAttribute("CombatStunTokenId", nil)
 		model:SetAttribute("CombatStunnedUntil", nil)
@@ -119,6 +129,43 @@ local function applyCombatStun(model, humanoid, attack)
 		model:SetAttribute("CombatOriginalWalkSpeed", nil)
 		model:SetAttribute("CombatOriginalAutoRotate", nil)
 	end)
+end
+
+function DamageService.ApplyEffectDamage(attacker, target, amount, source)
+	if not attacker or attacker.Parent ~= Players or typeof(target) ~= "table" then
+		return false, false
+	end
+	local model = target.Model
+	local humanoid = target.Humanoid
+	if
+		not model
+		or not model.Parent
+		or not humanoid
+		or humanoid.Health <= 0
+		or model:GetAttribute("Invulnerable") == true
+		or model:GetAttribute("NoSwordDamage") == true
+		or Players:GetPlayerFromCharacter(model)
+	then
+		return false, false
+	end
+	local damage = math.max(0, tonumber(amount) or 0)
+	if damage <= 0 then
+		return false, false
+	end
+	local healthBefore = humanoid.Health
+	local effectPosition = target.Root and target.Root:IsA("BasePart") and target.Root.Position
+		or model:GetPivot().Position
+	tagCreator(humanoid, attacker)
+	model:SetAttribute("LastDamagedByUserId", attacker.UserId)
+	model:SetAttribute("LastRelicDamageSource", tostring(source or "Relic"))
+	model:SetAttribute("LastRelicDamage", damage)
+	humanoid:TakeDamage(damage)
+	createImpact(
+		effectPosition,
+		RELIC_IMPACT_COLORS[source] or Color3.fromRGB(190, 130, 255),
+		false
+	)
+	return true, healthBefore > 0 and humanoid.Health <= 0
 end
 
 local function applyKnockback(attackerRoot, model, humanoid, root, attack)
@@ -150,12 +197,20 @@ local function applyKnockback(attackerRoot, model, humanoid, root, attack)
 	end
 
 	local velocity = direction * horizontalForce + Vector3.new(0, upwardForce, 0)
+
 	model:SetAttribute("CombatKnockbackUntil", workspace:GetServerTimeNow() + 0.22)
 
-	-- Inimigos movidos por PivotTo nao podem ser desancorados para receber
-	-- LinearVelocity: isso faz a fisica disputar com a IA e causa saltos. Eles
-	-- recebem um recuo horizontal curto que o proprio controlador valida contra
-	-- obstaculos e bordas da ilha.
+	-- Remove old knockback objects from previous hits
+	for _, child in ipairs(root:GetChildren()) do
+		if child.Name == "SwordKnockback" or child.Name == "SwordKnockbackAttachment" then
+			child:Destroy()
+		end
+	end
+
+	-- O Mimico e movido por PivotTo e precisa continuar ancorado. Desancorar e
+	-- aplicar LinearVelocity faria a fisica disputar com o controlador, causando
+	-- tombos, teleporte e impulso acumulado. O recuo e enviado como deslocamento
+	-- horizontal para o proprio MimicAI validar contra paredes e bordas.
 	if model:GetAttribute("KinematicMovement") == true then
 		local displacement = math.clamp(horizontalForce * 0.065, 0.9, 2.4)
 		model:SetAttribute("KinematicKnockbackRequest", direction * displacement)
@@ -166,25 +221,16 @@ local function applyKnockback(attackerRoot, model, humanoid, root, attack)
 		return
 	end
 
-	-- Um unico membro ancorado prende toda a assembly. Mobs fisicos comuns
-	-- precisam ser desancorados para reagir ao LinearVelocity.
+	-- Mobs fisicos comuns continuam usando o comportamento original.
 	for _, descendant in ipairs(model:GetDescendants()) do
 		if descendant:IsA("BasePart") and not descendant.Massless then
 			descendant.Anchored = false
 		end
 	end
 
-	-- Garante autoridade do servidor durante o pequeno stun.
 	pcall(function()
 		root:SetNetworkOwner(nil)
 	end)
-
-	-- Remove old knockback objects from previous hits
-	for _, child in ipairs(root:GetChildren()) do
-		if child.Name == "SwordKnockback" or child.Name == "SwordKnockbackAttachment" then
-			child:Destroy()
-		end
-	end
 
 	-- Apply velocity directly for the initial burst
 	root.AssemblyLinearVelocity = velocity

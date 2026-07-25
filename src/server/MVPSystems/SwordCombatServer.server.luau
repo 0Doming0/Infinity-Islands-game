@@ -12,6 +12,8 @@ local HttpService = game:GetService("HttpService")
 local combatFolder = ReplicatedStorage:WaitForChild("SwordCombat")
 local Config = require(combatFolder:WaitForChild("CombatConfig"))
 local DamageService = require(script.Parent:WaitForChild("CombatDamageService"))
+local RelicService = require(script.Parent:WaitForChild("RelicService"))
+RelicService.Start()
 
 -- Remove o canal da arquitetura antiga para impedir dois sistemas concorrentes.
 local legacyRemote = combatFolder:FindFirstChild("CombatRemote")
@@ -368,8 +370,15 @@ local function executeHit(player, tool, comboIndex, token)
 	end
 
 	local combo = Config.Combo[comboIndex]
-	local size = combo.HitboxSize
-	local boxCFrame = attackerRoot.CFrame * combo.HitboxOffset
+	local rangeMultiplier = Config.GetClampedNumber(tool, "RangeMultiplier", 1, 0.8, 1.5)
+	local size = Vector3.new(
+		combo.HitboxSize.X * rangeMultiplier,
+		combo.HitboxSize.Y,
+		combo.HitboxSize.Z * rangeMultiplier
+	)
+	local boxCFrame = attackerRoot.CFrame
+		* combo.HitboxOffset
+		* CFrame.new(0, 0, -(rangeMultiplier - 1) * combo.HitboxSize.Z * 0.45)
 	showHitbox(boxCFrame, size)
 	local targets = collectTargets(player, character, attackerRoot, boxCFrame, size)
 
@@ -380,9 +389,18 @@ local function executeHit(player, tool, comboIndex, token)
 		Config.DamageLimits.Min,
 		Config.DamageLimits.Max
 	) * combo.DamageMultiplier
+		* math.clamp(tonumber(player:GetAttribute("RunDamageDealtMultiplier")) or 1, 0.05, 1)
 	local knockbackMultiplier = Config.GetClampedNumber(tool, "KnockbackMultiplier", 1, 0, 3)
+		* math.clamp(tonumber(player:GetAttribute("RunKnockbackMultiplier")) or 1, 1, 5)
 	local scoreMultiplier = Config.GetClampedNumber(tool, "ScoreMultiplier", 1, 1, 100)
 	local attackSpeed = Config.GetAttackSpeed(tool)
+		* math.clamp(tonumber(player:GetAttribute("RunAttackSpeedMultiplier")) or 1, 1, 2)
+	local criticalChance = math.clamp(
+		Config.GetClampedNumber(tool, "CriticalChance", 0, 0, 0.75)
+			+ math.max(0, tonumber(player:GetAttribute("RunCriticalBonus")) or 0),
+		0,
+		0.85
+	)
 	local nextCombo = Config.Combo[comboIndex % Config.ComboCount + 1]
 	-- Mantem o alvo interrompido ate a primeira janela real do proximo golpe.
 	-- A duracao acompanha AttackSpeed, portanto espadas lentas nao deixam um
@@ -404,11 +422,22 @@ local function executeHit(player, tool, comboIndex, token)
 
 	local hitCount, killCount = 0, 0
 	for index = 1, math.min(#targets, Config.MaxTargetsPerSwing) do
-		local hit, killed = DamageService.ApplySwordHit(player, attackerRoot, targets[index], attack)
+		local target = targets[index]
+		local targetAttack = table.clone(attack)
+		if math.random() < criticalChance then
+			targetAttack.Damage = math.min(Config.DamageLimits.Max, targetAttack.Damage * 2)
+			targetAttack.Critical = true
+		end
+		targetAttack = RelicService.PrepareAttack(player, target, targetAttack)
+		local hit, killed = DamageService.ApplySwordHit(player, attackerRoot, target, targetAttack)
 		if hit then
 			hitCount += 1
+			RelicService.ApplyAfterHit(player, attackerRoot, target, targetAttack)
 			if killed then
 				killCount += 1
+			end
+			if targetAttack.Critical then
+				player:SetAttribute("LastCriticalHitSerial", (player:GetAttribute("LastCriticalHitSerial") or 0) + 1)
 			end
 		end
 	end
@@ -561,6 +590,7 @@ local function attack(player, tool)
 	local comboIndex = state.Combo
 	local combo = Config.Combo[comboIndex]
 	local speed = Config.GetAttackSpeed(tool)
+		* math.clamp(tonumber(player:GetAttribute("RunAttackSpeedMultiplier")) or 1, 1, 2)
 	local windup = combo.Windup / speed
 	state.NextAttackAt = now + (combo.Windup + combo.Recovery) / speed
 

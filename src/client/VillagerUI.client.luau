@@ -2,6 +2,7 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local SoundService = game:GetService("SoundService")
 local UserInputService = game:GetService("UserInputService")
 
@@ -135,7 +136,9 @@ local function releaseFirstPerson()
 		CameraMode = player.CameraMode,
 		MinimumZoom = player.CameraMinZoomDistance,
 		MaximumZoom = player.CameraMaxZoomDistance,
-		MouseBehavior = UserInputService.MouseBehavior,
+		MouseBehavior = if UserInputService.MouseBehavior == Enum.MouseBehavior.LockCurrentPosition
+			then Enum.MouseBehavior.Default
+			else UserInputService.MouseBehavior,
 		MouseIconEnabled = UserInputService.MouseIconEnabled,
 	}
 	player.CameraMode = Enum.CameraMode.Classic
@@ -154,8 +157,19 @@ local function restoreCamera()
 	player.CameraMinZoomDistance = state.MinimumZoom
 	player.CameraMaxZoomDistance = state.MaximumZoom
 	player.CameraMode = state.CameraMode
-	UserInputService.MouseBehavior = state.MouseBehavior
-	UserInputService.MouseIconEnabled = state.MouseIconEnabled
+
+	-- LockCurrentPosition e um estado transitorio usado pelo controlador da
+	-- camera enquanto o jogador arrasta o mouse. Ele e convertido para Default
+	-- ao ser salvo, pois restaura-lo depois prende o cursor no ponto antigo.
+	UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+	UserInputService.MouseIconEnabled = true
+	task.defer(function()
+		RunService.RenderStepped:Wait()
+		if not shopOpen then
+			UserInputService.MouseBehavior = state.MouseBehavior
+			UserInputService.MouseIconEnabled = state.MouseIconEnabled
+		end
+	end)
 end
 
 local function updateScale()
@@ -184,15 +198,15 @@ local function playPurchaseSound()
 	end)
 end
 
-local function closeShop()
-	if not shopOpen then
-		return
-	end
+local function closeShop(notifyServer)
+	local wasOpen = shopOpen
 	shopOpen = false
 	panel.Visible = false
 	backdrop.Visible = false
 	restoreCamera()
-	villagerEvent:FireServer({ action = "closeShop" })
+	if wasOpen and notifyServer ~= false then
+		villagerEvent:FireServer({ action = "closeShop" })
+	end
 end
 
 local function clearRows()
@@ -206,6 +220,12 @@ end
 local function getOfferIcon(item)
 	if item.ItemType == "Sword" then
 		return "⚔️"
+	elseif item.ItemType == "Relic" then
+		return "✨"
+	elseif item.ItemType == "DailyReward" then
+		return "🎁"
+	elseif item.ItemType == "TimeReward" then
+		return "⏱"
 	end
 	local itemId = tostring(item.ItemId or "")
 	if string.find(itemId, "Heal", 1, true) or string.find(itemId, "Health", 1, true) then
@@ -246,11 +266,72 @@ local function createRow(item, index)
 	swatchCorner.CornerRadius = UDim.new(1, 0)
 	swatchCorner.Parent = swatch
 
+	local contentX = 36
+	if item.ItemType == "Relic" then
+		contentX = 126
+		local imageSlot = Instance.new("Frame")
+		imageSlot.Name = "RelicImageSlot"
+		imageSlot.Position = UDim2.fromOffset(32, 14)
+		imageSlot.Size = UDim2.fromOffset(84, 84)
+		imageSlot.BackgroundColor3 = Color3.fromRGB(24, 27, 39)
+		imageSlot.BackgroundTransparency = 0.18
+		imageSlot.BorderSizePixel = 0
+		imageSlot.Parent = row
+		Instance.new("UICorner", imageSlot).CornerRadius = UDim.new(0, 12)
+
+		local imageStroke = Instance.new("UIStroke")
+		imageStroke.Color = item.Color or Color3.fromRGB(142, 92, 235)
+		imageStroke.Transparency = 0.32
+		imageStroke.Thickness = item.Equipped and 2 or 1
+		imageStroke.Parent = imageSlot
+
+		local image = Instance.new("ImageLabel")
+		image.Name = "RelicImage"
+		image.Position = UDim2.fromOffset(4, 4)
+		image.Size = UDim2.new(1, -8, 1, -8)
+		image.BackgroundTransparency = 1
+		image.Image = type(item.ImageId) == "string" and item.ImageId or ""
+		image.ScaleType = Enum.ScaleType.Fit
+		image.Visible = image.Image ~= ""
+		image.Parent = imageSlot
+
+		local placeholder = Instance.new("TextLabel")
+		placeholder.Name = "ImagePlaceholder"
+		placeholder.Size = UDim2.fromScale(1, 1)
+		placeholder.BackgroundTransparency = 1
+		placeholder.Text = item.Icon or "✨"
+		placeholder.TextColor3 = item.Color or Color3.new(1, 1, 1)
+		placeholder.Font = Enum.Font.GothamBold
+		placeholder.TextSize = 34
+		placeholder.Visible = not image.Visible
+		placeholder.Parent = imageSlot
+
+		if item.Equipped then
+			local equippedBadge = Instance.new("TextLabel")
+			equippedBadge.Name = "EquippedBadge"
+			equippedBadge.AnchorPoint = Vector2.new(0.5, 1)
+			equippedBadge.Position = UDim2.new(0.5, 0, 1, -3)
+			equippedBadge.Size = UDim2.fromOffset(72, 17)
+			equippedBadge.BackgroundColor3 = Color3.fromRGB(43, 139, 81)
+			equippedBadge.BorderSizePixel = 0
+			equippedBadge.Text = "EQUIPADA"
+			equippedBadge.TextColor3 = Color3.new(1, 1, 1)
+			equippedBadge.Font = Enum.Font.GothamBold
+			equippedBadge.TextSize = 9
+			equippedBadge.Parent = imageSlot
+			Instance.new("UICorner", equippedBadge).CornerRadius = UDim.new(1, 0)
+		end
+	end
+
 	local name = Instance.new("TextLabel")
-	name.Position = UDim2.fromOffset(36, 9)
-	name.Size = UDim2.new(1, -250, 0, 30)
+	name.Position = UDim2.fromOffset(contentX, 9)
+	name.Size = UDim2.new(1, -(contentX + 214), 0, 30)
 	name.BackgroundTransparency = 1
-	name.Text = string.format("%s  %s", getOfferIcon(item), item.DisplayName or item.SwordId)
+	name.Text = string.format(
+		"%s%s",
+		item.ItemType == "Relic" and "" or (getOfferIcon(item) .. "  "),
+		item.DisplayName or item.SwordId
+	)
 	name.TextColor3 = Color3.new(1, 1, 1)
 	name.Font = Enum.Font.GothamMedium
 	name.TextSize = 20
@@ -258,8 +339,8 @@ local function createRow(item, index)
 	name.Parent = row
 
 	local description = Instance.new("TextLabel")
-	description.Position = UDim2.fromOffset(36, 38)
-	description.Size = UDim2.new(1, -250, 0, 24)
+	description.Position = UDim2.fromOffset(contentX, 38)
+	description.Size = UDim2.new(1, -(contentX + 214), 0, 24)
 	description.BackgroundTransparency = 1
 	description.Text = item.Description or ""
 	description.TextColor3 = Color3.fromRGB(188, 193, 207)
@@ -270,10 +351,12 @@ local function createRow(item, index)
 	description.Parent = row
 
 	local stats = Instance.new("TextLabel")
-	stats.Position = UDim2.fromOffset(36, 66)
-	stats.Size = UDim2.new(1, -250, 0, 32)
+	stats.Position = UDim2.fromOffset(contentX, 66)
+	stats.Size = UDim2.new(1, -(contentX + 214), 0, 32)
 	stats.BackgroundTransparency = 1
-	stats.Text = string.format("%s  •  Estoque: %d", item.StatsText or "Oferta da vila", item.Stock or 0)
+	stats.Text = item.ItemType == "DailyReward" or item.ItemType == "TimeReward"
+		and (item.StatsText or "Recompensa")
+		or string.format("%s  •  Estoque: %d", item.StatsText or "Oferta da vila", item.Stock or 0)
 	stats.TextColor3 = Color3.fromRGB(115, 225, 255)
 	stats.Font = Enum.Font.GothamMedium
 	stats.TextSize = 14
@@ -304,6 +387,41 @@ local function createRow(item, index)
 			button.Active = false
 			villagerEvent:FireServer({ action = "equipSword", itemId = item.ItemId })
 		end)
+	elseif item.ItemType == "Relic" and item.Equipped then
+		button.Text = "EQUIPADA"
+		button.BackgroundColor3 = Color3.fromRGB(50, 135, 83)
+		button.Active = false
+		button.AutoButtonColor = false
+	elseif item.ItemType == "Relic" and item.Owned then
+		button.Text = "EQUIPAR"
+		button.BackgroundColor3 = Color3.fromRGB(77, 105, 185)
+		button.MouseButton1Click:Connect(function()
+			button.Active = false
+			villagerEvent:FireServer({ action = "equipRelic", itemId = item.ItemId })
+		end)
+	elseif item.ItemType == "DailyReward" or item.ItemType == "TimeReward" then
+		if item.Claimed then
+			button.Text = "COLETADA"
+			button.BackgroundColor3 = Color3.fromRGB(64, 64, 72)
+			button.Active = false
+			button.AutoButtonColor = false
+		elseif not item.Claimable then
+			button.Text = "BLOQUEADA"
+			button.BackgroundColor3 = Color3.fromRGB(64, 64, 72)
+			button.Active = false
+			button.AutoButtonColor = false
+		else
+			button.Text = "COLETAR"
+			button.BackgroundColor3 = Color3.fromRGB(57, 145, 91)
+			button.MouseButton1Click:Connect(function()
+				button.Active = false
+				if item.ItemType == "DailyReward" then
+					villagerEvent:FireServer({ action = "claimDailyReward" })
+				else
+					villagerEvent:FireServer({ action = "claimTimeReward", minutes = item.Minutes })
+				end
+			end)
+		end
 	elseif (item.Stock or 0) <= 0 then
 		button.Text = "SEM ESTOQUE"
 		button.BackgroundColor3 = Color3.fromRGB(64, 64, 72)
@@ -317,6 +435,7 @@ local function createRow(item, index)
 			button.Active = false
 			villagerEvent:FireServer({
 				action = item.ItemType == "Sword" and "purchaseSword"
+					or item.ItemType == "Relic" and "purchaseRelic"
 					or item.ItemType == "Item" and "purchaseItem"
 					or "purchaseService",
 				itemId = item.ItemId,
@@ -374,7 +493,7 @@ villagerEvent.OnClientEvent:Connect(function(data)
 	if data.action == "showShop" then
 		showShop(data)
 	elseif data.action == "closeShop" then
-		closeShop()
+		closeShop(false)
 	elseif data.action == "shopError" then
 		feedback.Text = data.message or "Loja indisponivel."
 		feedback.TextColor3 = Color3.fromRGB(255, 120, 120)

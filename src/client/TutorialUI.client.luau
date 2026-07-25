@@ -138,10 +138,54 @@ skipButton.Parent = card
 local shownPosition = UDim2.new(0.5, 0, 0, 145)
 local hiddenPosition = UDim2.new(0.5, 0, 0, -180)
 local currentStageId = ""
+local stageSerial = 0
+local helpRevealed = false
 local waypoint
 local waypointBasePosition
 local waypointLabel
 local animationStartedAt = 0
+local tutorialHighlight
+
+local function clearTutorialHighlight()
+	if tutorialHighlight then
+		tutorialHighlight:Destroy()
+	end
+	tutorialHighlight = nil
+end
+
+local function highlightCombatControl()
+	clearTutorialHighlight()
+	local character = player.Character
+	local backpack = player:FindFirstChildOfClass("Backpack")
+	local sword
+	for _, container in ipairs({ character, backpack }) do
+		if container then
+			for _, child in ipairs(container:GetChildren()) do
+				if child:IsA("Tool") and (child:GetAttribute("IsSword") == true or child:GetAttribute("WeaponType") == "Sword") then
+					sword = child
+					break
+				end
+			end
+		end
+		if sword then
+			break
+		end
+	end
+	local handle = sword and sword:FindFirstChild("Handle")
+	if handle and not handle:IsDescendantOf(workspace) and character then
+		local backDisplay = character:FindFirstChild("EquippedSwordBackDisplay")
+		handle = backDisplay and backDisplay:FindFirstChild("Handle", true) or handle
+	end
+	if handle and handle:IsA("BasePart") then
+		tutorialHighlight = Instance.new("Highlight")
+		tutorialHighlight.Name = "TutorialSwordHighlight"
+		tutorialHighlight.Adornee = handle
+		tutorialHighlight.FillColor = Color3.fromRGB(255, 214, 80)
+		tutorialHighlight.OutlineColor = Color3.new(1, 1, 1)
+		tutorialHighlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+		tutorialHighlight.Parent = handle
+	end
+end
 
 local function destroyWaypoint()
 	if waypoint then
@@ -150,6 +194,7 @@ local function destroyWaypoint()
 	waypoint = nil
 	waypointLabel = nil
 	waypointBasePosition = nil
+	clearTutorialHighlight()
 end
 
 local function createWaypoint(position)
@@ -243,6 +288,10 @@ local CONTROL_HINTS = {
 }
 
 local function updateControlHint()
+	if not helpRevealed then
+		controlHint.Text = ""
+		return
+	end
 	local hints = CONTROL_HINTS[currentStageId]
 	if hints then
 		controlHint.Text = hints[controlFamily()] or hints.Keyboard
@@ -303,6 +352,9 @@ tutorialEvent.OnClientEvent:Connect(function(data)
 		return
 	end
 	if data.Action == "Show" then
+		stageSerial += 1
+		local shownSerial = stageSerial
+		helpRevealed = false
 		currentStageId = tostring(data.StageId or "")
 		header.Text = "TUTORIAL"
 		stepLabel.Text = string.format("ETAPA %d/%d", tonumber(data.Stage) or 1, tonumber(data.TotalStages) or 5)
@@ -315,9 +367,20 @@ tutorialEvent.OnClientEvent:Connect(function(data)
 		skipButton.Visible = true
 		skipButton.Active = true
 		updateControlHint()
+		if currentStageId == "Combat" then
+			highlightCombatControl()
+		end
+		task.delay(tonumber(data.ShowHintAfterSeconds) or 6, function()
+			if shownSerial == stageSerial and card.Visible then
+				helpRevealed = true
+				updateControlHint()
+			end
+		end)
 		createWaypoint(data.TargetPosition)
 		showCard()
 	elseif data.Action == "Complete" or data.Action == "Skipped" then
+		stageSerial += 1
+		helpRevealed = false
 		currentStageId = ""
 		header.Text = data.Action == "Complete" and "TUTORIAL CONCLUÍDO" or "TUTORIAL"
 		stepLabel.Text = ""
@@ -330,6 +393,8 @@ tutorialEvent.OnClientEvent:Connect(function(data)
 		showCard()
 		hideCard(data.Action == "Complete" and 4 or 2.5)
 	elseif data.Action == "Hide" then
+		stageSerial += 1
+		helpRevealed = false
 		hideCard(0)
 	end
 end)

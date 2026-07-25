@@ -1,4 +1,4 @@
--- Sky Dungeon WaterRiseSystem V12 - Party Wipe Rescue Island
+-- Sky Dungeon WaterRiseSystem V27 - aviso antes da inundacao e perigo da agua.
 -- A agua usa a media protegida do coletivo. Sua superficie visual e dividida
 -- em tiles proximos aos jogadores, pois a fronteira pode crescer em qualquer X/Z.
 
@@ -9,6 +9,7 @@ local MapConfig = require(script.Parent.Config_SkyDungeon_V10)
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 local ChunkManager = require(script.Parent.ChunkManager_SkyDungeon_V10)
 local ScoreService = require(script.Parent.ScoreService_SkyDungeon_V10)
+local RunLevelService = require(script.Parent.RunLevelService)
 local CollectibleService = require(script.Parent.Parent:FindFirstChild("MVPSystems"):FindFirstChild("CollectibleService"))
 
 
@@ -56,6 +57,7 @@ local CONFIG = {
 	RESCUE_ISLAND_WAIT_SECONDS = 12,
 	RESCUE_ISLAND_POLL_SECONDS = 0.25,
 	SAFE_RESPAWN_PROTECTION_SECONDS = 3,
+	SANCTUARY_FLOOD_GRACE_SECONDS = 5,
 	TEMP_RESPAWN_PLATFORM_SIZE = Vector3.new(18, 1, 18),
 	TEMP_RESPAWN_EXTRA_CLEARANCE = 8,
 	TEMP_RESPAWN_RESCUE_RETRIES = 20,
@@ -194,6 +196,61 @@ local function removeSafeZoneProtection(player, character)
 	player:SetAttribute("InSafeZone", false)
 	player:SetAttribute("SafeZoneType", nil)
 	player:SetAttribute("SafeZoneIslandKey", nil)
+end
+
+local FLOOD_COUNTDOWN_ATTRIBUTE = "SanctuaryFloodCountdownEnd"
+local FLOODED_ISLAND_ATTRIBUTE = "FloodedSafeZoneIslandKey"
+local WATER_DAMAGE_ACTIVE_ATTRIBUTE = "WaterDamageActive"
+
+local function setWaterDamageActive(player, active)
+	if player:GetAttribute(WATER_DAMAGE_ACTIVE_ATTRIBUTE) ~= active then
+		player:SetAttribute(WATER_DAMAGE_ACTIVE_ATTRIBUTE, active)
+	end
+end
+
+local function clearSanctuaryFloodState(player, data)
+	if data then
+		data.sanctuaryFloodDeadline = nil
+		data.sanctuaryFloodIslandKey = nil
+	end
+	player:SetAttribute(FLOOD_COUNTDOWN_ATTRIBUTE, nil)
+	player:SetAttribute(FLOODED_ISLAND_ATTRIBUTE, nil)
+end
+
+local function hasSanctuaryFloodGrace(player, data, canStart)
+	local serverNow = workspace:GetServerTimeNow()
+	local deadline = data.sanctuaryFloodDeadline
+	if deadline then
+		if serverNow < deadline then
+			return true
+		end
+
+		player:SetAttribute(FLOODED_ISLAND_ATTRIBUTE, data.sanctuaryFloodIslandKey)
+		player:SetAttribute(FLOOD_COUNTDOWN_ATTRIBUTE, nil)
+		data.sanctuaryFloodDeadline = nil
+		return false
+	end
+
+	if not canStart then
+		return false
+	end
+
+	if player:GetAttribute("InSafeZone") ~= true
+		or player:GetAttribute("SafeZoneType") ~= "Sanctuary"
+	then
+		return false
+	end
+
+	local islandKey = player:GetAttribute("SafeZoneIslandKey")
+	if islandKey == nil or player:GetAttribute(FLOODED_ISLAND_ATTRIBUTE) == islandKey then
+		return false
+	end
+
+	deadline = serverNow + CONFIG.SANCTUARY_FLOOD_GRACE_SECONDS
+	data.sanctuaryFloodDeadline = deadline
+	data.sanctuaryFloodIslandKey = islandKey
+	player:SetAttribute(FLOOD_COUNTDOWN_ATTRIBUTE, deadline)
+	return true
 end
 
 local function calculateTargetWaterSpeed()
@@ -527,7 +584,9 @@ local function onCharacterAdded(player, character)
 		highestHeightCheckpoint = 0,
 		nextSurvivalScoreAt = os.clock() + CONFIG.SURVIVAL_SCORE_INTERVAL,
 	}
+	clearSanctuaryFloodState(player, playerData[player])
 	player:SetAttribute("WaterContacting", false)
+	setWaterDamageActive(player, false)
 	ScoreService.ResetRun(player)
 
 	local humanoid = character:WaitForChild("Humanoid", 10)
@@ -537,6 +596,7 @@ local function onCharacterAdded(player, character)
 			if playerData[player] then
 				playerData[player].alive = false
 			end
+			setWaterDamageActive(player, false)
 			task.defer(requestRescueIslandAfterPartyWipe)
 		end)
 	end
@@ -588,6 +648,8 @@ local function onPlayerAdded(player)
 		highestHeightCheckpoint = 0,
 		nextSurvivalScoreAt = os.clock() + CONFIG.SURVIVAL_SCORE_INTERVAL,
 	}
+	clearSanctuaryFloodState(player, playerData[player])
+	setWaterDamageActive(player, false)
 	player.CharacterAdded:Connect(function(character)
 		onCharacterAdded(player, character)
 	end)
@@ -651,28 +713,39 @@ while true do
 
 	for player, data in pairs(playerData) do
 		if not data.alive or data.respawning then
+			setWaterDamageActive(player, false)
 			continue
 		end
 		local character = player.Character
 		local rootPart = character and character:FindFirstChild("HumanoidRootPart")
 		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 		if not rootPart or not humanoid or humanoid.Health <= 0 then
+			setWaterDamageActive(player, false)
 			continue
 		end
 
 		local playerY = rootPart.Position.Y
 		local feetY = playerY - humanoid.HipHeight - rootPart.Size.Y / 2
 			+ math.max(0, tonumber(MVPConfig.SafeZones.WaterContactFootOffsetStuds) or 0.5)
-		if feetY <= currentWaterY then
+		local touchingWater = feetY <= currentWaterY
+		local sanctuaryGraceActive = hasSanctuaryFloodGrace(player, data, touchingWater)
+		if touchingWater then
 			data.inWater = true
 			player:SetAttribute("WaterContacting", true)
-			removeSafeZoneProtection(player, character)
-			if player:GetAttribute("TutorialWaterProtection") ~= true then
+			if not sanctuaryGraceActive then
+				removeSafeZoneProtection(player, character)
+			end
+			local waterCanDamage = not sanctuaryGraceActive
+				and player:GetAttribute("TutorialWaterProtection") ~= true
+				and character:FindFirstChildOfClass("ForceField") == nil
+			setWaterDamageActive(player, waterCanDamage)
+			if waterCanDamage then
 				humanoid:TakeDamage(CONFIG.DAMAGE_PER_SECOND * dt)
 			end
 		else
 			data.inWater = false
 			player:SetAttribute("WaterContacting", false)
+			setWaterDamageActive(player, false)
 		end
 
 		if now >= data.nextSurvivalScoreAt then
@@ -682,6 +755,7 @@ while true do
 			end
 		end
 		local height = math.max(0, logicalAltitude(playerY) - 0.5)
+		RunLevelService.UpdateProgress(player, height)
 		local checkpoint = math.floor(height / CONFIG.HEIGHT_CHECKPOINT_STUDS)
 		if checkpoint > data.highestHeightCheckpoint then
 			local crossed = checkpoint - data.highestHeightCheckpoint

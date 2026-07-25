@@ -1,3 +1,4 @@
+-- V23: mostra numericamente o limite atual enquanto o jogador corre.
 -- Corrida: dois toques em W, L3 ou botao de toque.
 -- Shift pertence ao SneakController e nunca ativa corrida.
 
@@ -27,6 +28,12 @@ local fovTween
 local staminaGui
 local staminaBackground
 local staminaFill
+local staminaLimitLabel
+
+local function formatDuration(seconds)
+	local formatted = string.format("%.1f", seconds)
+	return string.gsub(formatted, "%.", ",")
+end
 
 local function createStaminaGui()
 	if staminaGui and staminaGui.Parent then
@@ -66,11 +73,27 @@ local function createStaminaGui()
 	local fillCorner = Instance.new("UICorner")
 	fillCorner.CornerRadius = UDim.new(1, 0)
 	fillCorner.Parent = staminaFill
+
+	staminaLimitLabel = Instance.new("TextLabel")
+	staminaLimitLabel.Name = "CurrentLimit"
+	staminaLimitLabel.AnchorPoint = Vector2.new(1, 1)
+	staminaLimitLabel.Position = UDim2.new(1, 0, 0, -4)
+	staminaLimitLabel.Size = UDim2.fromOffset(180, 20)
+	staminaLimitLabel.BackgroundTransparency = 1
+	staminaLimitLabel.Font = Enum.Font.GothamBold
+	staminaLimitLabel.Text = ""
+	staminaLimitLabel.TextColor3 = Color3.fromRGB(111, 202, 255)
+	staminaLimitLabel.TextSize = 15
+	staminaLimitLabel.TextStrokeColor3 = Color3.fromRGB(5, 16, 27)
+	staminaLimitLabel.TextStrokeTransparency = 0.25
+	staminaLimitLabel.TextXAlignment = Enum.TextXAlignment.Right
+	staminaLimitLabel.Visible = false
+	staminaLimitLabel.Parent = staminaBackground
 end
 
 local function updateStaminaBar()
 	createStaminaGui()
-	if not character or not staminaBackground or not staminaFill then
+	if not character or not staminaBackground or not staminaFill or not staminaLimitLabel then
 		return
 	end
 
@@ -78,12 +101,16 @@ local function updateStaminaBar()
 	local current = character:GetAttribute("SprintStamina")
 	if typeof(maximum) ~= "number" or maximum <= 0 or typeof(current) ~= "number" then
 		staminaBackground.Visible = false
+		staminaLimitLabel.Visible = false
 		return
 	end
 
 	local ratio = math.clamp(current / maximum, 0, 1)
+	local sprinting = character:GetAttribute("Sprinting") == true
 	staminaFill.Size = UDim2.fromScale(ratio, 1)
-	staminaBackground.Visible = character:GetAttribute("Sprinting") == true or ratio < 0.999
+	staminaBackground.Visible = sprinting or ratio < 0.999
+	staminaLimitLabel.Text = "LIMITE: " .. formatDuration(maximum) .. " s"
+	staminaLimitLabel.Visible = sprinting
 end
 
 local function wantsSprint()

@@ -1,4 +1,5 @@
--- V12: IA exclusiva do bau Mimico com navegacao segura contra blocos e quedas.
+-- V18: IA exclusiva do bau Mimico com knockback cinematico estavel
+-- e bote longo, imediato e rasante em direcao ao jogador.
 -- Movimento, combate e animacao esqueletica em loop
 -- ficam todos neste unico ModuleScript. Nenhum Script interno e necessario.
 -- O Model atual usa o MeshPart skinned Cube.002 como raiz; os fallbacks antigos
@@ -13,6 +14,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local ScoreService = require(script.Parent.ScoreService_SkyDungeon_V10)
 local MobEventModifiers = require(script.Parent.MobEventModifiers)
 local InventoryService = require(script.Parent.Parent.MVPSystems:WaitForChild("InventoryService"))
+local PlayerDamageService = require(script.Parent.Parent.MVPSystems:WaitForChild("PlayerDamageService"))
 local AnimeOutline = require(ServerScriptService.MVPSystems:WaitForChild("AnimeOutline"))
 ScoreService.Start()
 InventoryService.Start()
@@ -29,11 +31,23 @@ local MAX_MOVEMENT_DELTA_TIME = 1 / 20
 local UNREACHABLE_RETURN_DELAY_DEFAULT = 1.1
 local KINEMATIC_KNOCKBACK_DURATION_DEFAULT = 0.16
 local KINEMATIC_KNOCKBACK_MAX_DISTANCE_DEFAULT = 2.8
+local MOVEMENT_SPEED_MULTIPLIER = 1.25
+local ROOT_DESYNC_TOLERANCE = 0.35
 
 local ATTACK_WINDUP_DEFAULT = 0.28
 local ATTACK_LUNGE_DURATION_DEFAULT = 0.12
 local ATTACK_RECOVERY_DEFAULT = 0.30
 local ATTACK_LUNGE_DISTANCE_DEFAULT = 1.15
+local JUMP_ATTACK_RANGE_DEFAULT = 20
+local JUMP_ATTACK_MIN_RANGE_DEFAULT = 6
+local JUMP_ATTACK_COOLDOWN_DEFAULT = 5
+local JUMP_ATTACK_WINDUP_DEFAULT = 0
+local JUMP_ATTACK_DURATION_DEFAULT = 0.40
+local JUMP_ATTACK_HEIGHT_DEFAULT = 3
+local JUMP_ATTACK_MAX_DISTANCE_DEFAULT = 18
+local JUMP_ATTACK_FORWARD_BIAS_DEFAULT = 1.35
+local JUMP_ATTACK_IMPACT_RADIUS_DEFAULT = 4.5
+local JUMP_ATTACK_RECOVERY_DEFAULT = 0.35
 
 local function buildNavigationFilter(state, includeCharacters)
 	local excluded = { state.Model }
@@ -163,26 +177,82 @@ end
 local function claimServerNetworkOwnership(model)
 	-- Pecas desancoradas recebem ownership automatico do cliente mais proximo.
 	-- Como a animacao procedural escreve CFrame a partir de um Script do servidor,
-	-- o servidor precisa ser a autoridade de todas as assemblies do Mimico.
+	-- o servidor precisa ser a autoridade apenas das assemblies fisicas. Assemblies
+	-- ancoradas (ou soldadas a uma peca ancorada) nao possuem network owner.
 	local claimedAssemblies = {}
 	for _, descendant in ipairs(model:GetDescendants()) do
-		if descendant:IsA("BasePart") and not descendant.Anchored then
+		if descendant:IsA("BasePart") then
 			local assemblyRoot = descendant.AssemblyRootPart or descendant
 			if not claimedAssemblies[assemblyRoot] then
 				claimedAssemblies[assemblyRoot] = true
-				local canSet, reason = assemblyRoot:CanSetNetworkOwnership()
-				if canSet then
-					assemblyRoot:SetNetworkOwner(nil)
-				else
-					warn(
-						string.format(
-							"[MimicAI] Nao foi possivel atribuir ao servidor o ownership de %s: %s",
-							assemblyRoot:GetFullName(),
-							tostring(reason)
+
+				local anchoredAssembly = assemblyRoot.Anchored
+				if not anchoredAssembly then
+					for _, connectedPart in ipairs(assemblyRoot:GetConnectedParts(true)) do
+						if connectedPart.Anchored then
+							anchoredAssembly = true
+							break
+						end
+					end
+				end
+
+				if not anchoredAssembly then
+					local canSet, reason = assemblyRoot:CanSetNetworkOwnership()
+					if canSet then
+						local setOk, setReason = pcall(function()
+							assemblyRoot:SetNetworkOwner(nil)
+						end)
+						if not setOk then
+							warn(
+								string.format(
+									"[MimicAI] Falha inesperada ao atribuir ownership de %s: %s",
+									assemblyRoot:GetFullName(),
+									tostring(setReason)
+								)
+							)
+						end
+					else
+						warn(
+							string.format(
+								"[MimicAI] Nao foi possivel atribuir ao servidor o ownership de %s: %s",
+								assemblyRoot:GetFullName(),
+								tostring(reason)
+							)
 						)
-					)
+					end
 				end
 			end
+		end
+	end
+end
+
+local function zeroAssemblyVelocity(model)
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant:IsA("BasePart") then
+			descendant.AssemblyLinearVelocity = Vector3.zero
+			descendant.AssemblyAngularVelocity = Vector3.zero
+		end
+	end
+end
+
+local function stabilizeKinematicAssembly(state)
+	local root = state.Root
+	if not root or not root.Parent then
+		return
+	end
+
+	if not root.Anchored then
+		root.Anchored = true
+		zeroAssemblyVelocity(state.Model)
+	end
+
+	-- Se algum script antigo ou uma forca externa moveu a raiz, sincronize a
+	-- posicao logica antes do proximo passo. Durante o salto, a propria IA e a
+	-- unica autoridade e nao deve ter sua trajetoria sobrescrita.
+	if state.AttackPhase ~= "SpecialJump" then
+		local pivotPosition = state.Model:GetPivot().Position
+		if (pivotPosition - state.Position).Magnitude > ROOT_DESYNC_TOLERANCE then
+			state.Position = pivotPosition
 		end
 	end
 end
@@ -200,17 +270,29 @@ local function faceHorizontal(state, destination)
 	local pivot = state.Model:GetPivot()
 	local yawOffset = math.rad(tonumber(state.Model:GetAttribute("FacingYawOffset")) or 0)
 	state.Model:PivotTo(
-		CFrame.lookAt(pivot.Position, pivot.Position + direction.Unit, Vector3.yAxis)
-			* CFrame.Angles(0, yawOffset, 0)
+		CFrame.lookAt(pivot.Position, pivot.Position + direction.Unit, Vector3.yAxis) * CFrame.Angles(math.rad(90), yawOffset, 0)
 	)
 end
 
 local function belongsToOriginIsland(state, instance)
-	return instance ~= nil
-		and (not state.Island or not state.Island.Parent or instance:IsDescendantOf(state.Island))
+	return instance ~= nil and (not state.Island or not state.Island.Parent or instance:IsDescendantOf(state.Island))
 end
 
-local function hasSafeGround(state, position)
+local function belongsToAnotherCombatTarget(state, instance)
+	local current = instance
+	while current and current ~= workspace do
+		if current ~= state.Model and CollectionService:HasTag(current, "CombatTarget") then
+			return true
+		end
+		if current == state.Island then
+			break
+		end
+		current = current.Parent
+	end
+	return false
+end
+
+local function findSafeGround(state, position)
 	local probeHeight = state.GroundProbeHeight
 	local result = workspace:Raycast(
 		position + Vector3.new(0, probeHeight, 0),
@@ -218,11 +300,29 @@ local function hasSafeGround(state, position)
 		buildNavigationFilter(state, false)
 	)
 	if not result or not result.Instance:IsA("BasePart") then
-		return false
+		return nil
 	end
-	return result.Instance.Anchored
-		and result.Instance.CanCollide
-		and belongsToOriginIsland(state, result.Instance)
+	if
+		not result.Instance.Anchored
+		or not result.Instance.CanCollide
+		or not belongsToOriginIsland(state, result.Instance)
+		or belongsToAnotherCombatTarget(state, result.Instance)
+	then
+		return nil
+	end
+	return result
+end
+
+local function hasSafeGround(state, position)
+	return findSafeGround(state, position) ~= nil
+end
+
+local function getGroundedPosition(state, position)
+	local result = findSafeGround(state, position)
+	if not result then
+		return nil
+	end
+	return Vector3.new(position.X, result.Position.Y + state.GroundOffset, position.Z)
 end
 
 local function pathIsBlocked(state, destination, extraDistance)
@@ -255,11 +355,7 @@ local function targetHasLineOfSight(state, targetRoot)
 	local targetCharacter = targetRoot.Parent
 	local origin = state.Position + Vector3.new(0, math.max(1, state.Root.Size.Y * 0.45), 0)
 	local destination = targetRoot.Position
-	local result = workspace:Raycast(
-		origin,
-		destination - origin,
-		buildNavigationFilter(state, true)
-	)
+	local result = workspace:Raycast(origin, destination - origin, buildNavigationFilter(state, true))
 	return result == nil or result.Instance:IsDescendantOf(targetCharacter)
 end
 
@@ -290,8 +386,7 @@ local function moveModelTowards(state, destination, speed, dt, stopDistance)
 	local newPosition = pivot.Position + delta
 	local yawOffset = math.rad(tonumber(state.Model:GetAttribute("FacingYawOffset")) or 0)
 	state.Model:PivotTo(
-		CFrame.lookAt(newPosition, newPosition + offset.Unit, Vector3.yAxis)
-			* CFrame.Angles(0, yawOffset, 0)
+		CFrame.lookAt(newPosition, newPosition + offset.Unit, Vector3.yAxis) * CFrame.Angles(math.rad(90), yawOffset, 0)
 	)
 	state.Position += delta
 	return stepDistance, nil
@@ -306,10 +401,13 @@ local function updateKinematicKnockback(state, dt)
 	end
 
 	local timeRemaining = math.max(dt, state.KnockbackTimeRemaining)
-	local alpha = math.clamp(dt / timeRemaining, 0, 1)
+	-- Ease-out curto: o impacto comeca forte e termina sem um tranco seco.
+	local progress = math.clamp(dt / timeRemaining, 0, 1)
+	local alpha = 1 - (1 - progress) * (1 - progress)
 	local delta = remaining * alpha
 	local destination = state.Position + delta
-	if pathIsBlocked(state, destination, delta.Magnitude + state.ObstaclePadding)
+	if
+		pathIsBlocked(state, destination, delta.Magnitude + state.ObstaclePadding)
 		or not hasSafeGround(state, destination)
 	then
 		state.KnockbackRemaining = Vector3.zero
@@ -430,7 +528,10 @@ local function setMimicState(state, newState)
 	state.AttackPhase = nil
 	state.AttackTargetHumanoid = nil
 	state.AttackTargetRoot = nil
+	state.JumpStartPosition = nil
+	state.JumpLandingPosition = nil
 	state.Model:SetAttribute("MimicAttacking", false)
+	state.Model:SetAttribute("MimicSpecialAttacking", false)
 	state.Model:SetAttribute("MimicState", newState)
 	state.Model:SetAttribute("MimicAwake", newState ~= STATE_DORMANT)
 
@@ -505,11 +606,23 @@ local function setMimicState(state, newState)
 end
 
 local function cancelAttack(state)
+	if state.AttackPhase == "SpecialJump" and state.JumpStartPosition then
+		-- Interrupcoes nunca podem deixar o modelo cinemático suspenso no ar.
+		local landingPosition = getGroundedPosition(state, state.Position)
+			or getGroundedPosition(state, state.JumpStartPosition)
+			or state.JumpStartPosition
+		local pivot = state.Model:GetPivot()
+		state.Model:PivotTo(CFrame.new(landingPosition) * pivot.Rotation)
+		state.Position = landingPosition
+	end
 	state.AttackSerial += 1
 	state.AttackPhase = nil
 	state.AttackTargetHumanoid = nil
 	state.AttackTargetRoot = nil
+	state.JumpStartPosition = nil
+	state.JumpLandingPosition = nil
 	state.Model:SetAttribute("MimicAttacking", false)
+	state.Model:SetAttribute("MimicSpecialAttacking", false)
 end
 
 local function returnHomeSafely(state, dt)
@@ -596,10 +709,156 @@ local function beginAttack(state)
 	faceHorizontal(state, state.AttackTargetRoot.Position)
 end
 
+local function targetIsValidForSpecialJump(state)
+	local humanoid = state.AttackTargetHumanoid
+	local root = state.AttackTargetRoot
+	if
+		state.State ~= STATE_AWAKE
+		or state.Model:GetAttribute("CombatStunned") == true
+		or not humanoid
+		or humanoid.Health <= 0
+		or not humanoid.Parent
+		or not root
+		or not root.Parent
+	then
+		return false
+	end
+
+	local player = Players:GetPlayerFromCharacter(humanoid.Parent)
+	if not player or not playerIsOnOriginIsland(player, state) then
+		return false
+	end
+
+	local referencePosition = state.JumpStartPosition or state.Position
+	local horizontalDistance = horizontalOffset(referencePosition, root.Position).Magnitude
+	local verticalDistance = math.abs(root.Position.Y - referencePosition.Y)
+	return horizontalDistance <= state.JumpAttackRange + state.JumpAttackImpactRadius
+		and verticalDistance <= state.JumpAttackVerticalTolerance
+end
+
+local function prepareSpecialJumpDestination(state, targetPosition)
+	local direction = horizontalOffset(state.Position, targetPosition)
+	if direction.Magnitude <= 0.001 then
+		return nil
+	end
+
+	local travelDistance =
+		math.min(state.JumpAttackMaxDistance, math.max(0, direction.Magnitude - state.JumpAttackLandingOffset))
+	if travelDistance <= 0.05 then
+		return nil
+	end
+
+	local destination = state.Position + direction.Unit * travelDistance
+	if pathIsBlocked(state, destination, travelDistance + state.ObstaclePadding) then
+		return nil
+	end
+	local groundedDestination = getGroundedPosition(state, destination)
+	if
+		not groundedDestination
+		or math.abs(groundedDestination.Y - state.Position.Y) > state.JumpAttackLandingVerticalTolerance
+	then
+		return nil
+	end
+	return groundedDestination
+end
+
+local function beginSpecialJump(state)
+	local now = os.clock()
+	if
+		state.Model:GetAttribute("CombatStunned") == true
+		or now < state.NextSpecialJumpAt
+		or state.AttackPhase ~= nil
+		or not state.TargetHumanoid
+		or state.TargetHumanoid.Health <= 0
+		or not state.TargetRoot
+		or not state.TargetRoot.Parent
+	then
+		return false
+	end
+
+	local horizontalDistance = horizontalOffset(state.Position, state.TargetRoot.Position).Magnitude
+	local verticalDistance = math.abs(state.TargetRoot.Position.Y - state.Position.Y)
+	local destination = prepareSpecialJumpDestination(state, state.TargetRoot.Position)
+	if
+		horizontalDistance < state.JumpAttackMinRange
+		or horizontalDistance > state.JumpAttackRange
+		or verticalDistance > state.JumpAttackVerticalTolerance
+		or not targetHasLineOfSight(state, state.TargetRoot)
+		or not destination
+	then
+		return false
+	end
+
+	state.AttackSerial += 1
+	-- O bote comeca no mesmo frame em que e escolhido. A pausa antiga dava
+	-- tempo demais para o jogador sair da trajetoria antes do Mimico avancar.
+	state.AttackPhase = "SpecialJump"
+	state.AttackPhaseStartedAt = now
+	state.AttackTargetHumanoid = state.TargetHumanoid
+	state.AttackTargetRoot = state.TargetRoot
+	state.JumpStartPosition = state.Position
+	state.JumpLandingPosition = destination
+	state.NextSpecialJumpAt = now + state.JumpAttackCooldown
+	state.NextAttackAt = math.max(state.NextAttackAt, now + state.JumpAttackDuration)
+	state.Model:SetAttribute("MimicAttacking", true)
+	state.Model:SetAttribute("MimicSpecialAttacking", true)
+	faceHorizontal(state, state.AttackTargetRoot.Position)
+	return true
+end
+
 local function updateAttack(state, now, dt)
 	if not state.AttackPhase then
 		return false
 	end
+
+	if state.AttackPhase == "SpecialJump" then
+		local alpha = math.clamp((now - state.AttackPhaseStartedAt) / math.max(0.01, state.JumpAttackDuration), 0, 1)
+		-- O salto do Mimico e um bote, nao um pulo vertical. O avanco usa
+		-- ease-out para ganhar distancia logo no inicio, enquanto o arco baixo
+		-- preserva a leitura visual do ataque sem deixa-lo suspenso no ar.
+		local horizontalAlpha = 1 - math.pow(1 - alpha, state.JumpAttackForwardBias)
+		local horizontalPosition = state.JumpStartPosition:Lerp(state.JumpLandingPosition, horizontalAlpha)
+		local jumpHeight = math.sin(math.pi * alpha) * state.JumpAttackHeight
+		local newPosition = horizontalPosition + Vector3.new(0, jumpHeight, 0)
+		local direction = horizontalOffset(state.JumpStartPosition, state.JumpLandingPosition)
+		local yawOffset = math.rad(tonumber(state.Model:GetAttribute("FacingYawOffset")) or 0)
+		state.Model:PivotTo(
+			CFrame.lookAt(newPosition, newPosition + direction.Unit, Vector3.yAxis) * CFrame.Angles(math.rad(90), yawOffset, 0)
+		)
+		state.Position = newPosition
+
+		if alpha >= 1 then
+			state.Position = state.JumpLandingPosition
+			if
+				targetIsValidForSpecialJump(state)
+				and (state.AttackTargetRoot.Position - state.Position).Magnitude <= state.JumpAttackImpactRadius
+				and targetHasLineOfSight(state, state.AttackTargetRoot)
+			then
+				PlayerDamageService.ApplyToHumanoid(
+					state.AttackTargetHumanoid,
+					state.JumpAttackDamage,
+					"MimicChestSpecialJump"
+				)
+				state.Model:SetAttribute(
+					"MimicSpecialImpactSerial",
+					(state.Model:GetAttribute("MimicSpecialImpactSerial") or 0) + 1
+				)
+			end
+			state.AttackPhase = "SpecialRecovery"
+			state.AttackPhaseStartedAt = now
+			state.JumpStartPosition = nil
+			state.JumpLandingPosition = nil
+		end
+		return true
+	end
+
+	if state.AttackPhase == "SpecialRecovery" then
+		if now - state.AttackPhaseStartedAt >= state.JumpAttackRecovery then
+			cancelAttack(state)
+		end
+		return true
+	end
+
 	if not targetIsValidForAttack(state, state.AttackHitExtraRange) then
 		cancelAttack(state)
 		return false
@@ -632,7 +891,7 @@ local function updateAttack(state, now, dt)
 		end
 		if now - state.AttackPhaseStartedAt >= state.AttackLungeDuration then
 			if targetIsValidForAttack(state, state.AttackHitExtraRange) then
-				state.AttackTargetHumanoid:TakeDamage(state.AttackDamage)
+				PlayerDamageService.ApplyToHumanoid(state.AttackTargetHumanoid, state.AttackDamage, "MimicChest")
 			end
 			state.AttackPhase = "Recovery"
 			state.AttackPhaseStartedAt = now
@@ -659,6 +918,7 @@ local function connectHeartbeat()
 				states[model] = nil
 				continue
 			end
+			stabilizeKinematicAssembly(state)
 			refreshHomeFromIsland(state)
 			if model:GetAttribute("SimulationActive") == false then
 				-- Once the origin island sleeps there cannot be an active player on it.
@@ -684,8 +944,7 @@ local function connectHeartbeat()
 				continue
 			end
 			local aggroRange = MobEventModifiers.GetAggroRange(model, state.AggroRange)
-			local targetHumanoid, targetRoot, _, originIslandOccupied =
-				nearestPlayer(state.Position, aggroRange, state)
+			local targetHumanoid, targetRoot, _, originIslandOccupied = nearestPlayer(state.Position, aggroRange, state)
 
 			if not originIslandOccupied and state.State == STATE_AWAKE then
 				state.ForceDormantOnReturn = false
@@ -719,11 +978,7 @@ local function connectHeartbeat()
 				local verticalDistance = math.abs(targetRoot.Position.Y - state.Position.Y)
 				local targetReachable = verticalDistance <= state.MaxChaseVerticalDifference
 					and targetHasLineOfSight(state, targetRoot)
-					and not pathIsBlocked(
-						state,
-						destination,
-						math.min(horizontalDistance, state.ObstacleLookAhead)
-					)
+					and not pathIsBlocked(state, destination, math.min(horizontalDistance, state.ObstacleLookAhead))
 
 				if not targetReachable then
 					cancelAttack(state)
@@ -744,17 +999,20 @@ local function connectHeartbeat()
 					state.UnreachableSince = nil
 				end
 
-				if targetReachable and horizontalDistance <= state.AttackRange then
+				if
+					targetReachable
+					and horizontalDistance >= state.JumpAttackMinRange
+					and horizontalDistance <= state.JumpAttackRange
+					and now >= state.NextSpecialJumpAt
+					and beginSpecialJump(state)
+				then
+					-- O ataque especial assume o controle do movimento ate a aterrissagem.
+				elseif targetReachable and horizontalDistance <= state.AttackRange then
 					faceHorizontal(state, destination)
 					beginAttack(state)
 				elseif targetReachable then
-					local moved, blockedReason = moveModelTowards(
-						state,
-						destination,
-						state.OriginalWalkSpeed,
-						step,
-						state.AttackRange * 0.82
-					)
+					local moved, blockedReason =
+						moveModelTowards(state, destination, state.OriginalWalkSpeed, step, state.AttackRange * 0.82)
 					if moved <= 0 and blockedReason then
 						cancelAttack(state)
 						state.TargetHumanoid = nil
@@ -771,6 +1029,9 @@ end
 
 function MimicAI.Activate(model, options)
 	options = options or {}
+	if states[model] then
+		return true
+	end
 	local humanoid = model:FindFirstChildWhichIsA("Humanoid", true)
 	local root = getRoot(model)
 	if not humanoid or not root or not root:IsA("BasePart") then
@@ -781,12 +1042,12 @@ function MimicAI.Activate(model, options)
 		return false, animationReason
 	end
 	removeLegacyMovementRoot(model)
-	claimServerNetworkOwnership(model)
 	-- A IA usa PivotTo e, portanto, e cinemática. Manter o unico MeshPart
 	-- ancorado evita que colisoes acumulem impulso e lancem o Mimico da ilha.
 	root.Anchored = true
 	root.AssemblyLinearVelocity = Vector3.zero
 	root.AssemblyAngularVelocity = Vector3.zero
+	claimServerNetworkOwnership(model)
 	model.PrimaryPart = root
 	model:SetAttribute("RuntimeMonster", true)
 	model:SetAttribute("MonsterId", "MimicChest")
@@ -825,6 +1086,8 @@ function MimicAI.Activate(model, options)
 		end
 	end
 	local homePivot = model:GetPivot()
+	local boundingBox, boundingSize = model:GetBoundingBox()
+	local groundOffset = math.max(0, homePivot.Position.Y - (boundingBox.Position.Y - boundingSize.Y * 0.5))
 	local homeRelativeToIsland = island and island:GetPivot():ToObjectSpace(homePivot) or nil
 	local normalChestPivot = typeof(options.NormalChestPivot) == "CFrame" and options.NormalChestPivot or homePivot
 	local normalChestRelativeToIsland = island and island:GetPivot():ToObjectSpace(normalChestPivot) or nil
@@ -856,10 +1119,11 @@ function MimicAI.Activate(model, options)
 	end
 
 	local configuredWalkSpeed = tonumber(model:GetAttribute("WalkSpeed"))
-	local originalWalkSpeed = configuredWalkSpeed or humanoid.WalkSpeed
-	if originalWalkSpeed <= 0 then
-		originalWalkSpeed = 9
+	local baseWalkSpeed = configuredWalkSpeed or humanoid.WalkSpeed
+	if baseWalkSpeed <= 0 then
+		baseWalkSpeed = 9
 	end
+	local originalWalkSpeed = baseWalkSpeed * MOVEMENT_SPEED_MULTIPLIER
 	local state = {
 		Model = model,
 		Humanoid = humanoid,
@@ -867,6 +1131,7 @@ function MimicAI.Activate(model, options)
 		Position = root.Position,
 		Home = root.Position,
 		HomePivot = homePivot,
+		GroundOffset = groundOffset,
 		HomeRelativeToIsland = homeRelativeToIsland,
 		NormalChestPivot = normalChestPivot,
 		NormalChestRelativeToIsland = normalChestRelativeToIsland,
@@ -891,13 +1156,33 @@ function MimicAI.Activate(model, options)
 		AttackLungeDistance = tonumber(model:GetAttribute("AttackLungeDistance")) or ATTACK_LUNGE_DISTANCE_DEFAULT,
 		AttackHitExtraRange = tonumber(model:GetAttribute("AttackHitExtraRange")) or 0.75,
 		AttackVerticalTolerance = tonumber(model:GetAttribute("AttackVerticalTolerance")) or 4,
+		JumpAttackRange = tonumber(model:GetAttribute("JumpAttackRange")) or JUMP_ATTACK_RANGE_DEFAULT,
+		JumpAttackMinRange = tonumber(model:GetAttribute("JumpAttackMinRange")) or JUMP_ATTACK_MIN_RANGE_DEFAULT,
+		JumpAttackCooldown = tonumber(model:GetAttribute("JumpAttackCooldown")) or JUMP_ATTACK_COOLDOWN_DEFAULT,
+		JumpAttackWindup = tonumber(model:GetAttribute("JumpAttackWindup")) or JUMP_ATTACK_WINDUP_DEFAULT,
+		JumpAttackDuration = tonumber(model:GetAttribute("JumpAttackDuration")) or JUMP_ATTACK_DURATION_DEFAULT,
+		JumpAttackHeight = tonumber(model:GetAttribute("JumpAttackHeight")) or JUMP_ATTACK_HEIGHT_DEFAULT,
+		JumpAttackMaxDistance = tonumber(model:GetAttribute("JumpAttackMaxDistance"))
+			or JUMP_ATTACK_MAX_DISTANCE_DEFAULT,
+		JumpAttackForwardBias = math.max(
+			1,
+			tonumber(model:GetAttribute("JumpAttackForwardBias")) or JUMP_ATTACK_FORWARD_BIAS_DEFAULT
+		),
+		JumpAttackImpactRadius = tonumber(model:GetAttribute("JumpAttackImpactRadius"))
+			or JUMP_ATTACK_IMPACT_RADIUS_DEFAULT,
+		JumpAttackRecovery = tonumber(model:GetAttribute("JumpAttackRecovery")) or JUMP_ATTACK_RECOVERY_DEFAULT,
+		JumpAttackLandingOffset = tonumber(model:GetAttribute("JumpAttackLandingOffset")) or 1.75,
+		JumpAttackVerticalTolerance = tonumber(model:GetAttribute("JumpAttackVerticalTolerance")) or 4,
+		JumpAttackLandingVerticalTolerance = tonumber(model:GetAttribute("JumpAttackLandingVerticalTolerance")) or 2.5,
+		JumpAttackDamage = math.floor(
+			(tonumber(model:GetAttribute("JumpAttackDamage")) or 18) * (1 + (tier - 1) * 0.12)
+		),
 		MaxChaseVerticalDifference = tonumber(model:GetAttribute("MaxChaseVerticalDifference")) or 3.5,
 		UnreachableReturnDelay = tonumber(model:GetAttribute("UnreachableReturnDelay"))
 			or UNREACHABLE_RETURN_DELAY_DEFAULT,
 		ObstacleLookAhead = tonumber(model:GetAttribute("ObstacleLookAhead")) or 4,
 		ObstaclePadding = tonumber(model:GetAttribute("ObstaclePadding")) or 0.75,
-		GroundProbeHeight = tonumber(model:GetAttribute("GroundProbeHeight"))
-			or math.max(4, root.Size.Y + 1),
+		GroundProbeHeight = tonumber(model:GetAttribute("GroundProbeHeight")) or math.max(4, root.Size.Y + 1),
 		GroundProbeDepth = tonumber(model:GetAttribute("GroundProbeDepth")) or 10,
 		BlockedRecoveryDelay = tonumber(model:GetAttribute("BlockedRecoveryDelay")) or 0.75,
 		NavigationBlockedSince = nil,
@@ -906,10 +1191,13 @@ function MimicAI.Activate(model, options)
 		KnockbackRemaining = Vector3.zero,
 		KnockbackTimeRemaining = 0,
 		KinematicKnockbackDuration = tonumber(model:GetAttribute("KinematicKnockbackDuration"))
+				and math.clamp(tonumber(model:GetAttribute("KinematicKnockbackDuration")), 0.08, 0.4)
 			or KINEMATIC_KNOCKBACK_DURATION_DEFAULT,
 		KinematicKnockbackMaxDistance = tonumber(model:GetAttribute("KinematicKnockbackMaxDistance"))
+				and math.clamp(tonumber(model:GetAttribute("KinematicKnockbackMaxDistance")), 0.5, 5)
 			or KINEMATIC_KNOCKBACK_MAX_DISTANCE_DEFAULT,
 		NextAttackAt = os.clock() + 0.75,
+		NextSpecialJumpAt = os.clock() + 2,
 		AttackSerial = 0,
 		AttackPhase = nil,
 		OnDormant = type(options.OnDormant) == "function" and options.OnDormant or nil,
@@ -923,6 +1211,8 @@ function MimicAI.Activate(model, options)
 	model:SetAttribute("MimicState", STATE_AWAKE)
 	model:SetAttribute("MimicAwake", true)
 	model:SetAttribute("MimicAttacking", false)
+	model:SetAttribute("MimicSpecialAttacking", false)
+	model:SetAttribute("EffectiveWalkSpeed", originalWalkSpeed)
 	model:SetAttribute("Enabled", true)
 	model:SetAttribute("OriginIslandKey", state.IslandKey)
 
@@ -969,28 +1259,34 @@ function MimicAI.Activate(model, options)
 		cancelAttack(state)
 	end)
 	model:GetAttributeChangedSignal("CombatStunned"):Connect(function()
-		if not states[model] then return end
+		if not states[model] then
+			return
+		end
 		if model:GetAttribute("CombatStunned") == true then
 			cancelAttack(state)
-		else
-			-- Protecao para forcas externas ou templates antigos. O knockback normal
-			-- do Mimico agora e cinemático e nao desancora Cube.002.
-			if state.Root and state.Root.Parent then
-				for _, descendant in ipairs(state.Model:GetDescendants()) do
-					if descendant:IsA("BasePart") then
-						descendant.AssemblyLinearVelocity = Vector3.zero
-						descendant.AssemblyAngularVelocity = Vector3.zero
-					end
+		end
+		-- Protecao para forcas externas e CombatDamageService antigos.
+		stabilizeKinematicAssembly(state)
+		zeroAssemblyVelocity(state.Model)
+	end)
+	root:GetPropertyChangedSignal("Anchored"):Connect(function()
+		if states[model] and not root.Anchored then
+			task.defer(function()
+				if states[model] then
+					stabilizeKinematicAssembly(state)
 				end
-				state.Root.Anchored = true
-				state.Position = state.Root.Position
-			end
+			end)
 		end
 	end)
 	synchronizeAnimation(state)
 	connectHeartbeat()
 
-	humanoid.Died:Connect(function()
+	local deathHandled = false
+	local function finalizeDeath()
+		if deathHandled then
+			return
+		end
+		deathHandled = true
 		cancelAttack(state)
 		if animationTrack.IsPlaying then
 			animationTrack:Stop(0.08)
@@ -1010,22 +1306,49 @@ function MimicAI.Activate(model, options)
 				descendant.AssemblyAngularVelocity = Vector3.zero
 			end
 		end
+
+		-- A remocao precisa ser garantida antes de chamar servicos externos.
+		-- Se recompensa, inventario ou efeitos falharem, o Mimico ainda deve
+		-- desaparecer. O Destroy atrasado tambem serve como fallback do Debris.
+		Debris:AddItem(model, 0.8)
+		task.delay(1, function()
+			if model.Parent then
+				model:Destroy()
+			end
+		end)
+
 		local damager = getDamager(model, humanoid)
 		if damager then
 			local deathPosition = model:GetPivot().Position
-			ScoreService.AwardRewards(
+			local rewarded, rewardReason = pcall(
+				ScoreService.AwardRewards,
 				damager,
 				math.max(8, tonumber(options.ScoreReward) or 15),
 				math.max(1, tonumber(options.CoinReward) or 50),
 				"MimicChest",
 				deathPosition
 			)
+			if not rewarded then
+				warn("[MimicAI] Falha ao entregar recompensa: " .. tostring(rewardReason))
+			end
 			if math.random() <= 0.15 then
-				InventoryService.GrantItem(damager, "GreaterHealthPotion", 1)
+				local granted, grantReason = pcall(InventoryService.GrantItem, damager, "GreaterHealthPotion", 1)
+				if not granted then
+					warn("[MimicAI] Falha ao entregar item: " .. tostring(grantReason))
+				end
 			end
 		end
-		Debris:AddItem(model, 0.8)
+	end
+
+	-- Alguns rigs esqueleticos/customizados podem chegar a zero sem transicionar
+	-- corretamente para o estado Dead. O fallback preserva o mesmo fluxo sem
+	-- duplicar recompensas, pois finalizeDeath e idempotente.
+	humanoid.HealthChanged:Connect(function(health)
+		if health <= 0 then
+			task.defer(finalizeDeath)
+		end
 	end)
+	humanoid.Died:Connect(finalizeDeath)
 	return true
 end
 
@@ -1043,6 +1366,7 @@ function MimicAI.Wake(model)
 	state.Position = state.Home
 	setMimicState(state, STATE_AWAKE)
 	state.NextAttackAt = os.clock() + 0.75
+	state.NextSpecialJumpAt = os.clock() + 1.5
 	return true
 end
 

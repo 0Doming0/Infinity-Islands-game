@@ -9,8 +9,10 @@ local RunService = game:GetService("RunService")
 local blockParkour = script.Parent:WaitForChild("BlockParkour")
 local mvpSystems = script.Parent:WaitForChild("MVPSystems")
 local PlayerDataService = require(blockParkour:WaitForChild("PlayerDataService_SkyDungeon_V10"))
+local ScoreService = require(blockParkour:WaitForChild("ScoreService_SkyDungeon_V10"))
 local CollectibleService = require(mvpSystems:WaitForChild("CollectibleService"))
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
+ScoreService.Start()
 
 local tutorialEvent = ReplicatedStorage:FindFirstChild("TutorialEvent")
 if tutorialEvent and not tutorialEvent:IsA("RemoteEvent") then
@@ -35,27 +37,27 @@ local STAGES = {
 	[1] = {
 		Id = "Movement",
 		Title = "MOVIMENTO",
-		Instruction = "Vá até o ponto iluminado.",
+		Instruction = "Vá até a luz.",
 	},
 	[2] = {
 		Id = "Jump",
 		Title = "PULO",
-		Instruction = "Pule para alcançar o próximo bloco.",
+		Instruction = "Pule para o bloco.",
 	},
 	[3] = {
 		Id = "Collectible",
 		Title = "COLETÁVEL",
-		Instruction = "Pegue o fragmento brilhante.",
+		Instruction = "Pegue o fragmento.",
 	},
 	[4] = {
 		Id = "Combat",
 		Title = "COMBATE",
-		Instruction = "Equipe sua espada e derrote o alvo de treino.",
+		Instruction = "Derrote o alvo.",
 	},
 	[5] = {
 		Id = "Water",
 		Title = "ÁGUA",
-		Instruction = "Continue subindo para escapar da água.",
+		Instruction = "Suba da água.",
 	},
 }
 
@@ -64,7 +66,7 @@ local setupStarted = {}
 
 local function forceTutorialForTesting()
 	local config = MVPConfig.Tutorial or {}
-	if config.ForceForAllPlayers ~= true then
+	if config.ForceForAllPlayers ~= true and config.Audience ~= "AllPlayers" then
 		return false
 	end
 	return config.ForceForAllPlayersOnlyInStudio ~= true or RunService:IsStudio()
@@ -267,6 +269,7 @@ local function createTrainingTarget(player, surfacePosition, token, onDefeated)
 	humanoid.Died:Connect(function()
 		local creator = humanoid:FindFirstChild("creator")
 		if creator and creator:IsA("ObjectValue") and creator.Value == player then
+			ScoreService.AwardRewards(player, 5, 5, "TutorialTarget", root.Position)
 			onDefeated(token)
 		end
 		task.delay(0.6, function()
@@ -304,6 +307,7 @@ local function sendStage(player, state)
 		WaitingForContext = state.WaitingForContext == true,
 		Progress = 0,
 		Goal = 1,
+		ShowHintAfterSeconds = (MVPConfig.Tutorial or {}).HelpDelaySeconds or 6,
 	})
 end
 

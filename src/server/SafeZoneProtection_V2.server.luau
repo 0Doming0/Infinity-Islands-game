@@ -1,5 +1,5 @@
--- SafeZoneProtection V2 - correcao de nascimento em vilas e santuarios.
--- Script de servidor independente: nao exige GetSafeZoneContext do ChunkManager.
+-- SafeZoneProtection V24 - contagem antes da inundacao do santuario.
+-- Servico independente: nao exige GetSafeZoneContext do ChunkManager.
 
 local Players = game:GetService("Players")
 local CollectionService = game:GetService("CollectionService")
@@ -8,8 +8,10 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 local CONFIG = MVPConfig.SafeZones or {}
 
-local VERSION = "V2_SPAWN_SANCTUARY_FIX"
+local VERSION = "V24_SANCTUARY_FLOOD_COUNTDOWN"
 local FORCE_FIELD_NAME = "SafeZoneProtection"
+local FLOOD_COUNTDOWN_ATTRIBUTE = "SanctuaryFloodCountdownEnd"
+local FLOODED_ISLAND_ATTRIBUTE = "FloodedSafeZoneIslandKey"
 local CHECK_INTERVAL = math.max(0.05, tonumber(CONFIG.CheckIntervalSeconds) or 0.10)
 local HORIZONTAL_PADDING = math.max(0, tonumber(CONFIG.HorizontalPaddingStuds) or 0.75)
 local VERTICAL_PADDING = math.max(4, tonumber(CONFIG.VerticalPaddingStuds) or 12)
@@ -245,20 +247,35 @@ local function updatePlayer(player)
 		return
 	end
 
-	if player:GetAttribute("WaterContacting") == true then
-		removeProtection(player, character)
-		return
-	end
-
 	local water = workspace:FindFirstChild("Water")
 	local waterSurfaceY = water and tonumber(water:GetAttribute("SurfaceY"))
 	local feetY = root.Position.Y - humanoid.HipHeight - root.Size.Y / 2 + WATER_CONTACT_FOOT_OFFSET
-	if waterSurfaceY and feetY <= waterSurfaceY then
-		removeProtection(player, character)
+	local countdownEnd = tonumber(player:GetAttribute(FLOOD_COUNTDOWN_ATTRIBUTE))
+	local countdownActive = countdownEnd ~= nil and workspace:GetServerTimeNow() < countdownEnd
+	if countdownActive then
+		-- O WaterRiseSystem iniciou a tolerancia. O ForceField deve continuar
+		-- existindo ate o servidor concluir oficialmente a contagem.
 		return
 	end
 
 	local context = getSafeZoneContext(player, character, root)
+	local floodedIslandKey = player:GetAttribute(FLOODED_ISLAND_ATTRIBUTE)
+	if context
+		and context.ZoneType == "Sanctuary"
+		and floodedIslandKey ~= nil
+		and floodedIslandKey == context.IslandKey
+	then
+		removeProtection(player, character)
+		return
+	end
+
+	if player:GetAttribute("WaterContacting") == true
+		or (waterSurfaceY and feetY <= waterSurfaceY)
+	then
+		removeProtection(player, character)
+		return
+	end
+
 	if context then
 		applyProtection(player, character, context)
 	else
@@ -291,6 +308,8 @@ end
 local function bindPlayer(player)
 	player:SetAttribute("InSafeZone", false)
 	player.CharacterAdded:Connect(function(character)
+		player:SetAttribute(FLOOD_COUNTDOWN_ATTRIBUTE, nil)
+		player:SetAttribute(FLOODED_ISLAND_ATTRIBUTE, nil)
 		bindCharacter(player, character)
 	end)
 	player.CharacterRemoving:Connect(function(character)
@@ -298,6 +317,8 @@ local function bindPlayer(player)
 	end)
 
 	if player.Character then
+		player:SetAttribute(FLOOD_COUNTDOWN_ATTRIBUTE, nil)
+		player:SetAttribute(FLOODED_ISLAND_ATTRIBUTE, nil)
 		bindCharacter(player, player.Character)
 	end
 end

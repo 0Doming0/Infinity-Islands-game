@@ -3,7 +3,10 @@
 local Players = game:GetService("Players")
 
 local ScoreService = require(script.Parent.BlockParkour:WaitForChild("ScoreService_SkyDungeon_V10"))
+local RunLevelService = require(script.Parent.BlockParkour:WaitForChild("RunLevelService"))
+local DeathReviveService = require(script.Parent.MVPSystems:WaitForChild("DeathReviveService"))
 ScoreService.Start()
+DeathReviveService.Start()
 
 local function removeHealthRegeneration(instance)
 	if instance.Name == "Health" and instance:IsA("BaseScript") then
@@ -29,6 +32,7 @@ local function bindCharacter(player, character)
 	character.ChildAdded:Connect(removeHealthRegeneration)
 	character:SetAttribute("PassiveHealingDisabled", true)
 	ScoreService.ResetRun(player)
+	RunLevelService.Reset(player, character)
 
 	local humanoid = character:WaitForChild("Humanoid", 10)
 	if not humanoid then
@@ -40,7 +44,10 @@ local function bindCharacter(player, character)
 			return
 		end
 		processed = true
-		ScoreService.HandleDeath(player, detectDeathCause(character))
+		local cause = detectDeathCause(character)
+		local runScore, lostCoins = ScoreService.HandleDeath(player, cause)
+		DeathReviveService.RecordDeath(player, runScore, lostCoins, cause)
+		RunLevelService.Reset(player, nil)
 	end)
 end
 
@@ -57,3 +64,5 @@ Players.PlayerAdded:Connect(bindPlayer)
 for _, player in ipairs(Players:GetPlayers()) do
 	bindPlayer(player)
 end
+
+Players.PlayerRemoving:Connect(RunLevelService.Remove)

@@ -81,6 +81,8 @@ Config.DefaultWeapon = {
 	BaseDamage = 20,
 	AttackSpeed = 1.0,
 	KnockbackMultiplier = 1.0,
+	RangeMultiplier = 1.0,
+	CriticalChance = 0.03,
 	ScoreMultiplier = 1.0,
 }
 

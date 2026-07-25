@@ -1,14 +1,26 @@
 -- Configuracao compartilhada de corrida e agachamento seguro.
 
-return {
-	Version = "V7_CLIENT_EDGE_BARRIER",
+local SprintConfig = {
+	Version = "V26_SLOW_SPRINT_CAPACITY_PROGRESSION",
 	DoubleTapWindow = 0.30,
 	SpeedMultiplier = 1.25,
 	MaximumSprintSpeed = 34,
 	SprintDuration = 5.0,
+	StaminaPerDurationUpgrade = 80,
+	SprintDurationPerUpgrade = 0.5,
+	MaximumSprintDuration = 15.0,
 	StaminaRegenDelay = 1.0,
 	StaminaRegenDuration = 3.5,
 	StaminaPublishInterval = 0.05,
+	MovementStamina = {
+		DistancePerReward = 20,
+		WalkReward = 0.5,
+		SprintReward = 1,
+		MaximumCountedSpeed = 45,
+		SpeedToleranceMultiplier = 1.35,
+		PositionTolerance = 0.75,
+		MaximumSampleTime = 0.5,
+	},
 	SneakSpeedMultiplier = 0.50,
 	RequestRetryInterval = 0.40,
 	IdleStopDelay = 0.85,
@@ -36,3 +48,12 @@ return {
 	StaminaBarSize = UDim2.fromOffset(180, 7),
 	StaminaBarPosition = UDim2.new(1, -28, 1, -34),
 }
+
+function SprintConfig.GetMaximumSprintDuration(permanentStamina)
+	local cleanStamina = math.max(0, tonumber(permanentStamina) or 0)
+	local upgradeCount = math.floor(cleanStamina / SprintConfig.StaminaPerDurationUpgrade)
+	local duration = SprintConfig.SprintDuration + upgradeCount * SprintConfig.SprintDurationPerUpgrade
+	return math.min(SprintConfig.MaximumSprintDuration, duration)
+end
+
+return SprintConfig

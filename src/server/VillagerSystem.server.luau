@@ -14,8 +14,11 @@ local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 local VillageShopCatalog = require(ReplicatedStorage:WaitForChild("VillageShopCatalog"))
 local ItemCatalog = require(ReplicatedStorage:WaitForChild("ItemCatalog"))
 local SwordCatalog = require(ReplicatedStorage:WaitForChild("SwordCatalog"))
+local RelicCatalog = require(ReplicatedStorage:WaitForChild("RelicCatalog"))
 local SwordProgressionService = require(script.Parent.MVPSystems:WaitForChild("SwordProgressionService"))
 local InventoryService = require(script.Parent.MVPSystems:WaitForChild("InventoryService"))
+local RelicService = require(script.Parent.MVPSystems:WaitForChild("RelicService"))
+local RewardService = require(script.Parent.MVPSystems:WaitForChild("RewardService"))
 local ScoreService = require(script.Parent.BlockParkour:WaitForChild("ScoreService_SkyDungeon_V10"))
 local CURRENCY_SYMBOL = MVPConfig.Currency.Symbol
 
@@ -33,6 +36,8 @@ end
 
 SwordProgressionService.Start()
 InventoryService.Start()
+RelicService.Start()
+RewardService.Start()
 
 local function getRoot(model)
 	local root = model.PrimaryPart
@@ -66,6 +71,9 @@ local function getOfferSelectionWeight(offer)
 	elseif offer.ItemType == "Item" then
 		local item = ItemCatalog.Get(offer.ItemId)
 		price = item and item.Price or price
+	elseif offer.ItemType == "Relic" then
+		local relic = RelicCatalog.Get(offer.ItemId)
+		price = relic and relic.Price or price
 	end
 	-- Preco funciona como aproximacao de poder: ofertas caras continuam
 	-- possiveis, mas aparecem com menos frequencia que as basicas.
@@ -89,6 +97,9 @@ local function takeWeightedOffer(pool, random)
 end
 
 local function createStockState(model, shop)
+	if shop.SpecialPanel == "Rewards" then
+		return { Stock = {}, SpecialPanel = "Rewards" }
+	end
 	local island = model:FindFirstAncestorWhichIsA("Model")
 	while island and island:GetAttribute("IsSkyIsland") ~= true do
 		island = island:FindFirstAncestorWhichIsA("Model")
@@ -129,6 +140,9 @@ end
 local function isOutOfStock(state)
 	if not state then
 		return true
+	end
+	if state.SpecialPanel then
+		return false
 	end
 	for _, entry in pairs(state.Stock) do
 		if entry.Stock > 0 then
@@ -186,7 +200,9 @@ local function updateAvailability(model, root, shop, state)
 	end
 	local prompt = root:FindFirstChild("VillageShopPrompt") or root:FindFirstChild("SwordShopPrompt")
 	if prompt and prompt:IsA("ProximityPrompt") then
-		prompt.ActionText = empty and "Conversar" or "Negociar"
+		prompt.ActionText = shop.SpecialPanel == "Rewards" and "Coletar"
+			or empty and "Conversar"
+			or "Negociar"
 		prompt.ObjectText = empty and (shop.DisplayName .. " — SEM ESTOQUE") or shop.DisplayName
 	end
 end
@@ -216,9 +232,45 @@ local function consumeStock(villager, itemType, itemId)
 end
 
 local function buildInventory(player, shop, state)
+	if shop.SpecialPanel == "Rewards" then
+		local snapshot = RewardService.GetSnapshot(player)
+		local rewards = {
+			{
+				ItemId = "DailyReward",
+				ItemType = "DailyReward",
+				DisplayName = string.format("Recompensa diária — dia %d", snapshot.Daily.Streak),
+				Description = "Entre em dias consecutivos para melhorar o prêmio.",
+				StatsText = string.format("+%d moedas  •  +%d pontos", snapshot.Daily.Coins, snapshot.Daily.Score),
+				Color = shop.Color,
+				Claimable = snapshot.Daily.Claimable,
+				Claimed = not snapshot.Daily.Claimable,
+			},
+		}
+		for _, reward in ipairs(snapshot.Playtime) do
+			table.insert(rewards, {
+				ItemId = "Playtime_" .. reward.Minutes,
+				ItemType = "TimeReward",
+				DisplayName = string.format("Tempo jogado — %d minutos", reward.Minutes),
+				Description = reward.Claimed and "Coletada nesta sessão."
+					or reward.Claimable and "Pronta para coletar."
+					or string.format("Faltam %d min.", math.ceil(reward.RemainingSeconds / 60)),
+				StatsText = string.format("+%d moedas  •  +%d pontos", reward.Coins, reward.Score),
+				Color = Color3.fromRGB(86, 205, 255),
+				Minutes = reward.Minutes,
+				Claimable = reward.Claimable,
+				Claimed = reward.Claimed,
+			})
+		end
+		return rewards
+	end
+
 	local swordsById = {}
 	for _, sword in ipairs(SwordProgressionService.GetShopInventory(player)) do
 		swordsById[sword.SwordId] = sword
+	end
+	local relicsById = {}
+	for _, relic in ipairs(RelicService.GetShopInventory(player)) do
+		relicsById[relic.RelicId] = relic
 	end
 
 	local inventory = {}
@@ -240,12 +292,25 @@ local function buildInventory(player, shop, state)
 					BaseDamage = sword.BaseDamage,
 					AttackSpeed = sword.AttackSpeed,
 					ScoreMultiplier = sword.ScoreMultiplier,
-					StatsText = string.format("Dano %d  -  Velocidade %.2fx", sword.BaseDamage, sword.AttackSpeed),
+					StatsText = string.format(
+						"Dano %d  •  Vel. %.2fx  •  Alcance %.2fx  •  Crítico %d%%  •  Moedas %.2fx",
+						sword.BaseDamage,
+						sword.AttackSpeed,
+						sword.RangeMultiplier,
+						math.floor(sword.CriticalChance * 100 + 0.5),
+						sword.CoinMultiplier
+					),
 					Color = sword.Color,
 					Owned = sword.Owned,
 					Equipped = sword.Equipped,
 					Stock = stockEntry.Stock,
 				})
+			end
+		elseif offer.ItemType == "Relic" then
+			local relic = relicsById[offer.ItemId]
+			if relic then
+				relic.Stock = stockEntry.Stock
+				table.insert(inventory, relic)
 			end
 		elseif offer.ItemType == "Item" then
 			local item = ItemCatalog.Get(offer.ItemId)
@@ -296,6 +361,7 @@ local function sendShop(player, message, success)
 		message = message or (emptyStock and "SEM ESTOQUE — explore outras ilhas para encontrar novas ofertas." or nil),
 		success = success,
 		emptyStock = emptyStock,
+		specialPanel = shop.SpecialPanel,
 	})
 end
 
@@ -507,6 +573,34 @@ villagerEvent.OnServerEvent:Connect(function(player, data)
 			return
 		end
 		local success, message = SwordProgressionService.Equip(player, itemId)
+		sendShop(player, message, success)
+	elseif data.action == "purchaseRelic" then
+		if not VillageShopCatalog.FindItem(shop.ShopId, itemId, "Relic") then
+			sendShop(player, "Este aldeão não vende essa relíquia.", false)
+			return
+		end
+		local stock, stockMessage = validateStock(playerSessions[player], "Relic", itemId)
+		if not stock then
+			sendShop(player, stockMessage, false)
+			return
+		end
+		local success, message = RelicService.Purchase(player, itemId)
+		if success then
+			consumeStock(playerSessions[player], "Relic", itemId)
+		end
+		sendShop(player, message, success)
+	elseif data.action == "equipRelic" then
+		if not VillageShopCatalog.FindItem(shop.ShopId, itemId, "Relic") then
+			sendShop(player, "Fale com o mercador de relíquias.", false)
+			return
+		end
+		local success, message = RelicService.Equip(player, itemId)
+		sendShop(player, message, success)
+	elseif data.action == "claimDailyReward" and shop.SpecialPanel == "Rewards" then
+		local success, message = RewardService.ClaimDaily(player)
+		sendShop(player, message, success)
+	elseif data.action == "claimTimeReward" and shop.SpecialPanel == "Rewards" then
+		local success, message = RewardService.ClaimPlaytime(player, data.minutes)
 		sendShop(player, message, success)
 	elseif data.action == "purchaseService" then
 		local stock, stockMessage = validateStock(playerSessions[player], "Service", itemId)

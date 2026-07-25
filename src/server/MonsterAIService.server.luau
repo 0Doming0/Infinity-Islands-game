@@ -6,6 +6,7 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 
 local MobEventModifiers = require(script.Parent.BlockParkour:WaitForChild("MobEventModifiers"))
+local PlayerDamageService = require(script.Parent.MVPSystems:WaitForChild("PlayerDamageService"))
 
 local CLOSE_THINK_INTERVAL = 0.20
 local MEDIUM_THINK_INTERVAL = 0.45
@@ -192,7 +193,11 @@ local function updateState(state, now)
 		local attackRange = tonumber(model:GetAttribute("AttackRange")) or DEFAULT_ATTACK_RANGE
 		if distance <= attackRange and now >= state.NextAttackAt then
 			state.NextAttackAt = now + (tonumber(model:GetAttribute("AttackCooldown")) or DEFAULT_ATTACK_COOLDOWN)
-			targetHumanoid:TakeDamage(math.max(1, tonumber(model:GetAttribute("AttackDamage")) or 8))
+			PlayerDamageService.ApplyToHumanoid(
+				targetHumanoid,
+				math.max(1, tonumber(model:GetAttribute("AttackDamage")) or 8),
+				"Monster"
+			)
 		end
 	else
 		humanoid:MoveTo(state.Home)

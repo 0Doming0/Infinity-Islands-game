@@ -14,7 +14,7 @@ local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 
 local DATASTORE_NAME = "SkyDungeonPlayerData_V10"
 local LEGACY_MVP_DATASTORE_NAME = "BlockParkour_PlayerData_v1"
-local SCHEMA_VERSION = 4
+local SCHEMA_VERSION = 6
 local SCORE_SCALE_VERSION = 3
 local STARTER_SWORD_ID = "ClassicSword"
 local LOAD_RETRIES = 4
@@ -37,15 +37,20 @@ local function defaultData()
 	return {
 		SchemaVersion = SCHEMA_VERSION,
 		Coins = 0,
+		Stamina = 0,
 		BestScore = 0,
 		OwnedSwords = {
 			[STARTER_SWORD_ID] = true,
 		},
 		EquippedSword = STARTER_SWORD_ID,
+		OwnedRelics = {},
+		EquippedRelic = nil,
 		Inventory = {},
 		LegacyMVPMigrated = false,
 		TutorialStage = 1,
 		TutorialCompleted = false,
+		DailyLastClaimDay = 0,
+		DailyStreak = 0,
 	}
 end
 
@@ -80,6 +85,21 @@ local function sanitizeInventory(raw)
 	return inventory
 end
 
+local function sanitizeOwnedRelics(raw)
+	local owned = {}
+	if type(raw) ~= "table" then
+		return owned
+	end
+	for key, value in pairs(raw) do
+		if type(key) == "string" and value == true then
+			owned[key] = true
+		elseif type(key) == "number" and type(value) == "string" and value ~= "" then
+			owned[value] = true
+		end
+	end
+	return owned
+end
+
 local function migrateBestScore(raw, sourceVersion)
 	local previous = math.max(0, math.floor(tonumber(raw.BestScore) or 0))
 	if sourceVersion >= SCORE_SCALE_VERSION then
@@ -101,8 +121,10 @@ local function sanitize(raw)
 
 	local sourceVersion = math.floor(tonumber(raw.SchemaVersion or raw.DataVersion) or 1)
 	data.Coins = math.max(0, math.floor(tonumber(raw.Coins) or 0))
+	data.Stamina = math.max(0, math.floor((tonumber(raw.Stamina) or 0) * 2 + 0.5) / 2)
 	data.BestScore = migrateBestScore(raw, sourceVersion)
 	data.OwnedSwords = sanitizeOwnedSwords(raw.OwnedSwords)
+	data.OwnedRelics = sanitizeOwnedRelics(raw.OwnedRelics)
 	data.Inventory = sanitizeInventory(raw.Inventory or raw.OwnedItems)
 	data.LegacyMVPMigrated = raw.LegacyMVPMigrated == true
 	-- Perfis anteriores ao tutorial que ja possuem progresso sao tratados como
@@ -119,6 +141,12 @@ local function sanitize(raw)
 	if data.OwnedSwords[equipped] then
 		data.EquippedSword = equipped
 	end
+	local equippedRelic = type(raw.EquippedRelic) == "string" and raw.EquippedRelic or nil
+	if equippedRelic and data.OwnedRelics[equippedRelic] then
+		data.EquippedRelic = equippedRelic
+	end
+	data.DailyLastClaimDay = math.max(0, math.floor(tonumber(raw.DailyLastClaimDay) or 0))
+	data.DailyStreak = math.clamp(math.floor(tonumber(raw.DailyStreak) or 0), 0, 7)
 	return data
 end
 
@@ -134,13 +162,18 @@ local function cloneData(data)
 	return {
 		SchemaVersion = SCHEMA_VERSION,
 		Coins = data.Coins,
+		Stamina = data.Stamina,
 		BestScore = data.BestScore,
 		OwnedSwords = cloneDictionary(data.OwnedSwords),
 		EquippedSword = data.EquippedSword,
+		OwnedRelics = cloneDictionary(data.OwnedRelics),
+		EquippedRelic = data.EquippedRelic,
 		Inventory = cloneDictionary(data.Inventory),
 		LegacyMVPMigrated = data.LegacyMVPMigrated == true,
 		TutorialStage = data.TutorialStage,
 		TutorialCompleted = data.TutorialCompleted == true,
+		DailyLastClaimDay = data.DailyLastClaimDay,
+		DailyStreak = data.DailyStreak,
 	}
 end
 
@@ -234,6 +267,22 @@ end
 function PlayerDataService.GetCoins(player)
 	local data = PlayerDataService.Get(player)
 	return data and data.Coins or 0
+end
+
+function PlayerDataService.GetStamina(player)
+	local data = PlayerDataService.Get(player)
+	return data and data.Stamina or 0
+end
+
+function PlayerDataService.AddStamina(player, amount)
+	local session = sessions[player]
+	local clean = math.max(0, math.floor((tonumber(amount) or 0) * 2 + 0.5) / 2)
+	if not session or clean <= 0 then
+		return false, session and session.Data.Stamina or 0
+	end
+	session.Data.Stamina += clean
+	markDirty(session)
+	return true, session.Data.Stamina
 end
 
 function PlayerDataService.GetTutorialProgress(player)
@@ -389,6 +438,55 @@ function PlayerDataService.SetEquippedSword(player, swordId)
 	return true
 end
 
+function PlayerDataService.HasRelic(player, relicId)
+	local data = PlayerDataService.Get(player)
+	return data ~= nil and data.OwnedRelics[relicId] == true
+end
+
+function PlayerDataService.GrantRelic(player, relicId)
+	local session = sessions[player]
+	if not session or type(relicId) ~= "string" or relicId == "" then
+		return false
+	end
+	if session.Data.OwnedRelics[relicId] then
+		return true
+	end
+	session.Data.OwnedRelics[relicId] = true
+	markDirty(session)
+	return true
+end
+
+function PlayerDataService.SetEquippedRelic(player, relicId)
+	local session = sessions[player]
+	if not session or session.Data.OwnedRelics[relicId] ~= true then
+		return false
+	end
+	session.Data.EquippedRelic = relicId
+	markDirty(session)
+	return true
+end
+
+function PlayerDataService.GetDailyRewardState(player)
+	local data = PlayerDataService.Get(player)
+	if not data then
+		return 0, 0
+	end
+	return data.DailyLastClaimDay, data.DailyStreak
+end
+
+function PlayerDataService.SetDailyRewardState(player, dayIndex, streak)
+	local session = sessions[player]
+	local cleanDay = math.max(0, math.floor(tonumber(dayIndex) or 0))
+	local cleanStreak = math.clamp(math.floor(tonumber(streak) or 0), 0, 7)
+	if not session or cleanDay < session.Data.DailyLastClaimDay then
+		return false
+	end
+	session.Data.DailyLastClaimDay = cleanDay
+	session.Data.DailyStreak = cleanStreak
+	markDirty(session)
+	return true
+end
+
 function PlayerDataService.Save(player, force)
 	local session = sessions[player]
 	if not session or not session.CanSave then
@@ -425,13 +523,28 @@ function PlayerDataService.Save(player, force)
 					snapshot.OwnedSwords[swordId] = true
 				end
 			end
+			for relicId, owned in pairs(previousData.OwnedRelics) do
+				if owned then
+					snapshot.OwnedRelics[relicId] = true
+				end
+			end
 			snapshot.BestScore = math.max(snapshot.BestScore, previousData.BestScore)
+			snapshot.Stamina = math.max(snapshot.Stamina, previousData.Stamina)
 			snapshot.TutorialCompleted = snapshot.TutorialCompleted or previousData.TutorialCompleted
 			snapshot.TutorialStage = snapshot.TutorialCompleted
 				and 5
 				or math.max(snapshot.TutorialStage, previousData.TutorialStage)
 			if not snapshot.OwnedSwords[snapshot.EquippedSword] then
 				snapshot.EquippedSword = STARTER_SWORD_ID
+			end
+			if snapshot.EquippedRelic and not snapshot.OwnedRelics[snapshot.EquippedRelic] then
+				snapshot.EquippedRelic = nil
+			end
+			if previousData.DailyLastClaimDay > snapshot.DailyLastClaimDay then
+				snapshot.DailyLastClaimDay = previousData.DailyLastClaimDay
+				snapshot.DailyStreak = previousData.DailyStreak
+			elseif previousData.DailyLastClaimDay == snapshot.DailyLastClaimDay then
+				snapshot.DailyStreak = math.max(snapshot.DailyStreak, previousData.DailyStreak)
 			end
 			return snapshot
 		end)
