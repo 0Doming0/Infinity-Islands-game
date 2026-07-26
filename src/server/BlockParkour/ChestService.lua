@@ -13,6 +13,7 @@ local MimicAI = require(script.Parent.MimicAI)
 local AnimeOutline = require(ServerScriptService.MVPSystems:WaitForChild("AnimeOutline"))
 
 local ChestService = {}
+local RewardWheelService = require(script.Parent.Parent.MVPSystems:WaitForChild("RewardWheelService"))
 local active = setmetatable({}, { __mode = "k" })
 
 local function ensureFolder(parent, name)
@@ -285,6 +286,12 @@ local function activateChest(chest, player)
 
 	if not state.IsMimic then
 		ScoreService.AwardCoins(player, state.CoinReward, "TreasureChest")
+		if state.IsRare then
+			RewardWheelService.Spin(player, "RareChest", {
+				Level = state.DifficultyTier,
+				WorldPosition = position,
+			})
+		end
 		revealParticles(position, Color3.fromRGB(255, 216, 72))
 		chest:SetAttribute("Opened", true)
 		for _, descendant in ipairs(chest:GetDescendants()) do
@@ -340,7 +347,19 @@ local function activateChest(chest, player)
 	end
 end
 
-local function spawnChest(parent, island, record, index, isMimic, coinReward, random, normalTemplate, mimicTemplate, tier)
+local function spawnChest(
+	parent,
+	island,
+	record,
+	index,
+	isMimic,
+	isRare,
+	coinReward,
+	random,
+	normalTemplate,
+	mimicTemplate,
+	tier
+)
 	local chest = normalTemplate:Clone()
 
 	local root = getRoot(chest, false)
@@ -352,15 +371,26 @@ local function spawnChest(parent, island, record, index, isMimic, coinReward, ra
 	prepare(chest, true, false)
 	chest.Name = string.format("Chest_%02d", index)
 	chest:SetAttribute("IsTreasureChest", true)
+	chest:SetAttribute("IsRareChest", isRare)
 	chest:SetAttribute("Opened", false)
 	chest.Parent = parent
 	AnimeOutline.Apply(chest)
+	if isRare then
+		local rareGlow = Instance.new("Highlight")
+		rareGlow.Name = "RareChestGlow"
+		rareGlow.FillColor = Color3.fromRGB(255, 204, 67)
+		rareGlow.FillTransparency = 0.72
+		rareGlow.OutlineColor = Color3.fromRGB(255, 239, 153)
+		rareGlow.OutlineTransparency = 0.08
+		rareGlow.DepthMode = Enum.HighlightDepthMode.Occluded
+		rareGlow.Parent = chest
+	end
 	local yaw = random:NextNumber(0, math.pi * 2)
 	alignBottom(chest, record.SurfacePosition, yaw)
 	local prompt = Instance.new("ProximityPrompt")
 	prompt.Name = "OpenChestPrompt"
 	prompt.ActionText = "Abrir"
-	prompt.ObjectText = "Bau"
+	prompt.ObjectText = isRare and "Baú raro" or "Baú"
 	prompt.KeyboardKeyCode = Enum.KeyCode.E
 	prompt.GamepadKeyCode = Enum.KeyCode.ButtonX
 	prompt.HoldDuration = 0.18
@@ -375,6 +405,7 @@ local function spawnChest(parent, island, record, index, isMimic, coinReward, ra
 		SurfacePosition = record.SurfacePosition,
 		Yaw = yaw,
 		IsMimic = isMimic,
+		IsRare = isRare,
 		CoinReward = coinReward,
 		DifficultyTier = tier,
 		Opened = false,
@@ -387,6 +418,7 @@ end
 
 function ChestService.PopulateIsland(island, freeCells, context)
 	context = context or {}
+	local yieldCallback = context.YieldCallback
 	if island:FindFirstChild("ChestSpawnPoints") then
 		return 0
 	end
@@ -423,6 +455,7 @@ function ChestService.PopulateIsland(island, freeCells, context)
 	folder.Parent = island
 	local tier = math.max(1, math.floor(tonumber(island:GetAttribute("DangerLevel")) or 1))
 	local mimicCount = 0
+	local rareAssigned = false
 	local spawned = 0
 	for index, record in ipairs(selected) do
 		local isMimic = random:NextNumber() <= MVPConfig.Chests.MimicChance
@@ -431,6 +464,12 @@ function ChestService.PopulateIsland(island, freeCells, context)
 		end
 		if isMimic then
 			mimicCount += 1
+		end
+		-- Uma unica roleta por ilha do tesouro evita uma sequencia excessiva
+		-- de quatro a sete giros. Mimicos nunca sao marcados como bau raro.
+		local isRare = islandType == "Treasure" and not rareAssigned and not isMimic
+		if isRare then
+			rareAssigned = true
 		end
 		local rewardMultiplier = tonumber(island:GetAttribute("RewardMultiplier")) or 1
 		local minimum = isMimic and MVPConfig.Chests.MimicMinimumCoins or MVPConfig.Chests.NormalMinimumCoins
@@ -443,10 +482,27 @@ function ChestService.PopulateIsland(island, freeCells, context)
 		marker:SetAttribute("GridY", record.Cell.Y)
 		marker:SetAttribute("GridZ", record.Cell.Z)
 		marker.Parent = points
-		if spawnChest(folder, island, record, index, isMimic, reward, random, normalTemplate, mimicTemplate, tier) then
+		if spawnChest(
+			folder,
+			island,
+			record,
+			index,
+			isMimic,
+			isRare,
+			reward,
+			random,
+			normalTemplate,
+			mimicTemplate,
+			tier
+		) then
 			spawned += 1
 		else
 			marker:Destroy()
+		end
+		-- Um bau completo (modelo, prompt e marcador) e a unidade maxima de uma
+		-- fatia. Ilhas do tesouro deixam de publicar todos os baus no mesmo frame.
+		if yieldCallback then
+			yieldCallback()
 		end
 	end
 	island:SetAttribute("ChestCount", spawned)

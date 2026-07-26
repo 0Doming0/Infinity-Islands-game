@@ -3,6 +3,7 @@
 -- MeshPart skinned Cube.002 e recebe a animacao de Bones pelo Animator.
 
 local CollectionService = game:GetService("CollectionService")
+local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 
@@ -15,6 +16,16 @@ local POSITION_SCALE = 0.167
 local AXIS_CONVERSION = CFrame.Angles(math.rad(-90), 0, 0)
 local states = setmetatable({}, { __mode = "k" })
 local pending = setmetatable({}, { __mode = "k" })
+local player = Players.LocalPlayer
+local updateAccumulator = 0
+
+local NORMAL_UPDATE_FPS = 24
+local REDUCED_UPDATE_FPS = 12
+local EXTREME_UPDATE_FPS = 8
+local NORMAL_MAX_DISTANCE = 240
+local REDUCED_MAX_DISTANCE = 140
+local EXTREME_MAX_DISTANCE = 80
+local FORCE_ACTIVE_DISTANCE = 42
 
 local function frameTime(frame)
 	return (frame - 1) / FPS
@@ -168,10 +179,33 @@ local function tryRegister(model)
 		LeftFootMotor = leftFootMotor,
 		RightFootMotor = rightFootMotor,
 		TongueBones = tongueBones,
+		RootPart = model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart", true),
 		Elapsed = 0,
 		WasAnimating = false,
 	}
 	print("[MimicAnimationClient] Mimico registrado: " .. model:GetFullName())
+end
+
+local function shouldRenderModel(model, state, camera, maxDistance)
+	local root = state.RootPart
+	if not root or not root:IsDescendantOf(model) then
+		root = model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart", true)
+		state.RootPart = root
+	end
+	if not root or not camera then
+		return false
+	end
+
+	local offset = root.Position - camera.CFrame.Position
+	local distanceSquared = offset:Dot(offset)
+	if distanceSquared <= FORCE_ACTIVE_DISTANCE * FORCE_ACTIVE_DISTANCE then
+		return true
+	end
+	if distanceSquared > maxDistance * maxDistance then
+		return false
+	end
+	local projected, onScreen = camera:WorldToViewportPoint(root.Position)
+	return onScreen and projected.Z > 0
 end
 
 local function considerTagged(instance)
@@ -186,6 +220,25 @@ for _, instance in ipairs(CollectionService:GetTagged("CombatTarget")) do
 end
 
 RunService.RenderStepped:Connect(function(deltaTime)
+	local performanceLevel = tonumber(player:GetAttribute("PerformanceLevel")) or 0
+	local targetFPS = NORMAL_UPDATE_FPS
+	local maxDistance = NORMAL_MAX_DISTANCE
+	if performanceLevel >= 2 then
+		targetFPS = EXTREME_UPDATE_FPS
+		maxDistance = EXTREME_MAX_DISTANCE
+	elseif performanceLevel >= 1 then
+		targetFPS = REDUCED_UPDATE_FPS
+		maxDistance = REDUCED_MAX_DISTANCE
+	end
+
+	updateAccumulator += deltaTime
+	if updateAccumulator < 1 / targetFPS then
+		return
+	end
+	local updateDelta = updateAccumulator
+	updateAccumulator %= 1 / targetFPS
+	local camera = workspace.CurrentCamera
+
 	for model, state in pairs(states) do
 		if not model:IsDescendantOf(workspace) then
 			resetPose(state)
@@ -198,6 +251,7 @@ RunService.RenderStepped:Connect(function(deltaTime)
 		-- O loop so para quando o modelo realmente entra no disfarce Dormant.
 		local shouldAnimate = model:GetAttribute("Enabled") ~= false
 			and mimicState ~= "Dormant"
+			and shouldRenderModel(model, state, camera, maxDistance)
 		if not shouldAnimate then
 			if state.WasAnimating then
 				resetPose(state)
@@ -212,7 +266,7 @@ RunService.RenderStepped:Connect(function(deltaTime)
 		end
 		state.WasAnimating = true
 		-- Mantem o contador pequeno e garante um loop continuo por tempo indefinido.
-		state.Elapsed = (state.Elapsed + deltaTime) % LOOP_DURATION
+		state.Elapsed = (state.Elapsed + updateDelta) % LOOP_DURATION
 		local loopTime = state.Elapsed % LOOP_DURATION
 		state.BodyMotor.Transform = sampleAnimation(bodyKeys, loopTime)
 		state.LidMotor.Transform = sampleAnimation(lidKeys, loopTime)

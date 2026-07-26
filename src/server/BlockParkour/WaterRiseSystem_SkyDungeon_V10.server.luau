@@ -20,6 +20,21 @@ if not waterEvent then
 	waterEvent.Parent = ReplicatedStorage
 end
 
+local function setRespawnState(player, state)
+	local sequence = tonumber(player:GetAttribute("RespawnSequence")) or 0
+	player:SetAttribute("RespawnState", state)
+	if state == "Ready" then
+		player:SetAttribute("RespawnReadySequence", sequence)
+		local event = ReplicatedStorage:FindFirstChild("DeathReviveEvent")
+		if event and event:IsA("RemoteEvent") then
+			event:FireClient(player, {
+				Action = "RespawnReady",
+				RespawnSequence = sequence,
+			})
+		end
+	end
+end
+
 local CONFIG = {
 	WATER_START_SURFACE_Y = MVPConfig.Water.StartSurfaceY,
 	WATER_RISE_SPEED = MVPConfig.Water.BaseSpeed,
@@ -577,6 +592,7 @@ local function requestRescueIslandAfterPartyWipe()
 end
 
 local function onCharacterAdded(player, character)
+	setRespawnState(player, "Positioning")
 	playerData[player] = {
 		alive = true,
 		inWater = false,
@@ -634,9 +650,16 @@ local function onCharacterAdded(player, character)
 				player:SetAttribute("RunStartLogicalHeight", math.floor(spawnHeight))
 				data.respawning = false
 			end
+			if player.Character == character and humanoid.Health > 0 then
+				character:SetAttribute("RespawnReady", true)
+				setRespawnState(player, "Ready")
+			end
 		elseif rootPart.Parent then
 			rootPart.Anchored = wasAnchored
+			setRespawnState(player, "Failed")
 		end
+	else
+		setRespawnState(player, "Failed")
 	end
 end
 

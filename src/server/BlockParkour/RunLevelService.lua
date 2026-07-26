@@ -5,6 +5,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 local CONFIG = MVPConfig.Progression.RunLevel
+local RewardWheelService = require(script.Parent.Parent.MVPSystems:WaitForChild("RewardWheelService"))
 
 local RunLevelService = {}
 local states = setmetatable({}, { __mode = "k" })
@@ -114,6 +115,10 @@ function RunLevelService.UpdateProgress(player, logicalHeight)
 	if nextLevel > state.Level then
 		for level = state.Level + 1, nextLevel do
 			applyUpgrade(player, state, level)
+			RewardWheelService.Spin(player, "HeightLevel", {
+				Level = level,
+				RunSerial = state.RunSerial,
+			})
 		end
 		state.Level = nextLevel
 		setMultipliers(player, nextLevel)

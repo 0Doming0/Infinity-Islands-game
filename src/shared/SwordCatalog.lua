@@ -29,6 +29,8 @@ local DEFINITIONS = {
 		CriticalChance = 0.03,
 		Color = Color3.fromRGB(195, 205, 215),
 		AccentColor = Color3.fromRGB(95, 65, 40),
+		Icon = "⚔",
+		ImageId = "",
 		Material = Enum.Material.Metal,
 	},
 	BronzeSword = {
@@ -45,6 +47,8 @@ local DEFINITIONS = {
 		CriticalChance = 0.04,
 		Color = Color3.fromRGB(185, 105, 55),
 		AccentColor = Color3.fromRGB(92, 55, 30),
+		Icon = "⚔",
+		ImageId = "",
 		Material = Enum.Material.Metal,
 	},
 	CrystalSword = {
@@ -61,6 +65,8 @@ local DEFINITIONS = {
 		CriticalChance = 0.08,
 		Color = Color3.fromRGB(70, 205, 255),
 		AccentColor = Color3.fromRGB(225, 250, 255),
+		Icon = "⚔",
+		ImageId = "",
 		Material = Enum.Material.Neon,
 	},
 	VoidSword = {
@@ -77,6 +83,8 @@ local DEFINITIONS = {
 		CriticalChance = 0.11,
 		Color = Color3.fromRGB(115, 55, 205),
 		AccentColor = Color3.fromRGB(235, 95, 255),
+		Icon = "⚔",
+		ImageId = "",
 		Material = Enum.Material.Neon,
 	},
 	RoyalSword = {
@@ -93,6 +101,8 @@ local DEFINITIONS = {
 		CriticalChance = 0.14,
 		Color = Color3.fromRGB(255, 218, 88),
 		AccentColor = Color3.fromRGB(116, 70, 35),
+		Icon = "⚔",
+		ImageId = "",
 		Material = Enum.Material.Metal,
 	},
 	DragonSword = {
@@ -109,6 +119,8 @@ local DEFINITIONS = {
 		CriticalChance = 0.18,
 		Color = Color3.fromRGB(245, 73, 44),
 		AccentColor = Color3.fromRGB(62, 24, 22),
+		Icon = "⚔",
+		ImageId = "",
 		Material = Enum.Material.Neon,
 	},
 }

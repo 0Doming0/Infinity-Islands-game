@@ -15,9 +15,11 @@ local ScoreService = require(script.Parent.ScoreService_SkyDungeon_V10)
 local MobEventModifiers = require(script.Parent.MobEventModifiers)
 local InventoryService = require(script.Parent.Parent.MVPSystems:WaitForChild("InventoryService"))
 local PlayerDamageService = require(script.Parent.Parent.MVPSystems:WaitForChild("PlayerDamageService"))
+local CompanionService = require(script.Parent.Parent.MVPSystems:WaitForChild("CompanionService"))
 local AnimeOutline = require(ServerScriptService.MVPSystems:WaitForChild("AnimeOutline"))
 ScoreService.Start()
 InventoryService.Start()
+CompanionService.Start()
 
 local MimicAI = {}
 local states = setmetatable({}, { __mode = "k" })
@@ -452,6 +454,7 @@ end
 local function nearestPlayer(position, maximumDistance, state)
 	local nearestHumanoid
 	local nearestRoot
+	local nearestPlayer
 	local distance = maximumDistance
 	local originIslandOccupied = false
 	for _, player in ipairs(Players:GetPlayers()) do
@@ -465,10 +468,11 @@ local function nearestPlayer(position, maximumDistance, state)
 				distance = current
 				nearestHumanoid = humanoid
 				nearestRoot = root
+				nearestPlayer = player
 			end
 		end
 	end
-	return nearestHumanoid, nearestRoot, distance, originIslandOccupied
+	return nearestHumanoid, nearestRoot, distance, originIslandOccupied, nearestPlayer
 end
 
 local function setProceduralScriptsEnabled(state, enabled)
@@ -921,6 +925,8 @@ local function connectHeartbeat()
 			stabilizeKinematicAssembly(state)
 			refreshHomeFromIsland(state)
 			if model:GetAttribute("SimulationActive") == false then
+				model:SetAttribute("AggroUserId", nil)
+				model:SetAttribute("TargetUserId", nil)
 				-- Once the origin island sleeps there cannot be an active player on it.
 				-- Reset immediately instead of keeping an off-screen Humanoid walking.
 				if state.State ~= STATE_DORMANT then
@@ -944,7 +950,8 @@ local function connectHeartbeat()
 				continue
 			end
 			local aggroRange = MobEventModifiers.GetAggroRange(model, state.AggroRange)
-			local targetHumanoid, targetRoot, _, originIslandOccupied = nearestPlayer(state.Position, aggroRange, state)
+			local targetHumanoid, targetRoot, _, originIslandOccupied, targetPlayer =
+				nearestPlayer(state.Position, aggroRange, state)
 
 			if not originIslandOccupied and state.State == STATE_AWAKE then
 				state.ForceDormantOnReturn = false
@@ -953,8 +960,10 @@ local function connectHeartbeat()
 			if state.State == STATE_RETURNING then
 				if not state.ForceDormantOnReturn and originIslandOccupied and targetRoot then
 					setMimicState(state, STATE_AWAKE)
-				else
-					returnHomeSafely(state, step)
+					else
+						model:SetAttribute("AggroUserId", nil)
+						model:SetAttribute("TargetUserId", nil)
+						returnHomeSafely(state, step)
 					if (state.Position - state.Home).Magnitude <= HOME_SNAP_DISTANCE then
 						setMimicState(state, STATE_DORMANT)
 					end
@@ -962,6 +971,8 @@ local function connectHeartbeat()
 				end
 			end
 			if state.State == STATE_DORMANT then
+				model:SetAttribute("AggroUserId", nil)
+				model:SetAttribute("TargetUserId", nil)
 				-- Voltar para a ilha nao desperta o Mimico. Ele so acorda quando o
 				-- jogador tenta abrir o NormalChest criado pelo ChestService.
 				continue
@@ -969,6 +980,8 @@ local function connectHeartbeat()
 
 			state.TargetHumanoid = targetHumanoid
 			state.TargetRoot = targetRoot
+			model:SetAttribute("AggroUserId", targetPlayer and targetPlayer.UserId or nil)
+			model:SetAttribute("TargetUserId", targetPlayer and targetPlayer.UserId or nil)
 			if (state.Position - state.Home).Magnitude > state.LeashRange then
 				returnHomeSafely(state, step)
 			elseif targetRoot then
@@ -1063,6 +1076,7 @@ function MimicAI.Activate(model, options)
 	model:SetAttribute("SimulationActive", not island or island:GetAttribute("SimulationActive") ~= false)
 	model:SetAttribute("Peaceful", false)
 	model:SetAttribute("IsMimic", true)
+	model:SetAttribute("CanBecomeCompanion", false)
 	model:SetAttribute("HomePosition", root.Position)
 	CollectionService:AddTag(model, "CombatTarget")
 	MobEventModifiers.Apply(model)
@@ -1318,7 +1332,7 @@ function MimicAI.Activate(model, options)
 		end)
 
 		local damager = getDamager(model, humanoid)
-		if damager then
+			if damager then
 			local deathPosition = model:GetPivot().Position
 			local rewarded, rewardReason = pcall(
 				ScoreService.AwardRewards,
@@ -1331,13 +1345,14 @@ function MimicAI.Activate(model, options)
 			if not rewarded then
 				warn("[MimicAI] Falha ao entregar recompensa: " .. tostring(rewardReason))
 			end
-			if math.random() <= 0.15 then
+				if math.random() <= 0.15 then
 				local granted, grantReason = pcall(InventoryService.GrantItem, damager, "GreaterHealthPotion", 1)
 				if not granted then
 					warn("[MimicAI] Falha ao entregar item: " .. tostring(grantReason))
+					end
 				end
+				CompanionService.RecordDefeat(damager, model)
 			end
-		end
 	end
 
 	-- Alguns rigs esqueleticos/customizados podem chegar a zero sem transicionar

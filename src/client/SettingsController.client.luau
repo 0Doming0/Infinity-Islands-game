@@ -1,10 +1,8 @@
 -- Configuracoes locais e compactas do jogador.
 -- Volume e desempenho afetam somente este cliente.
 
-local Lighting = game:GetService("Lighting")
 local Players = game:GetService("Players")
 local SoundService = game:GetService("SoundService")
-local Terrain = workspace.Terrain
 local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
@@ -15,9 +13,7 @@ local PANEL_OWNER = "Settings"
 local DEFAULT_MUSIC_VOLUME = 1
 
 local musicVolume = DEFAULT_MUSIC_VOLUME
-local performanceMode = false
-local trackedEffects = {}
-local trackedClouds = {}
+local forcePerformanceMode = false
 local draggingSlider = false
 
 local gui = Instance.new("ScreenGui")
@@ -189,7 +185,7 @@ local performanceLabel = Instance.new("TextLabel")
 performanceLabel.Position = UDim2.fromOffset(10, 5)
 performanceLabel.Size = UDim2.new(1, -80, 0, 24)
 performanceLabel.BackgroundTransparency = 1
-performanceLabel.Text = "Modo desempenho"
+performanceLabel.Text = "Desempenho adaptativo"
 performanceLabel.TextColor3 = Color3.fromRGB(226, 233, 243)
 performanceLabel.Font = Enum.Font.GothamMedium
 performanceLabel.TextSize = 13
@@ -200,7 +196,7 @@ local performanceHint = Instance.new("TextLabel")
 performanceHint.Position = UDim2.fromOffset(10, 28)
 performanceHint.Size = UDim2.new(1, -80, 0, 22)
 performanceHint.BackgroundTransparency = 1
-performanceHint.Text = "Menos efeitos para ganhar FPS"
+performanceHint.Text = "AUTO • aguardando medição de FPS"
 performanceHint.TextColor3 = Color3.fromRGB(145, 159, 180)
 performanceHint.Font = Enum.Font.Gotham
 performanceHint.TextSize = 10
@@ -214,7 +210,7 @@ performanceButton.Position = UDim2.new(1, -10, 0.5, 0)
 performanceButton.Size = UDim2.fromOffset(58, 30)
 performanceButton.BackgroundColor3 = Color3.fromRGB(55, 65, 82)
 performanceButton.BorderSizePixel = 0
-performanceButton.Text = "OFF"
+performanceButton.Text = "AUTO"
 performanceButton.TextColor3 = Color3.fromRGB(201, 209, 221)
 performanceButton.Font = Enum.Font.GothamBold
 performanceButton.TextSize = 11
@@ -252,45 +248,29 @@ local function setVolumeFromScreenPosition(x)
 	end
 end
 
-local function rememberEffect(instance)
-	if performanceMode then
-		if trackedEffects[instance] == nil then
-			trackedEffects[instance] = instance.Enabled
-		end
-		instance.Enabled = false
-	elseif trackedEffects[instance] ~= nil then
-		instance.Enabled = trackedEffects[instance]
-		trackedEffects[instance] = nil
-	end
-end
+local function refreshPerformanceUI()
+	forcePerformanceMode = player:GetAttribute("ForcePerformanceMode") == true
+	local level = tonumber(player:GetAttribute("PerformanceLevel")) or 0
+	local tier = tostring(player:GetAttribute("PerformanceTier") or "Normal")
+	local fps = tonumber(player:GetAttribute("MeasuredFPS"))
 
-local function rememberClouds(instance)
-	if performanceMode then
-		if trackedClouds[instance] == nil then
-			trackedClouds[instance] = instance.Enabled
-		end
-		instance.Enabled = false
-	elseif trackedClouds[instance] ~= nil then
-		instance.Enabled = trackedClouds[instance]
-		trackedClouds[instance] = nil
-	end
-end
+	performanceButton.Text = forcePerformanceMode and "MAX" or "AUTO"
+	performanceButton.BackgroundColor3 = forcePerformanceMode
+		and Color3.fromRGB(190, 91, 44)
+		or Color3.fromRGB(34, 139, 95)
+	performanceButton.TextColor3 = Color3.fromRGB(231, 255, 243)
 
-local function applyPerformanceMode()
-	for _, child in ipairs(Lighting:GetChildren()) do
-		if child:IsA("BloomEffect") or child:IsA("DepthOfFieldEffect") then
-			rememberEffect(child)
-		end
+	if forcePerformanceMode then
+		performanceHint.Text = "MAX • otimização extrema forçada"
+	elseif fps then
+		performanceHint.Text = string.format("AUTO • %s • %d FPS", tier, math.floor(fps + 0.5))
+	else
+		performanceHint.Text = string.format("AUTO • %s", tier)
 	end
-	for _, child in ipairs(Terrain:GetChildren()) do
-		if child:IsA("Clouds") then
-			rememberClouds(child)
-		end
-	end
-	player:SetAttribute("PerformanceMode", performanceMode)
-	performanceButton.Text = performanceMode and "ON" or "OFF"
-	performanceButton.BackgroundColor3 = performanceMode and Color3.fromRGB(34, 139, 95) or Color3.fromRGB(55, 65, 82)
-	performanceButton.TextColor3 = performanceMode and Color3.fromRGB(231, 255, 243) or Color3.fromRGB(201, 209, 221)
+
+	performanceLabel.TextColor3 = level >= 2
+		and Color3.fromRGB(255, 191, 120)
+		or Color3.fromRGB(226, 233, 243)
 end
 
 local function setPanelVisible(visible)
@@ -340,25 +320,14 @@ UserInputService.InputEnded:Connect(function(input)
 end)
 
 performanceButton.MouseButton1Click:Connect(function()
-	performanceMode = not performanceMode
-	applyPerformanceMode()
+	forcePerformanceMode = not forcePerformanceMode
+	player:SetAttribute("ForcePerformanceMode", forcePerformanceMode)
+	refreshPerformanceUI()
 end)
 
 playerGui:GetAttributeChangedSignal("SkyDungeonExclusivePanel"):Connect(function()
 	if playerGui:GetAttribute("SkyDungeonExclusivePanel") ~= PANEL_OWNER then
 		setPanelVisible(false)
-	end
-end)
-
-Lighting.ChildAdded:Connect(function(child)
-	if performanceMode and (child:IsA("BloomEffect") or child:IsA("DepthOfFieldEffect")) then
-		task.defer(rememberEffect, child)
-	end
-end)
-
-Terrain.ChildAdded:Connect(function(child)
-	if performanceMode and child:IsA("Clouds") then
-		task.defer(rememberClouds, child)
 	end
 end)
 
@@ -368,6 +337,17 @@ SoundService.ChildAdded:Connect(function(child)
 	end
 end)
 
-player:SetAttribute("PerformanceMode", false)
+for _, attributeName in ipairs({
+	"ForcePerformanceMode",
+	"PerformanceLevel",
+	"PerformanceTier",
+	"MeasuredFPS",
+}) do
+	player:GetAttributeChangedSignal(attributeName):Connect(refreshPerformanceUI)
+end
+
+if player:GetAttribute("ForcePerformanceMode") == nil then
+	player:SetAttribute("ForcePerformanceMode", false)
+end
 applyMusicVolume()
-applyPerformanceMode()
+refreshPerformanceUI()

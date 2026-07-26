@@ -5,6 +5,8 @@ lutar, acumular moedas, comprar equipamento nas vilas e arriscar rotas laterais.
 
 ## Sistemas atuais
 
+- sistema modular de monstros por Attributes, habilidades e loot ponderado;
+- monstros capturáveis como companheiros persistentes que lutam e evoluem;
 - `RunScore`, `BestScore` e `Coins` completamente separados;
 - ranking global persistente por `BestScore`;
 - perda de toda a tentativa e 20% das moedas ao morrer;
@@ -80,6 +82,10 @@ fade e reducao durante eventos perigosos ficam em `MVPConfig.Atmosphere`.
 
 O jogo cria prototipos em tempo de execucao quando um asset essencial nao
 existe. Um modelo real com o nome esperado sempre tem prioridade.
+
+O contrato completo para criar novos mobs, o exemplo do Golem, `GroundSlam`,
+loot avançado e progressão de companheiros está em
+[`docs/MONSTER_SYSTEM.md`](docs/MONSTER_SYSTEM.md).
 
 ## Tutorial de iniciantes
 
@@ -168,13 +174,15 @@ nao muda conforme os jogadores presentes no servidor.
 
 ## Economia e salvamento
 
-O DataStore canonico continua `SkyDungeonPlayerData_V10`, agora com schema 3:
+O DataStore canonico continua `SkyDungeonPlayerData_V10`, agora com schema 8:
 
 ```text
 Coins
 BestScore
 OwnedSwords
 EquippedSword
+OwnedCompanions
+EquippedCompanions
 Inventory
 ```
 
@@ -200,6 +208,7 @@ Catalogos:
 ReplicatedStorage/SwordCatalog
 ReplicatedStorage/ItemCatalog
 ReplicatedStorage/VillageShopCatalog
+ReplicatedStorage/CompanionCatalog
 ```
 
 ## Teste

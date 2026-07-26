@@ -1,4 +1,4 @@
--- VERSION: V11_GEOMETRY_POOL_ACTIVE
+-- VERSION: V13_GRASS_TOP_GUARANTEE
 -- Sky Dungeon - configuracao da fronteira vertical gerada por ilha.
 
 local Config = {
@@ -70,9 +70,13 @@ local Config = {
 	FRONTIER_GENERATION_TIME_BUDGET_SECONDS = 0.002,
 	-- Detalhes visuais e conteudo jogavel usam uma fila global separada. Cada
 	-- clone pode ceder o frame para impedir rajadas de Instances.
-	FRONTIER_DETAIL_YIELD_EVERY_CLONES = 2,
+	FRONTIER_DETAIL_YIELD_EVERY_CLONES = 1,
 	FRONTIER_DETAIL_TIME_BUDGET_SECONDS = 0.0015,
 	FRONTIER_DETAIL_IDLE_SECONDS = 0.03,
+	-- A remocao de regioes submersas tambem e parcelada. Isso evita que a agua
+	-- desreplique varias ilhas, conexoes, mobs e decoracoes no mesmo frame.
+	FRONTIER_CLEANUP_OPERATIONS_PER_FRAME = 1,
+	FRONTIER_CLEANUP_TIME_BUDGET_SECONDS = 0.001,
 	FRONTIER_MAX_ACTIVE_ISLANDS = 650,
 	FRONTIER_MIN_ACTIVE_ISLANDS = 12,
 	FRONTIER_CONTENT_ACTIVATION_DISTANCE_STUDS = 135,
@@ -177,6 +181,9 @@ local Config = {
 	GRASS_NOISE_SCALE = 0.065,
 	GRASS_NOISE_THRESHOLD = 0.52,
 	GRASS_JITTER_STUDS = 1.35,
+	-- Roblox nao mede objetos 3D em pixels. Este pequeno deslocamento equivale
+	-- visualmente a cerca de 2 px e impede os modelos decorativos de afundarem.
+	GRASS_MODEL_SURFACE_LIFT_STUDS = 0.125,
 	GRASS_ON_CONNECTORS = true,
 	GRASS_MAX_PER_ISLAND = {
 		Small = 8,
@@ -191,8 +198,15 @@ local Config = {
 	-- 0.5 produz aproximadamente metade terra nua e metade terra com grama.
 	CONNECTOR_FLAT_GRASS_CHANCE = 0.5,
 	FLAT_GRASS_LAYER_THICKNESS_STUDS = 0.35,
-	FLAT_GRASS_SURFACE_OFFSET_STUDS = 0.02,
+	-- Eleva tambem a cobertura plana visivel sobre a terra. A versao anterior
+	-- elevava apenas os modelos decorativos e nao esta camada.
+	FLAT_GRASS_SURFACE_OFFSET_STUDS = 0.125,
 	FLAT_GRASS_COLOR = Color3.fromRGB(88, 142, 72),
+	-- LOD distante: quando o cliente oculta a camada 3D, esta textura aparece
+	-- somente na face superior do bloco de terra. Troque apenas este ID se
+	-- quiser usar uma textura própria publicada pelo criador da experiência.
+	DISTANT_GRASS_TEXTURE_ID = "rbxassetid://7568838452",
+	DISTANT_GRASS_TEXTURE_TILE_STUDS = 8,
 
 	-- ROTAS PRINCIPAL E ALTERNATIVAS
 	-- O V8 usa escadarias deterministicas. Os campos A* abaixo ficam apenas

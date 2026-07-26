@@ -622,6 +622,7 @@ local function setAggro(state, player)
 	end
 	state.LastTargetSeenAt = serverTime()
 	state.Model:SetAttribute("AggroUserId", player and player.UserId or nil)
+	state.Model:SetAttribute("TargetUserId", player and player.UserId or nil)
 	state.Model:SetAttribute("Peaceful", player == nil and state.BasePeaceful or false)
 	state.WanderDestination = nil
 	state.CombatDestination = nil
@@ -851,10 +852,14 @@ local function thinkRed(state, now)
 	)
 	local player, targetRoot = nearestPlayer(state.Root.Position, detectionRange)
 	if not targetRoot then
+		state.Model:SetAttribute("AggroUserId", nil)
+		state.Model:SetAttribute("TargetUserId", nil)
 		state.CombatDestination = nil
 		thinkWander(state, now)
 		return
 	end
+	state.Model:SetAttribute("AggroUserId", player.UserId)
+	state.Model:SetAttribute("TargetUserId", player.UserId)
 	if state.Busy then
 		return
 	end
@@ -1007,9 +1012,13 @@ local function thinkGoldenFury(state, now)
 	local player, targetRoot = nearestPlayer(state.Root.Position, aggroRange)
 	local _, targetHumanoid = getLivingCharacter(player)
 	if not targetRoot or not targetHumanoid then
+		state.Model:SetAttribute("AggroUserId", nil)
+		state.Model:SetAttribute("TargetUserId", nil)
 		state.CombatDestination = nil
 		return false
 	end
+	state.Model:SetAttribute("AggroUserId", player.UserId)
+	state.Model:SetAttribute("TargetUserId", player.UserId)
 
 	local attackRange = tonumber(state.Model:GetAttribute("AttackRange")) or 5
 	local distance = horizontalDistance(state.Root.Position, targetRoot.Position)

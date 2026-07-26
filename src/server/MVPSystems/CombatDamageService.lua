@@ -1,10 +1,24 @@
--- V15: dano autoritativo com knockback cinematico estavel para o Mimico.
--- Preserva dano, impactos e efeitos de reliquias para os demais alvos.
+-- V17: dano autoritativo com janela anti-stunlock para os monstros.
+-- Preserva dano, impactos, som dos companheiros e efeitos de reliquias.
 
 local Players = game:GetService("Players")
 local Debris = game:GetService("Debris")
 
 local DamageService = {}
+
+local DEFAULT_STUN_REACTION_WINDOW = 1.1
+local MIN_STUN_REACTION_WINDOW = 0.35
+local MAX_STUN_REACTION_WINDOW = 3
+
+local function mitigatedDamage(model, rawAmount)
+	local raw = math.max(0, tonumber(rawAmount) or 0)
+	local defense = math.max(0, tonumber(model:GetAttribute("Defense")) or 0)
+	local multiplier = math.max(0, tonumber(model:GetAttribute("DamageMultiplier")) or 1)
+	if raw <= 0 or multiplier <= 0 then
+		return 0
+	end
+	return math.max(1, (raw - defense) * multiplier)
+end
 
 local function tagCreator(humanoid, player)
 	local old = humanoid:FindFirstChild("creator")
@@ -81,16 +95,37 @@ local RELIC_IMPACT_COLORS = {
 }
 
 local function applyCombatStun(model, humanoid, attack)
+	if model:GetAttribute("CanBeStunned") == false then
+		return
+	end
+	local resistance = math.clamp(tonumber(model:GetAttribute("StunResistance")) or 0, 0, 1)
+	if resistance >= 1 then
+		return
+	end
+	local now = workspace:GetServerTimeNow()
+	local immunityUntil = tonumber(model:GetAttribute("CombatStunImmunityUntil")) or 0
+	if now < immunityUntil then
+		-- O dano e o feedback do golpe continuam normais. Somente um novo stun
+		-- e uma nova interrupcao sao bloqueados durante a janela de reacao.
+		return
+	end
 	local stunTokenId = (model:GetAttribute("CombatStunTokenId") or 0) + 1
 	local interruptSerial = (model:GetAttribute("CombatInterruptSerial") or 0) + 1
-	local stunDuration = math.clamp(tonumber(attack.StunDuration) or 0.45, 0.1, 1.25)
+	local stunDuration = math.clamp((tonumber(attack.StunDuration) or 0.45) * (1 - resistance), 0.05, 1.25)
+	local reactionWindow = math.clamp(
+		tonumber(model:GetAttribute("StunReactionWindow")) or DEFAULT_STUN_REACTION_WINDOW,
+		MIN_STUN_REACTION_WINDOW,
+		MAX_STUN_REACTION_WINDOW
+	)
+	local newImmunityUntil = now + stunDuration + reactionWindow
 
 	model:SetAttribute("CombatStunTokenId", stunTokenId)
 	-- Nao e apagado no fim do stun: ataques com windup usam este serial para
 	-- saber que foram interrompidos, mesmo se uma task atrasada rodar depois.
 	model:SetAttribute("CombatInterruptSerial", interruptSerial)
 	model:SetAttribute("CombatStunned", true)
-	model:SetAttribute("CombatStunnedUntil", workspace:GetServerTimeNow() + stunDuration)
+	model:SetAttribute("CombatStunnedUntil", now + stunDuration)
+	model:SetAttribute("CombatStunImmunityUntil", newImmunityUntil)
 
 	-- O primeiro golpe guarda o estado original. Golpes seguintes apenas
 	-- renovam o token e a duracao, sem substituir os valores verdadeiros.
@@ -129,6 +164,15 @@ local function applyCombatStun(model, humanoid, attack)
 		model:SetAttribute("CombatOriginalWalkSpeed", nil)
 		model:SetAttribute("CombatOriginalAutoRotate", nil)
 	end)
+
+	task.delay(stunDuration + reactionWindow, function()
+		if
+			model.Parent
+			and tonumber(model:GetAttribute("CombatStunImmunityUntil")) == newImmunityUntil
+		then
+			model:SetAttribute("CombatStunImmunityUntil", nil)
+		end
+	end)
 end
 
 function DamageService.ApplyEffectDamage(attacker, target, amount, source)
@@ -148,7 +192,7 @@ function DamageService.ApplyEffectDamage(attacker, target, amount, source)
 	then
 		return false, false
 	end
-	local damage = math.max(0, tonumber(amount) or 0)
+	local damage = mitigatedDamage(model, amount)
 	if damage <= 0 then
 		return false, false
 	end
@@ -181,8 +225,12 @@ local function applyKnockback(attackerRoot, model, humanoid, root, attack)
 	model:SetAttribute("CombatHitCount", hitCount)
 
 	local comboScale = 1 + math.min(2, hitCount - 1) * 0.18
-	local horizontalForce = math.max(12, tonumber(attack.Knockback) or 12) * 1.8 * comboScale
-	local upwardForce = math.max(2, tonumber(attack.UpwardKnockback) or 2) * comboScale
+	local resistanceScale = 1 - math.clamp(tonumber(model:GetAttribute("KnockbackResistance")) or 0, 0, 1)
+	local horizontalForce = math.max(0, tonumber(attack.Knockback) or 12) * 1.8 * comboScale * resistanceScale
+	local upwardForce = math.max(0, tonumber(attack.UpwardKnockback) or 2) * comboScale * resistanceScale
+	if resistanceScale <= 0 or horizontalForce <= 0 then
+		return
+	end
 
 	-- Direction: knock the mob away from the attacker
 	local direction = Vector3.new(
@@ -289,20 +337,24 @@ function DamageService.ApplySwordHit(attacker, attackerRoot, target, attack)
 		return false, false
 	end
 
+	local damage = mitigatedDamage(model, attack.Damage)
+	if damage <= 0 then
+		return false, false
+	end
 	local healthBefore = humanoid.Health
 	tagCreator(humanoid, attacker)
 	model:SetAttribute("LastDamagedByUserId", attacker.UserId)
-	model:SetAttribute("LastSwordDamage", attack.Damage)
+	model:SetAttribute("LastSwordDamage", damage)
 	model:SetAttribute("LastSwordScoreMultiplier", attack.ScoreMultiplier)
 	model:SetAttribute("LastSwordHitAt", workspace:GetServerTimeNow())
 
-	humanoid:TakeDamage(attack.Damage)
+	humanoid:TakeDamage(damage)
 	if humanoid.Health > 0 then
 		-- Stun e knockback sao independentes. Assim bosses ou modelos marcados
 		-- com NoKnockback ainda têm o ataque interrompido durante o combo.
 		applyCombatStun(model, humanoid, attack)
 	end
-	if model:GetAttribute("NoKnockback") ~= true then
+	if model:GetAttribute("NoKnockback") ~= true and model:GetAttribute("CanBeKnockedBack") ~= false then
 		applyKnockback(attackerRoot, model, humanoid, root, attack)
 	end
 	createImpact(
@@ -313,6 +365,49 @@ function DamageService.ApplySwordHit(attacker, attackerRoot, target, attack)
 	playHitSound(model)
 
 	return true, healthBefore > 0 and humanoid.Health <= 0
+end
+
+function DamageService.ApplyDirectHit(attacker, target, amount, source)
+	if not attacker or attacker.Parent ~= Players or typeof(target) ~= "table" then
+		return false, false
+	end
+	local model = target.Model
+	local humanoid = target.Humanoid
+	if
+		not model
+		or not model.Parent
+		or not humanoid
+		or humanoid.Health <= 0
+		or model:GetAttribute("Invulnerable") == true
+		or Players:GetPlayerFromCharacter(model)
+	then
+		return false, false
+	end
+	local damage = mitigatedDamage(model, amount)
+	if damage <= 0 then
+		return false, false
+	end
+	local healthBefore = humanoid.Health
+	tagCreator(humanoid, attacker)
+	model:SetAttribute("LastDamagedByUserId", attacker.UserId)
+	model:SetAttribute("LastDamageSource", tostring(source or "Direct"))
+	humanoid:TakeDamage(damage)
+	return true, healthBefore > 0 and humanoid.Health <= 0
+end
+
+function DamageService.ApplyCompanionHit(owner, target, amount, source)
+	local success, defeated = DamageService.ApplyDirectHit(
+		owner,
+		target,
+		amount,
+		source or "Companion"
+	)
+	if success and target.Model then
+		-- Companheiros usam o mesmo feedback sonoro dos golpes da espada.
+		-- O som so toca depois que o servidor realmente aceitou o dano.
+		playHitSound(target.Model)
+	end
+	return success, defeated
 end
 
 return table.freeze(DamageService)

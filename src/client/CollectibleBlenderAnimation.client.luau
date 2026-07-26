@@ -44,11 +44,14 @@ local FRAME_SPAN = FRAME_END - FRAME_START
 local LOOP_DURATION = FRAME_SPAN / FPS
 local NORMAL_UPDATE_FPS = 24
 local PERFORMANCE_UPDATE_FPS = 15
+local EXTREME_UPDATE_FPS = 10
 local NORMAL_MAX_DISTANCE = 240
 local PERFORMANCE_MAX_DISTANCE = 150
+local EXTREME_MAX_DISTANCE = 90
 local FORCE_ACTIVE_DISTANCE = 55
 local NORMAL_VISIBILITY_INTERVAL = 0.25
 local PERFORMANCE_VISIBILITY_INTERVAL = 0.4
+local EXTREME_VISIBILITY_INTERVAL = 0.6
 
 local activeBones = {}
 local pendingBones = setmetatable({}, { __mode = "k" })
@@ -165,7 +168,7 @@ workspace.DescendantAdded:Connect(function(descendant)
 	end
 end)
 
-local function isCollectibleVisible(state, camera, performanceMode)
+local function isCollectibleVisible(state, camera, performanceLevel)
 	local root = state.Root
 	if not root or not root:IsDescendantOf(workspace) then
 		root = rootOf(state.Runtime)
@@ -180,7 +183,12 @@ local function isCollectibleVisible(state, camera, performanceMode)
 	if distanceSquared <= FORCE_ACTIVE_DISTANCE * FORCE_ACTIVE_DISTANCE then
 		return true
 	end
-	local maxDistance = performanceMode and PERFORMANCE_MAX_DISTANCE or NORMAL_MAX_DISTANCE
+	local maxDistance = NORMAL_MAX_DISTANCE
+	if performanceLevel >= 2 then
+		maxDistance = EXTREME_MAX_DISTANCE
+	elseif performanceLevel >= 1 then
+		maxDistance = PERFORMANCE_MAX_DISTANCE
+	end
 	if distanceSquared > maxDistance * maxDistance then
 		return false
 	end
@@ -190,8 +198,13 @@ local function isCollectibleVisible(state, camera, performanceMode)
 end
 
 RunService.RenderStepped:Connect(function(dt)
-	local performanceMode = player:GetAttribute("PerformanceMode") == true
-	local targetFPS = performanceMode and PERFORMANCE_UPDATE_FPS or NORMAL_UPDATE_FPS
+	local performanceLevel = tonumber(player:GetAttribute("PerformanceLevel")) or 0
+	local targetFPS = NORMAL_UPDATE_FPS
+	if performanceLevel >= 2 then
+		targetFPS = EXTREME_UPDATE_FPS
+	elseif performanceLevel >= 1 then
+		targetFPS = PERFORMANCE_UPDATE_FPS
+	end
 	local updateInterval = 1 / targetFPS
 	updateAccumulator += dt
 	if updateAccumulator < updateInterval then
@@ -201,7 +214,12 @@ RunService.RenderStepped:Connect(function(dt)
 
 	local now = os.clock()
 	local camera = workspace.CurrentCamera
-	local visibilityInterval = performanceMode and PERFORMANCE_VISIBILITY_INTERVAL or NORMAL_VISIBILITY_INTERVAL
+	local visibilityInterval = NORMAL_VISIBILITY_INTERVAL
+	if performanceLevel >= 2 then
+		visibilityInterval = EXTREME_VISIBILITY_INTERVAL
+	elseif performanceLevel >= 1 then
+		visibilityInterval = PERFORMANCE_VISIBILITY_INTERVAL
+	end
 
 	for bone, state in pairs(activeBones) do
 		if
@@ -214,7 +232,7 @@ RunService.RenderStepped:Connect(function(dt)
 		end
 
 		if now >= state.NextVisibilityCheck then
-			state.Visible = isCollectibleVisible(state, camera, performanceMode)
+			state.Visible = isCollectibleVisible(state, camera, performanceLevel)
 			state.NextVisibilityCheck = now + visibilityInterval
 		end
 		if not state.Visible then

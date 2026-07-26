@@ -1,5 +1,5 @@
 --[[
-	VERSION: V11_GEOMETRY_POOL_ACTIVE
+	VERSION: V12_PROGRESSIVE_REPLICATION
 
 	Sky Dungeon - fronteira vertical reativa em rounds de ilhas.
 
@@ -55,6 +55,13 @@ local queuedForDetail = {}
 local detailWorkerRunning = false
 local detailOperationActive = false
 local geometryOperationActive = false
+local cleanupOperationActive = false
+local cleanupQueue = {}
+local cleanupQueueHead = 1
+local cleanupQueueTail = 0
+local queuedCleanupNodes = {}
+local queuedCleanupEdges = {}
+local cleanupGetsNextSharedFrame = true
 local lastGeometryOperationAt = -math.huge
 local enqueueDetail
 local spatialIndex = SpatialHash.new(Config.FRONTIER_SPATIAL_HASH_CELL_STUDS)
@@ -82,6 +89,30 @@ local function countRecords(records)
 		count += 1
 	end
 	return count
+end
+
+local function getCleanupQueueLength()
+	return math.max(0, cleanupQueueTail - cleanupQueueHead + 1)
+end
+
+local function enqueueCleanupJob(job)
+	cleanupQueueTail += 1
+	cleanupQueue[cleanupQueueTail] = job
+end
+
+local function dequeueCleanupJob()
+	if cleanupQueueHead > cleanupQueueTail then
+		return nil
+	end
+	local job = cleanupQueue[cleanupQueueHead]
+	cleanupQueue[cleanupQueueHead] = nil
+	cleanupQueueHead += 1
+	if cleanupQueueHead > cleanupQueueTail then
+		cleanupQueue = {}
+		cleanupQueueHead = 1
+		cleanupQueueTail = 0
+	end
+	return job
 end
 
 local function getAlivePlayerRoots()
@@ -112,6 +143,8 @@ local function validateConfig()
 	assert(Config.FRONTIER_GENERATION_TIME_BUDGET_SECONDS > 0)
 	assert(Config.FRONTIER_DETAIL_YIELD_EVERY_CLONES >= 1)
 	assert(Config.FRONTIER_DETAIL_TIME_BUDGET_SECONDS > 0)
+	assert(Config.FRONTIER_CLEANUP_OPERATIONS_PER_FRAME >= 1)
+	assert(Config.FRONTIER_CLEANUP_TIME_BUDGET_SECONDS > 0)
 	assert(Config.FRONTIER_SPATIAL_HASH_CELL_STUDS > 0)
 	assert(Config.FRONTIER_SPATIAL_QUERY_PADDING_STUDS > 0)
 	assert(Config.FRONTIER_DIAGNOSTIC_UPDATE_SECONDS >= 0.1)
@@ -216,6 +249,7 @@ local function updateWorldAttributes(force)
 	worldModel:SetAttribute("WorldRebaseSerial", worldRebaseSerial)
 	worldModel:SetAttribute("ExpansionQueueLength", #expansionQueue)
 	worldModel:SetAttribute("DetailQueueLength", #detailQueue)
+	worldModel:SetAttribute("CleanupQueueLength", getCleanupQueueLength())
 	worldModel:SetAttribute("SpatialIndexMode", "HorizontalHash")
 	worldModel:SetAttribute("SpatialIndexedIslandCount", countRecords(spatialIndex.Entries))
 	worldModel:SetAttribute("EffectCullingEnabled", Config.FRONTIER_EFFECT_CULLING_ENABLED)
@@ -323,6 +357,10 @@ local function recycleNodeModel(model)
 		model:Destroy()
 		return false
 	end
+	-- Retira a arvore inteira do Workspace antes de destruir filhos dinamicos.
+	-- Assim o cliente recebe uma unica desreplicacao, sem uma cascata de deletes
+	-- individuais de grama, decoracoes, baus e mobs.
+	model.Parent = geometryPoolFolder
 	removeAllTags(model)
 	local signature = Generator.PrepareFrontierNodeForPool(model)
 	if not signature then
@@ -334,7 +372,6 @@ local function recycleNodeModel(model)
 		bucket = {}
 		nodePoolBySignature[signature] = bucket
 	end
-	model.Parent = geometryPoolFolder
 	table.insert(bucket, model)
 	pooledNodeCount += 1
 	return true
@@ -351,6 +388,7 @@ local function recycleEdgeModel(model)
 		model:Destroy()
 		return false
 	end
+	model.Parent = geometryPoolFolder
 	removeAllTags(model)
 	local signature = Generator.PrepareFrontierConnectionForPool(model)
 	if not signature then
@@ -362,7 +400,6 @@ local function recycleEdgeModel(model)
 		bucket = {}
 		edgePoolBySignature[signature] = bucket
 	end
-	model.Parent = geometryPoolFolder
 	table.insert(bucket, model)
 	pooledEdgeCount += 1
 	return true
@@ -445,8 +482,8 @@ local function createEdge(source, target, directionId)
 	end
 	local publishedParts = 0
 	local sliceStartedAt = os.clock()
-	local function yieldGeometrySlice()
-		publishedParts += 1
+	local function yieldGeometrySlice(publishedPartCost)
+		publishedParts += math.max(1, tonumber(publishedPartCost) or 1)
 		if publishedParts >= Config.FRONTIER_GEOMETRY_PARTS_PER_FRAME
 			or os.clock() - sliceStartedAt >= Config.FRONTIER_GENERATION_TIME_BUDGET_SECONDS
 		then
@@ -470,6 +507,10 @@ local function createEdge(source, target, directionId)
 	})
 	geometryOperationActive = false
 	if not success then
+		local partialModel = connectionsFolder:FindFirstChild("Connection_" .. plan.Key)
+		if partialModel then
+			partialModel:Destroy()
+		end
 		if recycledModel then
 			recycledModel:Destroy()
 		end
@@ -629,7 +670,10 @@ local function startDetailWorker()
 			-- Geometria vital vence detalhes distantes. Conteudo de uma ilha ja
 			-- tocada recebe prioridade alta e pausa brevemente a geometria; os dois
 			-- workers nunca publicam Instances pesadas no mesmo frame.
-			if geometryOperationActive or (#expansionQueue > 0 and getBestDetailPriority() < 40000) then
+			if cleanupOperationActive
+				or geometryOperationActive
+				or (#expansionQueue > 0 and getBestDetailPriority() < 40000)
+			then
 				RunService.Heartbeat:Wait()
 			else
 				local job = chooseBestDetailJob()
@@ -1385,6 +1429,65 @@ local function removeNode(record)
 	removedNodeCount += 1
 end
 
+-- Executa no maximo uma pequena quantidade de desreplicacoes por Heartbeat.
+-- A agua apenas alimenta esta fila; nunca mais remove varias regioes na mesma
+-- chamada. Cada trabalho e revalidado porque um jogador pode ter se aproximado
+-- da regiao enquanto ela aguardava.
+local function processCleanupQueue()
+	if getCleanupQueueLength() == 0 then
+		return 0
+	end
+	cleanupOperationActive = true
+	local processed = 0
+	local startedAt = os.clock()
+	while processed < Config.FRONTIER_CLEANUP_OPERATIONS_PER_FRAME and getCleanupQueueLength() > 0 do
+		local job = dequeueCleanupJob()
+		if not job then
+			break
+		end
+		processed += 1
+		local success, errorMessage = pcall(function()
+			if job.Type == "Node" then
+				queuedCleanupNodes[job.Key] = nil
+				local record = nodesByKey[job.Key]
+				if record
+					and activeNodeCount > job.MinimumToKeep
+					and not record.Spec.IsStart
+					and record.TopWorldY + job.Margin < latestWaterY
+					and not hasAlivePlayerNear(record)
+					and not record.Expanding
+					and not record.ScheduledExpansionRoundId
+				then
+					removeNode(record)
+				end
+			elseif job.Type == "Edge" then
+				queuedCleanupEdges[job.Key] = nil
+				local record = edgesByKey[job.Key]
+				if record
+					and (
+						record.TopWorldY + job.Margin < latestWaterY
+						or not nodesByKey[record.SourceKey]
+						or not nodesByKey[record.TargetKey]
+					)
+				then
+					removeEdge(record)
+				end
+			end
+		end)
+		if not success then
+			queuedCleanupNodes[job.Key] = nil
+			queuedCleanupEdges[job.Key] = nil
+			warn(string.format("[SkyDungeon] Cleanup parcelado falhou em %s: %s", job.Key, tostring(errorMessage)))
+		end
+		if os.clock() - startedAt >= Config.FRONTIER_CLEANUP_TIME_BUDGET_SECONDS then
+			break
+		end
+	end
+	cleanupOperationActive = false
+	updateWorldAttributes()
+	return processed
+end
+
 function ChunkManager.GetPlayerWorldContext(position)
 	if typeof(position) ~= "Vector3" then
 		return nil
@@ -1475,6 +1578,13 @@ function ChunkManager.Start()
 	detailWorkerRunning = false
 	detailOperationActive = false
 	geometryOperationActive = false
+	cleanupOperationActive = false
+	cleanupQueue = {}
+	cleanupQueueHead = 1
+	cleanupQueueTail = 0
+	queuedCleanupNodes = {}
+	queuedCleanupEdges = {}
+	cleanupGetsNextSharedFrame = true
 	lastGeometryOperationAt = -math.huge
 	spatialIndex = SpatialHash.new(Config.FRONTIER_SPATIAL_HASH_CELL_STUDS)
 	activeSimulationRecords = {}
@@ -1506,7 +1616,16 @@ function ChunkManager.Start()
 		while running do
 			RunService.Heartbeat:Wait()
 			if not detailOperationActive then
-				if processExpansionQueue() > 0 then
+				local hasCleanup = getCleanupQueueLength() > 0
+				local hasExpansion = #expansionQueue > 0
+				local shouldClean = hasCleanup and (not hasExpansion or cleanupGetsNextSharedFrame)
+				local cleaned = shouldClean and processCleanupQueue() or 0
+				if hasCleanup and hasExpansion then
+					cleanupGetsNextSharedFrame = not shouldClean
+				else
+					cleanupGetsNextSharedFrame = true
+				end
+				if cleaned == 0 and processExpansionQueue() > 0 then
 					lastGeometryOperationAt = os.clock()
 				end
 			end
@@ -1741,38 +1860,48 @@ function ChunkManager.CleanupBelowWater(waterSurfaceY, marginStuds, minimumActiv
 	table.sort(removable, function(a, b)
 		return a.Spec.Level < b.Spec.Level
 	end)
-	local removedNow = 0
+	local queuedNodeCount = countRecords(queuedCleanupNodes)
+	local availableNodeSlots = math.max(0, activeNodeCount - minimumToKeep - queuedNodeCount)
+	local queuedNow = 0
 	for _, record in ipairs(removable) do
-		if activeNodeCount <= minimumToKeep then
+		if availableNodeSlots <= 0 then
 			break
 		end
-		removeNode(record)
-		removedNow += 1
-	end
-
-	local edgeRemovals = {}
-	for _, edge in pairs(edgesByKey) do
-		if edge.TopWorldY + margin < waterSurfaceY
-			or not nodesByKey[edge.SourceKey]
-			or not nodesByKey[edge.TargetKey]
-		then
-			table.insert(edgeRemovals, edge)
+		if not queuedCleanupNodes[record.Key] then
+			queuedCleanupNodes[record.Key] = true
+			enqueueCleanupJob({
+				Type = "Node",
+				Key = record.Key,
+				Margin = margin,
+				MinimumToKeep = minimumToKeep,
+			})
+			availableNodeSlots -= 1
+			queuedNow += 1
 		end
 	end
-	for _, edge in ipairs(edgeRemovals) do
-		removeEdge(edge)
-	end
-	if removedNow > 0 then
-		print(string.format(
-			"[SkyDungeon] Agua reciclou/removeu %d ilha(s); %d ativas | pool: %d ilhas, %d conexoes.",
-			removedNow,
-			activeNodeCount,
-			pooledNodeCount,
-			pooledEdgeCount
-		))
+
+	for key, edge in pairs(edgesByKey) do
+		if not queuedCleanupEdges[key]
+			and (
+				edge.TopWorldY + margin < waterSurfaceY
+				or queuedCleanupNodes[edge.SourceKey]
+				or queuedCleanupNodes[edge.TargetKey]
+				or not nodesByKey[edge.SourceKey]
+				or not nodesByKey[edge.TargetKey]
+			)
+		then
+			queuedCleanupEdges[key] = true
+			enqueueCleanupJob({
+				Type = "Edge",
+				Key = key,
+				Margin = margin,
+				MinimumToKeep = minimumToKeep,
+			})
+			queuedNow += 1
+		end
 	end
 	updateWorldAttributes()
-	return removedNow, activeNodeCount
+	return queuedNow, activeNodeCount
 end
 
 function ChunkManager.GetWorldModel()

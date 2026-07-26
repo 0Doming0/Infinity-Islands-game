@@ -19,6 +19,10 @@ local PERFORMANCE_UPDATE_SECONDS = 0.32
 local PERFORMANCE_MAX_DISTANCE = 125
 local PERFORMANCE_FORCE_ACTIVE_DISTANCE = 34
 local PERFORMANCE_SCREEN_MARGIN = 24
+local EXTREME_UPDATE_SECONDS = 0.5
+local EXTREME_MAX_DISTANCE = 85
+local EXTREME_FORCE_ACTIVE_DISTANCE = 28
+local EXTREME_SCREEN_MARGIN = 0
 
 local player = Players.LocalPlayer
 
@@ -192,7 +196,13 @@ while true do
 	local forceDistance = world and world:GetAttribute("EffectCullingForceActiveDistanceStuds")
 		or DEFAULT_FORCE_ACTIVE_DISTANCE
 	local marginPixels = world and world:GetAttribute("EffectCullingScreenMarginPixels") or DEFAULT_SCREEN_MARGIN
-	if player:GetAttribute("PerformanceMode") == true then
+	local performanceLevel = tonumber(player:GetAttribute("PerformanceLevel")) or 0
+	if performanceLevel >= 2 then
+		updateSeconds = math.max(updateSeconds, EXTREME_UPDATE_SECONDS)
+		maxDistance = math.min(maxDistance, EXTREME_MAX_DISTANCE)
+		forceDistance = math.min(forceDistance, EXTREME_FORCE_ACTIVE_DISTANCE)
+		marginPixels = math.min(marginPixels, EXTREME_SCREEN_MARGIN)
+	elseif performanceLevel >= 1 then
 		updateSeconds = math.max(updateSeconds, PERFORMANCE_UPDATE_SECONDS)
 		maxDistance = math.min(maxDistance, PERFORMANCE_MAX_DISTANCE)
 		forceDistance = math.min(forceDistance, PERFORMANCE_FORCE_ACTIVE_DISTANCE)

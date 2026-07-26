@@ -32,6 +32,20 @@ local function productId()
 	return math.max(0, math.floor(tonumber(MVPConfig.Death.ReviveWithoutCoinLossProductId) or 0))
 end
 
+local function beginRespawn(player, expectedState)
+	local sequence = (tonumber(player:GetAttribute("RespawnSequence")) or 0) + 1
+	player:SetAttribute("RespawnSequence", sequence)
+	player:SetAttribute("RespawnState", "Preparing")
+	if expectedState then
+		expectedState.RespawnSequence = sequence
+	end
+	deathEvent:FireClient(player, {
+		Action = "PreparingRespawn",
+		RespawnSequence = sequence,
+	})
+	return sequence
+end
+
 local function loadCharacterIfDead(player, expectedState)
 	if not player.Parent then
 		return false
@@ -49,6 +63,7 @@ local function loadCharacterIfDead(player, expectedState)
 		pending[player] = nil
 	end
 
+	local respawnSequence = beginRespawn(player, expectedState)
 	local loaded, loadError = pcall(function()
 		player:LoadCharacter()
 	end)
@@ -60,10 +75,12 @@ local function loadCharacterIfDead(player, expectedState)
 		expectedState.Respawning = false
 		pending[player] = expectedState
 	end
+	player:SetAttribute("RespawnState", "Failed")
 	warn(string.format("[DeathReviveService] Falha ao renascer %s: %s", player.Name, tostring(loadError)))
 	deathEvent:FireClient(player, {
 		Action = "Error",
 		Message = "Não foi possível renascer. Tente novamente.",
+		RespawnSequence = respawnSequence,
 	})
 	return false
 end

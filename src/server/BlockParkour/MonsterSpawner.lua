@@ -47,9 +47,17 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local SlimeController = require(script.Parent.SlimeController)
 local SlimeVariants = require(script.Parent.SlimeVariants)
 local PartyService = require(script.Parent.PartyService)
+local MonsterSystem = script.Parent.Parent:WaitForChild("MonsterSystem")
+local MonsterConfig = require(MonsterSystem.MonsterConfig)
+local MonsterLoot = require(MonsterSystem.MonsterLoot)
+local MonsterValidator = require(MonsterSystem.MonsterValidator)
+local CombatDamageService = require(script.Parent.Parent.MVPSystems.CombatDamageService)
+local CompanionService = require(script.Parent.Parent.MVPSystems.CompanionService)
+local RewardWheelService = require(script.Parent.Parent.MVPSystems.RewardWheelService)
 
 ScoreService.Start()
 InventoryService.Start()
+CompanionService.Start()
 
 local MonsterSpawner = {}
 
@@ -70,10 +78,6 @@ local CONFIG = {
 	DEFAULT_DROP_CHANCE = 0,
 	DEFAULT_MINIMUM_ISLAND_SIZE = "Small",
 
-	SWORD_DAMAGE = 25,
-	SWORD_RANGE = 8,
-	SWORD_COOLDOWN = 0.65,
-
 	LOOT_CHECK_INTERVAL = 0.15,
 	LOOT_LIFETIME = 20,
 	LOOT_PICKUP_RADIUS = 6,
@@ -92,7 +96,6 @@ local SIZE_RANK = {
 
 local activeMonsters = {}
 local activeLoot = {}
-local lastAttackByPlayer = setmetatable({}, { __mode = "k" })
 local monsterCount = 0
 local initialized = false
 
@@ -266,6 +269,7 @@ local function createPrototypeMonster(folder)
 	local model = Instance.new("Model")
 	model.Name = "PrototypeSlime"
 	model:SetAttribute("MonsterId", "PrototypeSlime")
+	model:SetAttribute("MonsterType", "Slime")
 	model:SetAttribute("DisplayName", "Slime de Prototipo")
 	model:SetAttribute("Enabled", true)
 	model:SetAttribute("MaxHealth", 45)
@@ -281,6 +285,9 @@ local function createPrototypeMonster(folder)
 	model:SetAttribute("GroupSpacing", 5)
 	model:SetAttribute("Peaceful", false)
 	model:SetAttribute("UseCentralAI", true)
+	model:SetAttribute("CompanionUnlockChance", 0.18)
+	model:SetAttribute("CompanionImageId", "")
+	model:SetAttribute("CompanionScale", 0.72)
 	model:SetAttribute("PrototypeModel", true)
 
 	local root = Instance.new("Part")
@@ -307,42 +314,19 @@ local function createPrototypeMonster(folder)
 	return model
 end
 
-local function validateTemplate(template)
-	if not template:IsA("Model") then
-		return false, "nao e Model"
-	end
-	if template:GetAttribute("Enabled") == false then
-		return false, "desativado"
-	end
-	if not getHumanoid(template) then
-		return false, "Humanoid ausente"
-	end
-	if not getRoot(template) then
-		return false, "HumanoidRootPart ou PrimaryPart ausente"
-	end
-
-	local mode = template:GetAttribute("SpawnMode") or "Solo"
-	if mode ~= "Solo" and mode ~= "Group" and mode ~= "Boss" then
-		return false, "SpawnMode invalido: " .. tostring(mode)
-	end
-
-	local minimumSize = template:GetAttribute("MinimumIslandSize") or CONFIG.DEFAULT_MINIMUM_ISLAND_SIZE
-	if not SIZE_RANK[minimumSize] then
-		return false, "MinimumIslandSize invalido: " .. tostring(minimumSize)
-	end
-
-	return true
-end
-
 local function getTemplates()
 	local folder = getMonsterFolder()
 	local templates = {}
 	for _, template in ipairs(folder:GetChildren()) do
-		local valid, reason = validateTemplate(template)
+		local valid, errors = MonsterValidator.Validate(template)
 		if valid then
 			table.insert(templates, template)
 		elseif template:GetAttribute("Enabled") ~= false then
-			warn(string.format("[MonsterSpawner] Ignorando %s: %s", template:GetFullName(), reason))
+			warn(string.format(
+				"[MonsterSpawner] Ignorando %s: %s",
+				template:GetFullName(),
+				MonsterValidator.Format(errors)
+			))
 		end
 	end
 	table.sort(templates, function(a, b)
@@ -510,7 +494,7 @@ local function createDeathParticles(root, color)
 	emitter:Emit(24)
 end
 
-local function createLoot(parent, position, itemId)
+local function createLoot(parent, position, itemId, amount)
 	if not itemId or itemId == "" then
 		return
 	end
@@ -526,11 +510,13 @@ local function createLoot(parent, position, itemId)
 	pickup.Material = Enum.Material.Neon
 	pickup.Color = Color3.fromRGB(255, 210, 65)
 	pickup:SetAttribute("ItemId", itemId)
+	pickup:SetAttribute("Amount", math.max(1, math.floor(tonumber(amount) or 1)))
 	pickup:SetAttribute("Claimed", false)
 	pickup.Parent = parent
 
 	activeLoot[pickup] = {
 		ItemId = itemId,
+		Amount = math.max(1, math.floor(tonumber(amount) or 1)),
 		ExpiresAt = os.clock() + CONFIG.LOOT_LIFETIME,
 	}
 end
@@ -645,6 +631,7 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 	)
 
 	clone.Name = "Monster_" .. monsterId
+	clone:SetAttribute("DisplayName", displayName)
 	clone:SetAttribute("RuntimeMonster", true)
 	clone:SetAttribute("MonsterId", monsterId)
 	clone:SetAttribute("SpawnMode", spawnMode)
@@ -668,10 +655,10 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 	end
 	clone:SetAttribute("Peaceful", not elite and initiallyPeaceful)
 	local usesSlimeController = slimeDefinition ~= nil
-	local useCentralAI = not usesSlimeController and (
-		template:GetAttribute("UseCentralAI") == true
-			or (elite and template:GetAttribute("UseCustomAI") ~= true)
-	)
+	local useCentralAI = not usesSlimeController and template:GetAttribute("UseCustomAI") ~= true
+	if useCentralAI then
+		MonsterConfig.ApplyRuntimeDefaults(clone)
+	end
 	clone:SetAttribute("UseCentralAI", useCentralAI)
 	clone:SetAttribute("AIController", usesSlimeController and "Slime" or (useCentralAI and "Generic" or "Custom"))
 	clone:SetAttribute("SimulationActive", island:GetAttribute("SimulationActive") ~= false)
@@ -729,6 +716,8 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 		CoinValue = coinValue,
 		DropChance = math.clamp(numberAttribute(template, "DropChance", CONFIG.DEFAULT_DROP_CHANCE), 0, 1),
 		DropItemId = template:GetAttribute("DropItemId") or "",
+		LootDefinitions = MonsterLoot.Read(template),
+		LootRolls = math.max(1, math.floor(numberAttribute(template, "LootRolls", 1))),
 		DeathParticleColor = clone:GetAttribute("DeathParticleColor") or template:GetAttribute("DeathParticleColor"),
 		LastDamager = nil,
 		SlimeDefinition = slimeDefinition and table.clone(slimeDefinition) or nil,
@@ -764,6 +753,14 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 		if damager then
 			awardRewards(damager, entry.ScoreValue, entry.CoinValue, deathPosition)
 			PartyService.RecordMissionProgress(damager, "MobDefeated", 1, clone)
+			CompanionService.RecordDefeat(damager, clone)
+			if clone:GetAttribute("SpawnMode") == "Boss" then
+				RewardWheelService.Spin(damager, "Boss", {
+					Level = clone:GetAttribute("DifficultyTier"),
+					MonsterId = clone:GetAttribute("MonsterId"),
+					WorldPosition = deathPosition,
+				})
+			end
 			if clone:GetAttribute("IsElite") == true and random:NextNumber() <= 0.25 then
 				InventoryService.GrantItem(damager, "HealthPotion", 1)
 			end
@@ -771,19 +768,18 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 		if root.Parent then
 			createDeathParticles(root, entry.DeathParticleColor)
 		end
-		if
-			root.Parent
-			and entry.DropItemId ~= ""
-			and random:NextNumber() <= entry.DropChance
-			and entry.Island.Parent
-		then
+		if root.Parent and entry.Island.Parent then
 			local lootFolder = entry.Island:FindFirstChild("MVPLoot")
 			if not lootFolder then
 				lootFolder = Instance.new("Folder")
 				lootFolder.Name = "MVPLoot"
 				lootFolder.Parent = entry.Island
 			end
-			createLoot(lootFolder, root.Position, entry.DropItemId)
+			for lootIndex, loot in ipairs(MonsterLoot.Roll(entry.LootDefinitions, entry.LootRolls, random)) do
+				local angle = lootIndex * 2.399
+				local offset = Vector3.new(math.cos(angle), 0, math.sin(angle)) * math.min(2, lootIndex * 0.35)
+				createLoot(lootFolder, root.Position + offset, loot.ItemId, loot.Amount)
+			end
 		end
 		Debris:AddItem(clone, 0.7)
 	end)
@@ -826,25 +822,6 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 	return true
 end
 
-local function findNearestMonster(position)
-	local nearest = nil
-	local nearestDistanceSquared = CONFIG.SWORD_RANGE * CONFIG.SWORD_RANGE
-	for model, entry in pairs(activeMonsters) do
-		if not model.Parent or not entry.Root.Parent or entry.Humanoid.Health <= 0 then
-			unregisterMonster(model)
-			continue
-		end
-
-		local difference = entry.Root.Position - position
-		local distanceSquared = difference:Dot(difference)
-		if distanceSquared <= nearestDistanceSquared then
-			nearest = entry
-			nearestDistanceSquared = distanceSquared
-		end
-	end
-	return nearest
-end
-
 function MonsterSpawner.DamageMonster(player, model, damage)
 	local entry = activeMonsters[model]
 	local runtimeModel = model
@@ -856,23 +833,11 @@ function MonsterSpawner.DamageMonster(player, model, damage)
 		return false
 	end
 	entry.LastDamager = player
-	if player then
-		entry.Model:SetAttribute("LastDamagedByUserId", player.UserId)
-	end
-	entry.Humanoid:TakeDamage(math.max(0, damage or 0))
-	return true
-end
-
-local function containerHasDamageTool(container)
-	if not container then
-		return false
-	end
-	for _, child in ipairs(container:GetChildren()) do
-		if child:IsA("Tool") and (child.Name == "WoodenSword" or typeof(child:GetAttribute("Damage")) == "number") then
-			return true
-		end
-	end
-	return false
+	return CombatDamageService.ApplyDirectHit(player, {
+		Model = entry.Model,
+		Humanoid = entry.Humanoid,
+		Root = entry.Root,
+	}, damage, "LegacyMonsterDamage")
 end
 
 local function setupPlayer(player)
@@ -901,7 +866,7 @@ local function lootPass()
 			then
 				pickup:SetAttribute("Claimed", true)
 				activeLoot[pickup] = nil
-				local granted = InventoryService.GrantItem(player, entry.ItemId, 1)
+				local granted = InventoryService.GrantItem(player, entry.ItemId, entry.Amount)
 				if not granted then
 					-- Compatibilidade para materiais de assets antigos ainda nao
 					-- cadastrados como consumiveis no ItemCatalog.
@@ -912,7 +877,7 @@ local function lootPass()
 						value.Name = entry.ItemId
 						value.Parent = materials
 					end
-					value.Value += 1
+					value.Value += entry.Amount
 				end
 				pickup:Destroy()
 				break
@@ -943,6 +908,7 @@ function MonsterSpawner.PopulateIsland(island, freeCells, context)
 	assert(island and island:IsA("Model"), "[MonsterSpawner] Ilha invalida.")
 	assert(typeof(freeCells) == "table", "[MonsterSpawner] freeCells precisa ser tabela.")
 	context = context or {}
+	local yieldCallback = context.YieldCallback
 	SlimeController.RegisterIsland(island, freeCells)
 
 	local eliteIsland = island:GetAttribute("IslandType") == "Elite"
@@ -1063,6 +1029,11 @@ function MonsterSpawner.PopulateIsland(island, freeCells, context)
 			spawned += 1
 		else
 			marker:Destroy()
+		end
+		-- Clonar um rig pode publicar dezenas de descendentes. Limitar a uma
+		-- unidade por fatia impede que grupos completos cheguem juntos ao cliente.
+		if yieldCallback then
+			yieldCallback()
 		end
 	end
 

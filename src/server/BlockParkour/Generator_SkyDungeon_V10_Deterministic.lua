@@ -1,7 +1,7 @@
 --[[
-	VERSION: V11_GEOMETRY_POOL_ACTIVE
+	VERSION: V13_GRASS_TOP_GUARANTEE
 
-	Sky Dungeon V11 - Generator Deterministico com reutilizacao de geometria
+	Sky Dungeon V13 - gerador parcelado com cobertura de grama garantida
 
 	Cada chamada gera um round vertical completo:
 	1. sala principal grande;
@@ -632,6 +632,14 @@ local function createFlatGrassLayer(parent, sourcePart, name, roundIndex)
 		return nil
 	end
 
+	-- O cliente usa estes atributos no proprio piso para criar o acabamento
+	-- distante mesmo quando a camada 3D ainda nao chegou pelo Streaming.
+	sourcePart:SetAttribute("HasFlatGrassTop", true)
+	sourcePart:SetAttribute("DistantGrassTextureId", Config.DISTANT_GRASS_TEXTURE_ID)
+	sourcePart:SetAttribute("DistantGrassTextureTileStuds", Config.DISTANT_GRASS_TEXTURE_TILE_STUDS)
+	sourcePart:SetAttribute("DistantGrassColor", Config.FLAT_GRASS_COLOR)
+	sourcePart:SetAttribute("GrassTopCoverage", sourcePart:GetAttribute("BlockType"))
+
 	local thickness = Config.FLAT_GRASS_LAYER_THICKNESS_STUDS
 	local layer = Instance.new("Part")
 	layer.Name = name
@@ -649,6 +657,10 @@ local function createFlatGrassLayer(parent, sourcePart, name, roundIndex)
 	layer.BottomSurface = Enum.SurfaceType.Smooth
 	layer:SetAttribute("IsFlatGrassLayer", true)
 	layer:SetAttribute("RoundIndex", roundIndex)
+	layer:SetAttribute("GrassSourcePartName", sourcePart.Name)
+	layer:SetAttribute("GrassTopCoverage", sourcePart:GetAttribute("BlockType"))
+	layer:SetAttribute("DistantGrassTextureId", Config.DISTANT_GRASS_TEXTURE_ID)
+	layer:SetAttribute("DistantGrassTextureTileStuds", Config.DISTANT_GRASS_TEXTURE_TILE_STUDS)
 	layer.Parent = parent
 	return layer
 end
@@ -694,7 +706,9 @@ local function createConnector(parent, cell, pathType, pathId, pathName, sequenc
 	part.Position = gridToWorld(cell)
 	part.Anchored = true
 	part.CanCollide = Config.CAN_COLLIDE
-	part.CanTouch = true
+	-- A descoberta usa o indice espacial e nenhum sistema escuta .Touched nestas
+	-- pecas. A colisao e os raycasts continuam ativos sem gerar eventos de toque.
+	part.CanTouch = false
 	part.CanQuery = true
 	part.Material = Config.BLOCK_MATERIAL
 	part.Color = Config.BLOCK_COLOR
@@ -709,19 +723,20 @@ local function createConnector(parent, cell, pathType, pathId, pathName, sequenc
 	part:SetAttribute("IsMainRoute", pathType == "MainRoute")
 	part:SetAttribute("IsRoundConnector", true)
 	part:SetAttribute("RoundIndex", roundIndex)
-	part.Parent = parent
-	if options.YieldCallback then
-		options.YieldCallback()
-	end
 	local deferVisualContent = options.DeferVisualContent == true
 	local hasFlatGrass = connectorHasFlatGrass(cell, pathId, sequence, roundIndex, options.Seed)
 	part:SetAttribute("ConnectorSurface", hasFlatGrass and "Grass" or "Dirt")
 	part:SetAttribute("SimplifiedRouteVisual", deferVisualContent)
 	if hasFlatGrass then
-		createFlatGrassLayer(parent, part, part.Name .. "_GrassTop", roundIndex)
-		if options.YieldCallback then
-			options.YieldCallback()
-		end
+		-- O topo e preparado como filho antes de o bloco entrar no Workspace.
+		-- Assim bloco e acabamento verde formam uma unica publicacao replicada:
+		-- o cliente nunca ve primeiro o bloco de terra para receber a grama depois.
+		createFlatGrassLayer(part, part, part.Name .. "_GrassTop", roundIndex)
+	end
+	part.Parent = parent
+	if options.YieldCallback then
+		-- Informa o custo real da unidade atomica ao orcamento do ChunkManager.
+		options.YieldCallback(hasFlatGrass and 2 or 1)
 	end
 	if hasFlatGrass and not deferVisualContent and Config.GRASS_ON_CONNECTORS and #grassTemplates > 0 then
 		local grassSeed = math.max(1, (roundIndex * 7919) % 2147483647)
@@ -960,7 +975,8 @@ spawnGrassModel = function(parent, templates, cell, seed, random, name)
 	local jitterZ = random:NextNumber(-jitterLimit, jitterLimit)
 	local rotation = random:NextNumber(0, math.pi * 2)
 	local surfacePosition = gridToWorld(cell) + Vector3.new(jitterX, Config.ISLAND_FLOOR_THICKNESS_STUDS / 2, jitterZ)
-	local targetPosition = surfacePosition + Vector3.new(0, pivotHeightFromBottom + 0.02, 0)
+	local targetPosition = surfacePosition
+		+ Vector3.new(0, pivotHeightFromBottom + Config.GRASS_MODEL_SURFACE_LIFT_STUDS, 0)
 	grass:PivotTo(CFrame.new(targetPosition) * CFrame.Angles(0, rotation, 0) * originalPivot.Rotation)
 	return true
 end
@@ -1123,7 +1139,7 @@ local function createIsland(parent, island, roundIndex, previousCenter, grassTem
 	floor.Position = gridToWorld(island.Center)
 	floor.Anchored = true
 	floor.CanCollide = Config.CAN_COLLIDE
-	floor.CanTouch = true
+	floor.CanTouch = false
 	floor.CanQuery = true
 	floor.Material = Config.BLOCK_MATERIAL
 	floor.Color = Config.BLOCK_COLOR
@@ -1723,10 +1739,11 @@ function Generator.CreateFrontierConnection(parent, connectionPlan, options)
 		assert(valid, "Salto invalido na conexao: " .. tostring(reason))
 	end
 
-	local model = options.RecycledModel
+	local recycledShell = options.RecycledModel
+	local model
 	local recycledParts = {}
-	if model then
-		for _, child in ipairs(model:GetChildren()) do
+	if recycledShell then
+		for _, child in ipairs(recycledShell:GetChildren()) do
 			if child:IsA("Part") then
 				table.insert(recycledParts, child)
 			else
@@ -1740,10 +1757,11 @@ function Generator.CreateFrontierConnection(parent, connectionPlan, options)
 			#recycledParts == #connectionPlan.Cells - 2,
 			"[SkyDungeon] Casco de conexao reciclada possui quantidade incompatível de blocos."
 		)
-		clearAttributes(model)
-	else
-		model = Instance.new("Model")
 	end
+	-- O conteiner vazio entra primeiro no Workspace. Cada bloco novo ou reciclado
+	-- e movido para ele separadamente por createConnector, fazendo a replicacao
+	-- obedecer ao YieldCallback em vez de publicar a ponte inteira no final.
+	model = Instance.new("Model")
 	model.Name = "Connection_" .. connectionPlan.Key
 	model:SetAttribute("IsFrontierConnection", true)
 	model:SetAttribute("EdgeKey", connectionPlan.Key)
@@ -1757,6 +1775,8 @@ function Generator.CreateFrontierConnection(parent, connectionPlan, options)
 	model:SetAttribute("VisualContentDeferred", false)
 	model:SetAttribute("OptimizedEssentialRoute", options.DeferVisualContent == true)
 	model:SetAttribute("GeometryReused", options.RecycledModel ~= nil)
+	model:SetAttribute("GeometryPublishing", true)
+	model.Parent = parent
 	local grassTemplates = options.DeferVisualContent == true and {} or getGrassTemplates()
 	local roundIndex = (options.LogicalLevel or 0) + 1
 	for index = 2, #connectionPlan.Cells - 1 do
@@ -1780,10 +1800,13 @@ function Generator.CreateFrontierConnection(parent, connectionPlan, options)
 		part:SetAttribute("SourceNodeKey", connectionPlan.SourceKey)
 		part:SetAttribute("TargetNodeKey", connectionPlan.TargetKey)
 	end
-	model.Parent = parent
+	if recycledShell then
+		recycledShell:Destroy()
+	end
 	local boundsCFrame, boundsSize = model:GetBoundingBox()
 	model:SetAttribute("BottomWorldY", boundsCFrame.Position.Y - boundsSize.Y / 2)
 	model:SetAttribute("TopWorldY", boundsCFrame.Position.Y + boundsSize.Y / 2)
+	model:SetAttribute("GeometryPublishing", false)
 	return model, {
 		BoundsCFrame = boundsCFrame,
 		BoundsSize = boundsSize,
@@ -1905,6 +1928,7 @@ function Generator.PopulateRuntimeContent(model, yieldCallback)
 				ChunkIndex = chunkIndex,
 				RoundIndex = roundIndex,
 				RoundSeed = roundSeed,
+				YieldCallback = yieldCallback,
 			}
 		)
 		if success then
@@ -1942,6 +1966,7 @@ function Generator.PopulateRuntimeContent(model, yieldCallback)
 					RoundIndex = roundIndex,
 					RoundSeed = roundSeed,
 					GridSize = Config.GRID_SIZE,
+					YieldCallback = yieldCallback,
 				}
 			)
 			if success then

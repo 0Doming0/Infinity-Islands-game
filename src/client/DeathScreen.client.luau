@@ -4,6 +4,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 
 local player = Players.LocalPlayer
 local deathEvent = ReplicatedStorage:WaitForChild("DeathReviveEvent")
@@ -15,6 +16,64 @@ gui.IgnoreGuiInset = true
 gui.DisplayOrder = 100
 gui.Enabled = false
 gui.Parent = player:WaitForChild("PlayerGui")
+
+-- A transicao fica em uma ScreenGui separada para sobreviver ao CharacterAdded.
+-- Ela cobre a tela de morte antes que o personagem antigo seja removido.
+local transitionGui = Instance.new("ScreenGui")
+transitionGui.Name = "RespawnTransition"
+transitionGui.ResetOnSpawn = false
+transitionGui.IgnoreGuiInset = true
+transitionGui.DisplayOrder = 10000
+transitionGui.Enabled = false
+transitionGui.Parent = player.PlayerGui
+
+local topCurtain = Instance.new("Frame")
+topCurtain.Name = "TopCurtain"
+topCurtain.Size = UDim2.fromScale(1, 0.505)
+topCurtain.Position = UDim2.fromScale(0, 0)
+topCurtain.BackgroundColor3 = Color3.new(0, 0, 0)
+topCurtain.BorderSizePixel = 0
+topCurtain.ZIndex = 1
+topCurtain.Parent = transitionGui
+
+local bottomCurtain = Instance.new("Frame")
+bottomCurtain.Name = "BottomCurtain"
+bottomCurtain.Size = UDim2.fromScale(1, 0.505)
+bottomCurtain.Position = UDim2.fromScale(0, 0.495)
+bottomCurtain.BackgroundColor3 = Color3.new(0, 0, 0)
+bottomCurtain.BorderSizePixel = 0
+bottomCurtain.ZIndex = 1
+bottomCurtain.Parent = transitionGui
+
+local loadingGroup = Instance.new("CanvasGroup")
+loadingGroup.Name = "Loading"
+loadingGroup.AnchorPoint = Vector2.new(0.5, 0.5)
+loadingGroup.Position = UDim2.fromScale(0.5, 0.5)
+loadingGroup.Size = UDim2.fromOffset(280, 70)
+loadingGroup.BackgroundTransparency = 1
+loadingGroup.ZIndex = 2
+loadingGroup.Parent = transitionGui
+
+local loadingMark = Instance.new("Frame")
+loadingMark.AnchorPoint = Vector2.new(0.5, 0.5)
+loadingMark.Position = UDim2.fromScale(0.5, 0.23)
+loadingMark.Size = UDim2.fromOffset(14, 14)
+loadingMark.Rotation = 45
+loadingMark.BackgroundColor3 = Color3.fromRGB(232, 185, 72)
+loadingMark.BorderSizePixel = 0
+loadingMark.ZIndex = 2
+loadingMark.Parent = loadingGroup
+
+local loadingText = Instance.new("TextLabel")
+loadingText.Position = UDim2.fromScale(0, 0.45)
+loadingText.Size = UDim2.fromScale(1, 0.55)
+loadingText.BackgroundTransparency = 1
+loadingText.Text = "PREPARANDO O MUNDO"
+loadingText.TextColor3 = Color3.fromRGB(235, 235, 235)
+loadingText.Font = Enum.Font.GothamMedium
+loadingText.TextSize = 15
+loadingText.ZIndex = 2
+loadingText.Parent = loadingGroup
 
 local shade = Instance.new("Frame")
 shade.Size = UDim2.fromScale(1, 1)
@@ -94,6 +153,114 @@ freeButton.Parent = card
 Instance.new("UICorner", freeButton).CornerRadius = UDim.new(0, 11)
 
 local current
+local transitionSequence
+local transitionToken = 0
+local openingTransition = false
+
+local function showRespawnTransition(sequence)
+	transitionToken += 1
+	transitionSequence = tonumber(sequence) or transitionSequence
+	openingTransition = false
+	topCurtain.Position = UDim2.fromScale(0, 0)
+	bottomCurtain.Position = UDim2.fromScale(0, 0.495)
+	loadingGroup.GroupTransparency = 0
+	loadingMark.Rotation = 45
+	loadingText.Text = "PREPARANDO O MUNDO"
+	transitionGui.Enabled = true
+	gui.Enabled = false
+end
+
+local function cancelRespawnTransition()
+	transitionToken += 1
+	openingTransition = false
+	transitionSequence = nil
+	transitionGui.Enabled = false
+	if current then
+		gui.Enabled = true
+	end
+end
+
+local function hasLoadedFloor(character, rootPart)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = { character }
+	params.IgnoreWater = true
+	local hit = workspace:Raycast(rootPart.Position + Vector3.new(0, 2, 0), Vector3.new(0, -20, 0), params)
+	return hit ~= nil and hit.Instance:IsA("BasePart") and hit.Instance.CanCollide
+end
+
+local function openRespawnTransition(sequence)
+	if openingTransition or not transitionGui.Enabled then
+		return
+	end
+	if transitionSequence and sequence and sequence ~= transitionSequence then
+		return
+	end
+	openingTransition = true
+	local token = transitionToken
+	task.spawn(function()
+		local character = player.Character
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+		if not character or not humanoid or humanoid.Health <= 0 or not rootPart then
+			openingTransition = false
+			return
+		end
+
+		loadingText.Text = "CARREGANDO A ÁREA"
+		pcall(function()
+			player:RequestStreamAroundAsync(rootPart.Position, 5)
+		end)
+
+		local stableFrames = 0
+		local waitingSince = os.clock()
+		local nextStreamingRequest = os.clock() + 4
+		repeat
+			RunService.Heartbeat:Wait()
+			if token ~= transitionToken or player.Character ~= character or humanoid.Health <= 0 then
+				openingTransition = false
+				return
+			end
+			if hasLoadedFloor(character, rootPart) and not rootPart.Anchored then
+				stableFrames += 1
+			else
+				stableFrames = 0
+			end
+			if os.clock() >= nextStreamingRequest then
+				nextStreamingRequest = os.clock() + 4
+				loadingText.Text = os.clock() - waitingSince >= 8 and "FINALIZANDO A ÁREA" or "CARREGANDO A ÁREA"
+				task.spawn(function()
+					pcall(function()
+						player:RequestStreamAroundAsync(rootPart.Position, 4)
+					end)
+				end)
+			end
+		until stableFrames >= 2
+
+		if token ~= transitionToken then
+			openingTransition = false
+			return
+		end
+		loadingText.Text = "PRONTO"
+		task.wait(0.12)
+		TweenService:Create(
+			loadingGroup,
+			TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+			{ GroupTransparency = 1 }
+		):Play()
+		local info = TweenInfo.new(0.65, Enum.EasingStyle.Quint, Enum.EasingDirection.InOut)
+		local topTween = TweenService:Create(topCurtain, info, { Position = UDim2.fromScale(0, -0.505) })
+		local bottomTween = TweenService:Create(bottomCurtain, info, { Position = UDim2.fromScale(0, 1) })
+		topTween:Play()
+		bottomTween:Play()
+		topTween.Completed:Wait()
+		if token == transitionToken then
+			transitionGui.Enabled = false
+			transitionSequence = nil
+			openingTransition = false
+		end
+	end)
+end
 
 robuxButton.Activated:Connect(function()
 	if not current or current.ProductId <= 0 then
@@ -107,11 +274,15 @@ end)
 freeButton.Activated:Connect(function()
 	if current and os.clock() >= current.FreeAt then
 		freeButton.Active = false
+		showRespawnTransition(nil)
 		deathEvent:FireServer({ Action = "FreeRespawn", Serial = current.Serial })
 	end
 end)
 
-RunService.RenderStepped:Connect(function()
+RunService.RenderStepped:Connect(function(deltaTime)
+	if transitionGui.Enabled then
+		loadingMark.Rotation = (loadingMark.Rotation + 135 * deltaTime) % 360
+	end
 	if not current or not gui.Enabled then
 		return
 	end
@@ -126,6 +297,7 @@ deathEvent.OnClientEvent:Connect(function(data)
 		return
 	end
 	if data.Action == "Show" then
+		cancelRespawnTransition()
 		current = {
 			Serial = data.Serial,
 			ProductId = tonumber(data.ProductId) or 0,
@@ -143,16 +315,47 @@ deathEvent.OnClientEvent:Connect(function(data)
 		robuxButton.Text = current.ProductId > 0 and "RENASCER SEM PERDER MOEDAS" or "CONFIGURE O PRODUTO ROBUX"
 		gui.Enabled = true
 	elseif data.Action == "Granted" then
+		showRespawnTransition(data.RespawnSequence)
 		result.Text =
 			string.format("Renascimento confirmado!\n%d moedas devolvidas.", tonumber(data.CoinsRefunded) or 0)
 		robuxButton.Text = "CONFIRMADO"
+	elseif data.Action == "PreparingRespawn" then
+		showRespawnTransition(data.RespawnSequence)
+	elseif data.Action == "RespawnReady" then
+		local sequence = tonumber(data.RespawnSequence) or 0
+		transitionSequence = transitionSequence or sequence
+		openRespawnTransition(sequence)
 	elseif data.Action == "Error" then
+		cancelRespawnTransition()
 		result.Text = tostring(data.Message or "Não foi possível abrir a compra.")
 		robuxButton.Active = current ~= nil and current.ProductId > 0
 	end
 end)
 
-player.CharacterAdded:Connect(function()
-	gui.Enabled = false
+player.CharacterAdded:Connect(function(character)
+	if not transitionGui.Enabled then
+		showRespawnTransition(player:GetAttribute("RespawnSequence"))
+	end
 	current = nil
+	local sequence = tonumber(player:GetAttribute("RespawnSequence")) or 0
+	if
+		(tonumber(player:GetAttribute("RespawnReadySequence")) or -1) >= sequence
+		and character:GetAttribute("RespawnReady") == true
+	then
+		openRespawnTransition(sequence)
+	end
 end)
+
+player:GetAttributeChangedSignal("RespawnReadySequence"):Connect(function()
+	if not transitionGui.Enabled then
+		return
+	end
+	local sequence = tonumber(player:GetAttribute("RespawnReadySequence")) or -1
+	if not transitionSequence or sequence >= transitionSequence then
+		openRespawnTransition(sequence)
+	end
+end)
+
+if not player.Character or player:GetAttribute("RespawnState") ~= "Ready" then
+	showRespawnTransition(player:GetAttribute("RespawnSequence"))
+end

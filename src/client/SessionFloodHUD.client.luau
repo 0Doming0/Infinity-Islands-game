@@ -1,5 +1,6 @@
--- SessionFloodHUD V27
+-- SessionFloodHUD V29
 -- Exibe tempo da sessao, contagem do santuario e alerta de dano da agua.
+-- A vinheta usa uma ScreenGui separada para alcancar os cantos reais da tela.
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -12,7 +13,7 @@ local camera = workspace.CurrentCamera
 
 local COUNTDOWN_ATTRIBUTE = "SanctuaryFloodCountdownEnd"
 local WATER_DAMAGE_ACTIVE_ATTRIBUTE = "WaterDamageActive"
-local DANGER_BANNER_SECONDS = 1.5
+local DANGER_BANNER_SECONDS = 1.2
 local DANGER_SOUND_INTERVAL = 2.4
 local sessionStartedAt = os.clock()
 
@@ -23,15 +24,24 @@ gui.IgnoreGuiInset = false
 gui.DisplayOrder = 45
 gui.Parent = playerGui
 
+-- A interface principal respeita a area segura do Roblox, mas a vinheta precisa
+-- ignorar o recuo da barra superior para encostar nas quatro bordas fisicas.
+local vignetteGui = Instance.new("ScreenGui")
+vignetteGui.Name = "SessionFloodVignette"
+vignetteGui.ResetOnSpawn = false
+vignetteGui.IgnoreGuiInset = true
+vignetteGui.DisplayOrder = 44
+vignetteGui.Parent = playerGui
+
 local dangerOverlay = Instance.new("CanvasGroup")
 dangerOverlay.Name = "WaterDamageVignette"
 dangerOverlay.Position = UDim2.fromScale(0, 0)
 dangerOverlay.Size = UDim2.fromScale(1, 1)
 dangerOverlay.BackgroundTransparency = 1
-dangerOverlay.GroupTransparency = 0.25
+dangerOverlay.GroupTransparency = 0.58
 dangerOverlay.Visible = false
 dangerOverlay.ZIndex = 1
-dangerOverlay.Parent = gui
+dangerOverlay.Parent = vignetteGui
 
 local function createDangerEdge(name, position, size, gradientRotation)
 	local edge = Instance.new("Frame")
@@ -39,7 +49,7 @@ local function createDangerEdge(name, position, size, gradientRotation)
 	edge.Position = position
 	edge.Size = size
 	edge.BackgroundColor3 = Color3.fromRGB(255, 20, 45)
-	edge.BackgroundTransparency = 0.08
+	edge.BackgroundTransparency = 0.38
 	edge.BorderSizePixel = 0
 	edge.ZIndex = 1
 	edge.Parent = dangerOverlay
@@ -54,32 +64,21 @@ local function createDangerEdge(name, position, size, gradientRotation)
 	gradient.Parent = edge
 end
 
-createDangerEdge("Top", UDim2.fromScale(0, 0), UDim2.fromScale(1, 0.2), 90)
-createDangerEdge("Bottom", UDim2.fromScale(0, 0.8), UDim2.fromScale(1, 0.2), 270)
-createDangerEdge("Left", UDim2.fromScale(0, 0), UDim2.fromScale(0.16, 1), 0)
-createDangerEdge("Right", UDim2.fromScale(0.84, 0), UDim2.fromScale(0.16, 1), 180)
+createDangerEdge("Top", UDim2.fromScale(0, 0), UDim2.fromScale(1, 0.11), 90)
+createDangerEdge("Bottom", UDim2.fromScale(0, 0.89), UDim2.fromScale(1, 0.11), 270)
+createDangerEdge("Left", UDim2.fromScale(0, 0), UDim2.fromScale(0.08, 1), 0)
+createDangerEdge("Right", UDim2.fromScale(0.92, 0), UDim2.fromScale(0.08, 1), 180)
 
 local dangerBanner = Instance.new("Frame")
 dangerBanner.Name = "WaterDamageBanner"
 dangerBanner.AnchorPoint = Vector2.new(0.5, 0.5)
-dangerBanner.Position = UDim2.fromScale(0.5, 0.38)
-dangerBanner.Size = UDim2.fromOffset(470, 118)
-dangerBanner.BackgroundColor3 = Color3.fromRGB(35, 7, 13)
-dangerBanner.BackgroundTransparency = 0.08
+dangerBanner.Position = UDim2.fromScale(0.5, 0.4)
+dangerBanner.Size = UDim2.fromOffset(360, 76)
+dangerBanner.BackgroundTransparency = 1
 dangerBanner.BorderSizePixel = 0
 dangerBanner.Visible = false
 dangerBanner.ZIndex = 10
 dangerBanner.Parent = gui
-
-local dangerCorner = Instance.new("UICorner")
-dangerCorner.CornerRadius = UDim.new(0, 15)
-dangerCorner.Parent = dangerBanner
-
-local dangerStroke = Instance.new("UIStroke")
-dangerStroke.Color = Color3.fromRGB(255, 39, 62)
-dangerStroke.Thickness = 3
-dangerStroke.Transparency = 0.04
-dangerStroke.Parent = dangerBanner
 
 local dangerScale = Instance.new("UIScale")
 dangerScale.Scale = 1
@@ -87,52 +86,53 @@ dangerScale.Parent = dangerBanner
 
 local dangerTitle = Instance.new("TextLabel")
 dangerTitle.Name = "Title"
-dangerTitle.Position = UDim2.fromOffset(12, 14)
-dangerTitle.Size = UDim2.new(1, -24, 0, 36)
+dangerTitle.Position = UDim2.fromOffset(6, 4)
+dangerTitle.Size = UDim2.new(1, -12, 0, 27)
 dangerTitle.BackgroundTransparency = 1
-dangerTitle.Text = "⚠ A ÁGUA ESTÁ CAUSANDO DANO!"
+dangerTitle.Text = "⚠ ÁGUA CAUSANDO DANO"
 dangerTitle.TextColor3 = Color3.fromRGB(255, 235, 238)
-dangerTitle.Font = Enum.Font.GothamBlack
-dangerTitle.TextSize = 23
+dangerTitle.TextStrokeColor3 = Color3.fromRGB(42, 4, 10)
+dangerTitle.TextStrokeTransparency = 0.35
+dangerTitle.Font = Enum.Font.GothamBold
+dangerTitle.TextSize = 18
 dangerTitle.ZIndex = 11
 dangerTitle.Parent = dangerBanner
 
 local dangerSubtitle = Instance.new("TextLabel")
 dangerSubtitle.Name = "Instruction"
-dangerSubtitle.Position = UDim2.fromOffset(12, 57)
-dangerSubtitle.Size = UDim2.new(1, -24, 0, 39)
+dangerSubtitle.Position = UDim2.fromOffset(6, 34)
+dangerSubtitle.Size = UDim2.new(1, -12, 0, 30)
 dangerSubtitle.BackgroundTransparency = 1
-dangerSubtitle.Text = "↑ SUBA AGORA! ↑"
+dangerSubtitle.Text = "↑ SUBA AGORA"
 dangerSubtitle.TextColor3 = Color3.fromRGB(255, 73, 91)
-dangerSubtitle.Font = Enum.Font.GothamBlack
-dangerSubtitle.TextSize = 29
+dangerSubtitle.TextStrokeColor3 = Color3.fromRGB(42, 4, 10)
+dangerSubtitle.TextStrokeTransparency = 0.32
+dangerSubtitle.Font = Enum.Font.GothamBold
+dangerSubtitle.TextSize = 21
 dangerSubtitle.ZIndex = 11
 dangerSubtitle.Parent = dangerBanner
 
 local climbCue = Instance.new("TextLabel")
 climbCue.Name = "ClimbCue"
 climbCue.AnchorPoint = Vector2.new(0.5, 0.5)
-climbCue.Position = UDim2.fromScale(0.5, 0.72)
-climbCue.Size = UDim2.fromOffset(300, 45)
-climbCue.BackgroundColor3 = Color3.fromRGB(38, 8, 14)
-climbCue.BackgroundTransparency = 0.2
+climbCue.Position = UDim2.fromScale(0.5, 0.68)
+climbCue.Size = UDim2.fromOffset(240, 30)
+climbCue.BackgroundTransparency = 1
 climbCue.BorderSizePixel = 0
 climbCue.Text = "↑ PROCURE TERRENO ALTO"
 climbCue.TextColor3 = Color3.fromRGB(255, 220, 225)
-climbCue.Font = Enum.Font.GothamBold
-climbCue.TextSize = 18
+climbCue.TextStrokeColor3 = Color3.fromRGB(42, 4, 10)
+climbCue.TextStrokeTransparency = 0.4
+climbCue.Font = Enum.Font.GothamMedium
+climbCue.TextSize = 14
 climbCue.Visible = false
 climbCue.ZIndex = 9
 climbCue.Parent = gui
 
-local climbCorner = Instance.new("UICorner")
-climbCorner.CornerRadius = UDim.new(0, 12)
-climbCorner.Parent = climbCue
-
 local climbStroke = Instance.new("UIStroke")
-climbStroke.Color = Color3.fromRGB(255, 55, 75)
-climbStroke.Transparency = 0.25
-climbStroke.Thickness = 2
+climbStroke.Color = Color3.fromRGB(255, 92, 108)
+climbStroke.Transparency = 0.72
+climbStroke.Thickness = 1
 climbStroke.Parent = climbCue
 
 local climbScale = Instance.new("UIScale")
@@ -172,23 +172,12 @@ timerStroke.Parent = sessionTimer
 local warning = Instance.new("Frame")
 warning.Name = "SanctuaryFloodWarning"
 warning.AnchorPoint = Vector2.new(0.5, 0.5)
-warning.Position = UDim2.fromScale(0.5, 0.43)
-warning.Size = UDim2.fromOffset(420, 120)
-warning.BackgroundColor3 = Color3.fromRGB(25, 12, 18)
-warning.BackgroundTransparency = 0.12
+warning.Position = UDim2.fromScale(0.5, 0.42)
+warning.Size = UDim2.fromOffset(340, 78)
+warning.BackgroundTransparency = 1
 warning.BorderSizePixel = 0
 warning.Visible = false
 warning.Parent = gui
-
-local warningCorner = Instance.new("UICorner")
-warningCorner.CornerRadius = UDim.new(0, 16)
-warningCorner.Parent = warning
-
-local warningStroke = Instance.new("UIStroke")
-warningStroke.Color = Color3.fromRGB(255, 74, 89)
-warningStroke.Transparency = 0.08
-warningStroke.Thickness = 2
-warningStroke.Parent = warning
 
 local warningScale = Instance.new("UIScale")
 warningScale.Scale = 1
@@ -224,24 +213,28 @@ bindCamera()
 
 local title = Instance.new("TextLabel")
 title.Name = "Title"
-title.Position = UDim2.fromOffset(14, 13)
-title.Size = UDim2.new(1, -28, 0, 30)
+title.Position = UDim2.fromOffset(8, 4)
+title.Size = UDim2.new(1, -16, 0, 25)
 title.BackgroundTransparency = 1
-title.Text = "⚠ A ÁGUA CHEGOU AO SANTUÁRIO"
+title.Text = "⚠ ÁGUA NO SANTUÁRIO"
 title.TextColor3 = Color3.fromRGB(255, 224, 229)
-title.Font = Enum.Font.GothamBold
-title.TextSize = 18
+title.TextStrokeColor3 = Color3.fromRGB(42, 4, 10)
+title.TextStrokeTransparency = 0.38
+title.Font = Enum.Font.GothamMedium
+title.TextSize = 15
 title.Parent = warning
 
 local countdown = Instance.new("TextLabel")
 countdown.Name = "Countdown"
-countdown.Position = UDim2.fromOffset(14, 48)
-countdown.Size = UDim2.new(1, -28, 0, 54)
+countdown.Position = UDim2.fromOffset(8, 31)
+countdown.Size = UDim2.new(1, -16, 0, 34)
 countdown.BackgroundTransparency = 1
-countdown.Text = "PROTEÇÃO DESATIVA EM 5"
+countdown.Text = "PROTEÇÃO ACABA EM 5"
 countdown.TextColor3 = Color3.fromRGB(255, 87, 102)
-countdown.Font = Enum.Font.GothamBlack
-countdown.TextSize = 28
+countdown.TextStrokeColor3 = Color3.fromRGB(42, 4, 10)
+countdown.TextStrokeTransparency = 0.32
+countdown.Font = Enum.Font.GothamBold
+countdown.TextSize = 20
 countdown.Parent = warning
 
 local lastDisplayedSecond
@@ -332,7 +325,7 @@ RunService.RenderStepped:Connect(function()
 	else
 		setWarningVisible(true)
 		local displayedSecond = math.clamp(math.ceil(remaining), 1, 5)
-		countdown.Text = string.format("PROTEÇÃO DESATIVA EM %d", displayedSecond)
+		countdown.Text = string.format("PROTEÇÃO ACABA EM %d", displayedSecond)
 
 		if displayedSecond ~= lastDisplayedSecond then
 			lastDisplayedSecond = displayedSecond
@@ -354,8 +347,8 @@ RunService.RenderStepped:Connect(function()
 		playDangerSound(now)
 
 		local pulse = (math.sin(now * 7.2) + 1) * 0.5
-		dangerOverlay.GroupTransparency = 0.18 + pulse * 0.26
-		climbCue.TextTransparency = 0.02 + pulse * 0.18
-		climbStroke.Transparency = 0.12 + pulse * 0.3
+		dangerOverlay.GroupTransparency = 0.52 + pulse * 0.24
+		climbCue.TextTransparency = 0.08 + pulse * 0.2
+		climbStroke.Transparency = 0.68 + pulse * 0.2
 	end
 end)
