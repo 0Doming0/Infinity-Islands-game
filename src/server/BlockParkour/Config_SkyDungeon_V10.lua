@@ -1,4 +1,4 @@
--- VERSION: V13_GRASS_TOP_GUARANTEE
+-- VERSION: V15_NORMAL_ISLAND_TOP_FACE_GRASS
 -- Sky Dungeon - configuracao da fronteira vertical gerada por ilha.
 
 local Config = {
@@ -202,11 +202,15 @@ local Config = {
 	-- elevava apenas os modelos decorativos e nao esta camada.
 	FLAT_GRASS_SURFACE_OFFSET_STUDS = 0.125,
 	FLAT_GRASS_COLOR = Color3.fromRGB(88, 142, 72),
-	-- LOD distante: quando o cliente oculta a camada 3D, esta textura aparece
-	-- somente na face superior do bloco de terra. Troque apenas este ID se
-	-- quiser usar uma textura própria publicada pelo criador da experiência.
+	-- Imagem repetida sobre a face superior. A imagem e opcional visualmente:
+	-- a SurfaceGui criada no servidor tambem possui um fundo verde permanente,
+	-- portanto a terra nunca fica exposta se o asset demorar ou falhar.
 	DISTANT_GRASS_TEXTURE_ID = "rbxassetid://7568838452",
 	DISTANT_GRASS_TEXTURE_TILE_STUDS = 8,
+	-- Este objeto fica como filho do proprio IslandFloor e desenha somente a
+	-- face Top. Nao e uma nova Part e nao altera colisao, fisica ou Streaming.
+	NORMAL_BIOME_GRASS_FACE_NAME = "NormalBiomeGrassTopFace",
+	NORMAL_BIOME_GRASS_PIXELS_PER_STUD = 16,
 
 	-- ROTAS PRINCIPAL E ALTERNATIVAS
 	-- O V8 usa escadarias deterministicas. Os campos A* abaixo ficam apenas

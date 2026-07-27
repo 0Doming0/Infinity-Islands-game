@@ -1,7 +1,7 @@
 --[[
-	VERSION: V13_GRASS_TOP_GUARANTEE
+	VERSION: V15_NORMAL_ISLAND_TOP_FACE_GRASS
 
-	Sky Dungeon V13 - gerador parcelado com cobertura de grama garantida
+	Sky Dungeon V15 - grama aplicada na face Top do grande IslandFloor
 
 	Cada chamada gera um round vertical completo:
 	1. sala principal grande;
@@ -665,6 +665,81 @@ local function createFlatGrassLayer(parent, sourcePart, name, roundIndex)
 	return layer
 end
 
+local function removeNormalBiomeGrassFace(sourcePart)
+	local face = sourcePart:FindFirstChild(Config.NORMAL_BIOME_GRASS_FACE_NAME)
+	if face then
+		face:Destroy()
+	end
+
+	-- Remove a implementacao V14 antiga quando um piso vier do pool.
+	local legacyTexture = sourcePart:FindFirstChild("DistantGrassTopLOD")
+	if legacyTexture and legacyTexture:GetAttribute("IsNormalBiomeGrassFace") == true then
+		legacyTexture:Destroy()
+	end
+end
+
+local function setNormalBiomeGrassFaceColor(sourcePart, color)
+	local face = sourcePart:FindFirstChild(Config.NORMAL_BIOME_GRASS_FACE_NAME)
+	if not face or not face:IsA("SurfaceGui") then
+		return
+	end
+
+	local background = face:FindFirstChild("GrassFallback")
+	if background and background:IsA("Frame") then
+		background.BackgroundColor3 = color
+	end
+
+	local image = face:FindFirstChild("GrassTexture")
+	if image and image:IsA("ImageLabel") then
+		image.ImageColor3 = color
+	end
+end
+
+local function ensureNormalBiomeGrassFace(sourcePart)
+	removeNormalBiomeGrassFace(sourcePart)
+
+	local face = Instance.new("SurfaceGui")
+	face.Name = Config.NORMAL_BIOME_GRASS_FACE_NAME
+	face.Face = Enum.NormalId.Top
+	face.Adornee = sourcePart
+	face.AlwaysOnTop = false
+	face.LightInfluence = 1
+	face.Brightness = 1
+	face.SizingMode = Enum.SurfaceGuiSizingMode.PixelsPerStud
+	face.PixelsPerStud = math.max(1, Config.NORMAL_BIOME_GRASS_PIXELS_PER_STUD)
+	face:SetAttribute("IsNormalBiomeGrassFace", true)
+
+	-- Esta cor cobre a face antes mesmo de a imagem carregar. Dessa forma o
+	-- material Ground do grande bloco nunca reaparece pela parte de cima.
+	local background = Instance.new("Frame")
+	background.Name = "GrassFallback"
+	background.Size = UDim2.fromScale(1, 1)
+	background.BorderSizePixel = 0
+	background.BackgroundColor3 = Config.FLAT_GRASS_COLOR
+	background.Parent = face
+
+	local texture = Instance.new("ImageLabel")
+	texture.Name = "GrassTexture"
+	texture.Size = UDim2.fromScale(1, 1)
+	texture.BorderSizePixel = 0
+	texture.BackgroundColor3 = Config.FLAT_GRASS_COLOR
+	texture.BackgroundTransparency = 1
+	texture.Image = Config.DISTANT_GRASS_TEXTURE_ID
+	texture.ImageColor3 = Color3.new(1, 1, 1)
+	texture.ScaleType = Enum.ScaleType.Tile
+	local tilePixels = math.max(
+		1,
+		math.floor(Config.DISTANT_GRASS_TEXTURE_TILE_STUDS * Config.NORMAL_BIOME_GRASS_PIXELS_PER_STUD + 0.5)
+	)
+	texture.TileSize = UDim2.fromOffset(tilePixels, tilePixels)
+	texture.Parent = face
+
+	face.Parent = sourcePart
+	sourcePart:SetAttribute("TopFaceMaterial", "Grass")
+	sourcePart:SetAttribute("TopFaceGrassVersion", "V15")
+	return face
+end
+
 local function connectorHasFlatGrass(cell, pathId, sequence, roundIndex, worldSeed)
 	if not Config.CREATE_FLAT_GRASS_LAYER then
 		return false
@@ -1085,6 +1160,8 @@ end
 
 local function createIsland(parent, island, roundIndex, previousCenter, grassTemplates, options)
 	options = options or {}
+	local biomeType = tostring(options.BiomeType or island.BiomeType or "Normal")
+	local isNormalBiome = string.lower(biomeType) == "normal"
 	local previousY = previousCenter.Y
 	local horizontalCenterDistance = Vector2.new(island.Center.X - previousCenter.X, island.Center.Z - previousCenter.Z).Magnitude
 		* Config.GRID_SIZE
@@ -1109,6 +1186,7 @@ local function createIsland(parent, island, roundIndex, previousCenter, grassTem
 	model:SetAttribute("RoundIndex", roundIndex)
 	model:SetAttribute("TerrainSize", island.SizeName)
 	model:SetAttribute("IslandRole", island.Role)
+	model:SetAttribute("BiomeType", biomeType)
 	model:SetAttribute("CenterGrid", island.Center)
 	model:SetAttribute("GridY", island.Center.Y)
 	model:SetAttribute("MinGridX", island.MinX)
@@ -1149,6 +1227,7 @@ local function createIsland(parent, island, roundIndex, previousCenter, grassTem
 	floor:SetAttribute("TerrainId", island.Id)
 	floor:SetAttribute("TerrainSize", island.SizeName)
 	floor:SetAttribute("IslandRole", island.Role)
+	floor:SetAttribute("BiomeType", biomeType)
 	floor:SetAttribute("IsMainRoute", islandHasMainRoute(island))
 	floor:SetAttribute("RoundIndex", roundIndex)
 	floor:SetAttribute("GridX", island.Center.X)
@@ -1156,6 +1235,15 @@ local function createIsland(parent, island, roundIndex, previousCenter, grassTem
 	floor:SetAttribute("GridZ", island.Center.Z)
 	floor.Parent = model
 	model.PrimaryPart = floor
+	if isNormalBiome then
+		-- Esta SurfaceGui pertence ao proprio grande IslandFloor e desenha
+		-- somente a face Top. As quatro laterais continuam com material Ground.
+		ensureNormalBiomeGrassFace(floor)
+	else
+		removeNormalBiomeGrassFace(floor)
+		floor:SetAttribute("TopFaceMaterial", nil)
+		floor:SetAttribute("TopFaceGrassVersion", nil)
+	end
 	createFlatGrassLayer(model, floor, "IslandGrassTop", roundIndex)
 
 	local reservations = Instance.new("Folder")
@@ -1516,8 +1604,14 @@ end
 local function styleFrontierSanctuary(islandModel)
 	local floor = islandModel.PrimaryPart
 	local grass = islandModel:FindFirstChild("IslandGrassTop")
+	local sanctuaryGrassColor = Color3.fromRGB(92, 154, 146)
 	if grass and grass:IsA("BasePart") then
-		grass.Color = Color3.fromRGB(92, 154, 146)
+		grass.Color = sanctuaryGrassColor
+		grass:SetAttribute("DistantGrassColor", sanctuaryGrassColor)
+	end
+	if floor then
+		floor:SetAttribute("DistantGrassColor", sanctuaryGrassColor)
+		setNormalBiomeGrassFaceColor(floor, sanctuaryGrassColor)
 	end
 	if not floor or islandModel:FindFirstChild("SanctuaryLabel") then
 		return

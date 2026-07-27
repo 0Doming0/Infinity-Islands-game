@@ -5,6 +5,26 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 
 local IslandTypeService = {}
+local GRASS_FACE_NAME = "NormalBiomeGrassTopFace"
+
+local function setGrassColor(floor, grass, color)
+	floor:SetAttribute("DistantGrassColor", color)
+	if grass and grass:IsA("BasePart") then
+		grass.Color = color
+		grass:SetAttribute("DistantGrassColor", color)
+	end
+	local grassFace = floor:FindFirstChild(GRASS_FACE_NAME)
+	if grassFace and grassFace:IsA("SurfaceGui") then
+		local fallback = grassFace:FindFirstChild("GrassFallback")
+		if fallback and fallback:IsA("Frame") then
+			fallback.BackgroundColor3 = color
+		end
+		local texture = grassFace:FindFirstChild("GrassTexture")
+		if texture and texture:IsA("ImageLabel") then
+			texture.ImageColor3 = color
+		end
+	end
+end
 
 local function normalizedSeed(value)
 	local seed = math.floor(math.abs(tonumber(value) or 1)) % 2147483647
@@ -45,16 +65,12 @@ local function styleIsland(island, islandType, tier)
 	end
 	local grass = island:FindFirstChild("IslandGrassTop")
 	if islandType == "Elite" then
-		if grass and grass:IsA("BasePart") then
-			grass.Color = Color3.fromRGB(108, 54, 56)
-		end
+		setGrassColor(floor, grass, Color3.fromRGB(108, 54, 56))
 		-- Evita emojis compostos neste BillboardGui. Em alguns dispositivos eles
 		-- sao renderizados como um quadrado branco em vez do icone esperado.
 		addLabel(island, floor, string.format("ELITE  |  NIVEL %d", tier), Color3.fromRGB(255, 96, 78))
 	elseif islandType == "Treasure" then
-		if grass and grass:IsA("BasePart") then
-			grass.Color = Color3.fromRGB(154, 126, 52)
-		end
+		setGrassColor(floor, grass, Color3.fromRGB(154, 126, 52))
 		addLabel(island, floor, "ILHA DO TESOURO", Color3.fromRGB(255, 220, 82))
 	end
 end
