@@ -48,6 +48,16 @@ local function getTemplates(category)
 	table.sort(result, function(a, b)
 		return a.Name < b.Name
 	end)
+	if category == "Villagers" and #result > 0 then
+		for _, template in ipairs(result) do
+			if template.Name == "SkyMerchant" then
+				return { template }
+			end
+		end
+		-- Ate que o asset definitivo seja renomeado para SkyMerchant, reutiliza
+		-- sempre o primeiro rig para preservar um unico tipo visual de NPC.
+		return { result[1] }
+	end
 	return result
 end
 
@@ -302,16 +312,6 @@ local function populateIsland(island)
 	end
 	local buildingCount = random:NextInteger(VILLAGE_CONFIG.MinimumBuildingCount, VILLAGE_CONFIG.MaximumBuildingCount)
 	local shopIds = VillageShopCatalog.GetShopIds()
-	-- Toda vila mantém o ferreiro e o guardião de recompensas. As demais
-	-- profissões continuam aleatórias e nunca se repetem.
-	for index = #shopIds, 1, -1 do
-		if shopIds[index] == "Blacksmith" or shopIds[index] == "RewardKeeper" then
-			table.remove(shopIds, index)
-		end
-	end
-	shuffle(shopIds, random)
-	table.insert(shopIds, 1, "Blacksmith")
-	table.insert(shopIds, 2, "RewardKeeper")
 	local villagerCount = math.min(
 		random:NextInteger(VILLAGE_CONFIG.MinimumVillagerCount, VILLAGE_CONFIG.MaximumVillagerCount),
 		#shopIds
@@ -361,9 +361,8 @@ local function populateIsland(island)
 	)
 	pad.CanCollide = true
 	print(string.format(
-		"[MVP Village] Vila procedural criada em %s com %d aldeoes.",
-		island:GetFullName(),
-		villagerCount
+		"[MVP Village] Vila procedural criada em %s com o Mercador do Ceu.",
+		island:GetFullName()
 	))
 end
 

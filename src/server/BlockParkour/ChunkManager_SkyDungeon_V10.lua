@@ -288,6 +288,8 @@ local function prepareWorld()
 	worldModel.Name = Config.WORLD_MODEL_NAME
 	worldModel:SetAttribute("DynamicChunksEnabled", true)
 	worldModel:SetAttribute("GridSize", Config.GRID_SIZE)
+	worldModel:SetAttribute("InitialGenerationComplete", false)
+	worldModel:SetAttribute("InitialGenerationSuccessful", false)
 	worldModel.Parent = workspace
 
 	nodesFolder = Instance.new("Folder")
@@ -882,6 +884,15 @@ local function releaseGenerationRound(job, completed)
 	end
 	if completed then
 		completedGenerationRounds += 1
+	end
+	if
+		job.Reason == "WorldBootstrap"
+		and worldModel
+		and worldModel.Parent
+		and worldModel:GetAttribute("InitialGenerationComplete") ~= true
+	then
+		worldModel:SetAttribute("InitialGenerationSuccessful", completed == true)
+		worldModel:SetAttribute("InitialGenerationComplete", true)
 	end
 end
 
@@ -1609,6 +1620,27 @@ function ChunkManager.Start()
 	startDetailWorker()
 	updateWorldAttributes(true)
 
+	-- Nunca mantenha jogadores presos na tela inicial se o primeiro round ficar
+	-- parcialmente bloqueado. A ilha inicial ja possui piso seguro neste ponto;
+	-- o restante do mundo continua sendo gerado normalmente em segundo plano.
+	task.delay(20, function()
+		if
+			running
+			and worldModel
+			and worldModel.Parent
+			and worldModel:GetAttribute("InitialGenerationComplete") ~= true
+			and startNode.Model
+			and startNode.Model.Parent
+			and startNode.Floor
+			and startNode.Floor.Parent
+		then
+			worldModel:SetAttribute("InitialGenerationSuccessful", false)
+			worldModel:SetAttribute("InitialGenerationFallback", true)
+			worldModel:SetAttribute("InitialGenerationComplete", true)
+			warn("[SkyDungeon] Geracao inicial liberada pelo fallback apos 20 segundos.")
+		end
+	end)
+
 	-- Geometria usa um unico worker global. Mesmo com muitos jogadores somente
 	-- uma pequena operacao e publicada por frame, escolhendo primeiro a fronteira
 	-- mais proxima ou um fallback de toque.
@@ -1910,6 +1942,12 @@ end
 
 function ChunkManager.IsRunning()
 	return running
+end
+
+function ChunkManager.IsInitialGenerationComplete()
+	return worldModel ~= nil
+		and worldModel.Parent ~= nil
+		and worldModel:GetAttribute("InitialGenerationComplete") == true
 end
 
 function ChunkManager.Stop()

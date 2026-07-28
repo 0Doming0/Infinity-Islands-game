@@ -65,6 +65,8 @@ function GroundSlam.Use(context)
 			local targetHumanoid = character and character:FindFirstChildOfClass("Humanoid")
 			local targetRoot = character and character:FindFirstChild("HumanoidRootPart")
 			if
+				player:GetAttribute("InvisibleToEnemies") ~= true
+				and
 				targetHumanoid
 				and targetHumanoid.Health > 0
 				and targetRoot

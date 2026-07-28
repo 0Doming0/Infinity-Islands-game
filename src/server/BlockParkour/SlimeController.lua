@@ -48,7 +48,12 @@ local function serverTime()
 end
 
 local function getLivingCharacter(player)
-	if not player or player.Parent ~= Players or player:GetAttribute("IsDowned") == true then
+	if
+		not player
+		or player.Parent ~= Players
+		or player:GetAttribute("IsDowned") == true
+		or player:GetAttribute("InvisibleToEnemies") == true
+	then
 		return nil
 	end
 	local character = player.Character

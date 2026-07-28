@@ -7,6 +7,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
+local WorldConfig = require(script.Parent.Parent.BlockParkour:WaitForChild("Config_SkyDungeon_V10"))
 local SwordCatalog = require(ReplicatedStorage:WaitForChild("SwordCatalog"))
 local RelicCatalog = require(ReplicatedStorage:WaitForChild("RelicCatalog"))
 local CompanionCatalog = require(ReplicatedStorage:WaitForChild("CompanionCatalog"))
@@ -103,8 +104,19 @@ local function loadCharacterIfDead(player, expectedState)
 end
 
 local function worldIsReady()
-	local generated = Workspace:FindFirstChild("ProceduralStructures")
-	return generated ~= nil and generated:GetAttribute("InitialGenerationComplete") == true
+	local generated = Workspace:FindFirstChild(WorldConfig.WORLD_MODEL_NAME)
+	if not generated then
+		return false
+	end
+
+	local requiredChunkCount = math.max(
+		1,
+		math.floor(tonumber(WorldConfig.INITIAL_CHUNK_COUNT) or 1)
+	)
+	local chunkCount = tonumber(generated:GetAttribute("ChunkCount")) or 0
+	local activeChunkCount = tonumber(generated:GetAttribute("ActiveChunkCount")) or 0
+
+	return chunkCount >= requiredChunkCount and activeChunkCount > 0
 end
 
 local function startSnapshot(player)

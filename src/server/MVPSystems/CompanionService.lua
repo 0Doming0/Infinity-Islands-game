@@ -17,6 +17,7 @@ local PlayerDataService = require(
 )
 local ScoreService = require(script.Parent.Parent.BlockParkour:WaitForChild("ScoreService_SkyDungeon_V10"))
 local DeveloperProductService = require(script.Parent:WaitForChild("DeveloperProductService"))
+local MarketingOfferService = require(script.Parent:WaitForChild("MarketingOfferService"))
 local TradeService = require(script.Parent:WaitForChild("TradeService"))
 local SlimeVariants = require(script.Parent.Parent.BlockParkour:WaitForChild("SlimeVariants"))
 local SlimeAnimator = require(script.Parent.Parent.BlockParkour:WaitForChild("SlimeAnimator"))
@@ -1290,6 +1291,7 @@ function CompanionService.RecordDefeat(player, monster)
 		end
 		if unlocked then
 			player:SetAttribute("LastCapturedCompanionInstanceId", instanceId)
+			MarketingOfferService.Record(player, "CompanionCaptured", 1)
 		end
 	end
 

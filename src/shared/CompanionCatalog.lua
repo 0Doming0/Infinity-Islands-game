@@ -4,11 +4,13 @@
 -- defina o Attribute CompanionImageId diretamente no Model do monstro.
 
 local CompanionCatalog = {}
+local MonetizationCatalog = require(script.Parent:WaitForChild("MonetizationCatalog"))
 
 CompanionCatalog.InitialEquippedSlots = 1
 CompanionCatalog.MaxEquipped = 4
 CompanionCatalog.MaximumStored = 500
-CompanionCatalog.EquipSlotDeveloperProductId = 0
+CompanionCatalog.EquipSlotDeveloperProductId =
+	MonetizationCatalog.Get("CompanionSlot").ProductId
 CompanionCatalog.EquipSlotCoinPrices = table.freeze({
 	[2] = 20000,
 	[3] = 75000,

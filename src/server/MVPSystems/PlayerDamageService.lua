@@ -13,6 +13,9 @@ function PlayerDamageService.Apply(player, humanoid, baseDamage, source)
 	if player:GetAttribute("IsDowned") == true then
 		return 0
 	end
+	if player:GetAttribute("InvisibleToEnemies") == true then
+		return 0
+	end
 	local multiplier = math.max(1, tonumber(player:GetAttribute("RunDamageTakenMultiplier")) or 1)
 	local damage = math.max(0, tonumber(baseDamage) or 0) * multiplier
 	if damage <= 0 then
@@ -20,6 +23,7 @@ function PlayerDamageService.Apply(player, humanoid, baseDamage, source)
 	end
 	player:SetAttribute("LastEnemyDamage", damage)
 	player:SetAttribute("LastEnemyDamageSource", tostring(source or "Enemy"))
+	player:SetAttribute("LastDamageReceivedAt", workspace:GetServerTimeNow())
 	if DownedService.TryInterceptFatal(player, humanoid, damage, source) then
 		return damage
 	end

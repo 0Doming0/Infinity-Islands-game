@@ -13,6 +13,7 @@ local BlockParkour = script.Parent.Parent:WaitForChild("BlockParkour")
 local PlayerDataService = require(BlockParkour:WaitForChild("PlayerDataService_SkyDungeon_V10"))
 local ScoreService = require(BlockParkour:WaitForChild("ScoreService_SkyDungeon_V10"))
 local CompanionService = require(script.Parent:WaitForChild("CompanionService"))
+local MarketingOfferService = require(script.Parent:WaitForChild("MarketingOfferService"))
 
 local RewardWheelService = {}
 local random = Random.new()
@@ -401,6 +402,9 @@ function RewardWheelService.Spin(player, sourceId, context)
 		WinningSlot = winningSlot,
 		FullRotations = random:NextInteger(minimumRotations, maximumRotations),
 	})
+	if sourceId ~= "PaidSpin" and sourceId ~= "RewardedAd" then
+		MarketingOfferService.Record(player, "WheelSpin", 1)
+	end
 	task.spawn(PlayerDataService.Save, player, false)
 	return true, result
 end

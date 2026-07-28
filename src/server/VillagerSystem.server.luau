@@ -97,9 +97,6 @@ local function takeWeightedOffer(pool, random)
 end
 
 local function createStockState(model, shop)
-	if shop.SpecialPanel == "Rewards" then
-		return { Stock = {}, SpecialPanel = "Rewards" }
-	end
 	local island = model:FindFirstAncestorWhichIsA("Model")
 	while island and island:GetAttribute("IsSkyIsland") ~= true do
 		island = island:FindFirstAncestorWhichIsA("Model")
@@ -140,9 +137,6 @@ end
 local function isOutOfStock(state)
 	if not state then
 		return true
-	end
-	if state.SpecialPanel then
-		return false
 	end
 	for _, entry in pairs(state.Stock) do
 		if entry.Stock > 0 then
@@ -200,8 +194,7 @@ local function updateAvailability(model, root, shop, state)
 	end
 	local prompt = root:FindFirstChild("VillageShopPrompt") or root:FindFirstChild("SwordShopPrompt")
 	if prompt and prompt:IsA("ProximityPrompt") then
-		prompt.ActionText = shop.SpecialPanel == "Rewards" and "Coletar"
-			or empty and "Conversar"
+		prompt.ActionText = empty and "Conversar"
 			or "Negociar"
 		prompt.ObjectText = empty and (shop.DisplayName .. " — SEM ESTOQUE") or shop.DisplayName
 	end
@@ -232,7 +225,8 @@ local function consumeStock(villager, itemType, itemId)
 end
 
 local function buildInventory(player, shop, state)
-	if shop.SpecialPanel == "Rewards" then
+	local inventory = {}
+	if shop.IncludesRewards == true then
 		local snapshot = RewardService.GetSnapshot(player)
 		local rewards = {
 			{
@@ -261,7 +255,9 @@ local function buildInventory(player, shop, state)
 				Claimed = reward.Claimed,
 			})
 		end
-		return rewards
+		for _, reward in ipairs(rewards) do
+			table.insert(inventory, reward)
+		end
 	end
 
 	local swordsById = {}
@@ -273,7 +269,6 @@ local function buildInventory(player, shop, state)
 		relicsById[relic.RelicId] = relic
 	end
 
-	local inventory = {}
 	for _, offer in ipairs(shop.Items) do
 		local stockEntry = getStockEntry(state, offer.ItemType, offer.ItemId)
 		if not stockEntry then
@@ -358,10 +353,15 @@ local function sendShop(player, message, success)
 		shopColor = shop.Color,
 		inventory = inventory,
 		coins = ScoreService.GetCoins(player),
-		message = message or (emptyStock and "SEM ESTOQUE — explore outras ilhas para encontrar novas ofertas." or nil),
+		message = message or (
+			emptyStock
+				and "ITENS ESGOTADOS — recompensas e ofertas especiais continuam disponiveis."
+				or nil
+		),
 		success = success,
 		emptyStock = emptyStock,
 		specialPanel = shop.SpecialPanel,
+		includesPremiumStore = shop.IncludesPremiumStore == true,
 	})
 end
 
@@ -596,10 +596,10 @@ villagerEvent.OnServerEvent:Connect(function(player, data)
 		end
 		local success, message = RelicService.Equip(player, itemId)
 		sendShop(player, message, success)
-	elseif data.action == "claimDailyReward" and shop.SpecialPanel == "Rewards" then
+	elseif data.action == "claimDailyReward" and shop.IncludesRewards == true then
 		local success, message = RewardService.ClaimDaily(player)
 		sendShop(player, message, success)
-	elseif data.action == "claimTimeReward" and shop.SpecialPanel == "Rewards" then
+	elseif data.action == "claimTimeReward" and shop.IncludesRewards == true then
 		local success, message = RewardService.ClaimPlaytime(player, data.minutes)
 		sendShop(player, message, success)
 	elseif data.action == "purchaseService" then
@@ -633,4 +633,4 @@ Players.PlayerRemoving:Connect(function(player)
 	playerSessions[player] = nil
 end)
 
-print("[VillageShop] Comerciantes variados iniciados com validacao no servidor.")
+print("[VillageShop] Mercador do Ceu iniciado com validacao no servidor.")

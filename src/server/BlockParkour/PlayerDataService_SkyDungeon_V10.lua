@@ -55,6 +55,10 @@ local function defaultData()
 		TutorialCompleted = false,
 		DailyLastClaimDay = 0,
 		DailyStreak = 0,
+		Monetization = {
+			TreasureBoostUntil = 0,
+			EliteBoostUntil = 0,
+		},
 	}
 end
 
@@ -302,6 +306,11 @@ local function sanitize(raw)
 	)
 	data.DailyLastClaimDay = math.max(0, math.floor(tonumber(raw.DailyLastClaimDay) or 0))
 	data.DailyStreak = math.clamp(math.floor(tonumber(raw.DailyStreak) or 0), 0, 7)
+	local rawMonetization = type(raw.Monetization) == "table" and raw.Monetization or {}
+	data.Monetization = {
+		TreasureBoostUntil = math.max(0, math.floor(tonumber(rawMonetization.TreasureBoostUntil) or 0)),
+		EliteBoostUntil = math.max(0, math.floor(tonumber(rawMonetization.EliteBoostUntil) or 0)),
+	}
 	return data
 end
 
@@ -348,6 +357,7 @@ local function cloneData(data)
 		TutorialCompleted = data.TutorialCompleted == true,
 		DailyLastClaimDay = data.DailyLastClaimDay,
 		DailyStreak = data.DailyStreak,
+		Monetization = cloneDictionary(data.Monetization),
 	}
 end
 
@@ -1043,6 +1053,27 @@ function PlayerDataService.SetDailyRewardState(player, dayIndex, streak)
 	return true
 end
 
+function PlayerDataService.GetMonetizationState(player)
+	local data = PlayerDataService.Get(player)
+	return data and cloneDictionary(data.Monetization) or {
+		TreasureBoostUntil = 0,
+		EliteBoostUntil = 0,
+	}
+end
+
+function PlayerDataService.ExtendMonetizationBoost(player, boostName, durationSeconds)
+	local session = sessions[player]
+	if not session or (boostName ~= "Treasure" and boostName ~= "Elite") then
+		return false, 0
+	end
+	local key = boostName .. "BoostUntil"
+	local current = math.max(os.time(), tonumber(session.Data.Monetization[key]) or 0)
+	local nextExpiration = current + math.max(1, math.floor(tonumber(durationSeconds) or 1))
+	session.Data.Monetization[key] = nextExpiration
+	markDirty(session)
+	return true, nextExpiration
+end
+
 function PlayerDataService.Save(player, force)
 	local session = sessions[player]
 	if not session or not session.CanSave then
@@ -1133,6 +1164,14 @@ function PlayerDataService.Save(player, force)
 			elseif previousData.DailyLastClaimDay == snapshot.DailyLastClaimDay then
 				snapshot.DailyStreak = math.max(snapshot.DailyStreak, previousData.DailyStreak)
 			end
+			snapshot.Monetization.TreasureBoostUntil = math.max(
+				snapshot.Monetization.TreasureBoostUntil,
+				previousData.Monetization.TreasureBoostUntil
+			)
+			snapshot.Monetization.EliteBoostUntil = math.max(
+				snapshot.Monetization.EliteBoostUntil,
+				previousData.Monetization.EliteBoostUntil
+			)
 			return snapshot
 		end)
 	end)

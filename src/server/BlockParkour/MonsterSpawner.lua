@@ -54,6 +54,7 @@ local MonsterValidator = require(MonsterSystem.MonsterValidator)
 local CombatDamageService = require(script.Parent.Parent.MVPSystems.CombatDamageService)
 local CompanionService = require(script.Parent.Parent.MVPSystems.CompanionService)
 local RewardWheelService = require(script.Parent.Parent.MVPSystems.RewardWheelService)
+local MonetizationService = require(script.Parent.Parent.MVPSystems.MonetizationService)
 
 ScoreService.Start()
 InventoryService.Start()
@@ -773,6 +774,9 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 			end
 			if clone:GetAttribute("IsElite") == true and random:NextNumber() <= 0.25 then
 				InventoryService.GrantItem(damager, "HealthPotion", 1)
+			end
+			if clone:GetAttribute("IsElite") == true then
+				MonetizationService.RecordEliteDefeat(damager)
 			end
 		end
 		if root.Parent then

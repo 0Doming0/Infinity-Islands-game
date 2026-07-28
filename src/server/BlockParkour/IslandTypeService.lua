@@ -86,6 +86,14 @@ function IslandTypeService.Classify(island, context)
 	)
 	local baseRewardMultiplier = math.max(0.1, tonumber(island:GetAttribute("RouteRewardMultiplier")) or 1)
 	local specialChanceMultiplier = math.max(0, tonumber(island:GetAttribute("SpecialIslandChanceMultiplier")) or 1)
+	local treasureMonetizationMultiplier = math.max(
+		1,
+		tonumber(workspace:GetAttribute("TreasureMonetizationChanceMultiplier")) or 1
+	)
+	local eliteMonetizationMultiplier = math.max(
+		1,
+		tonumber(workspace:GetAttribute("EliteMonetizationChanceMultiplier")) or 1
+	)
 	island:SetAttribute("IslandType", "Normal")
 	island:SetAttribute("DangerLevel", tier)
 	island:SetAttribute("RewardMultiplier", baseRewardMultiplier)
@@ -100,7 +108,13 @@ function IslandTypeService.Classify(island, context)
 	local treasureWindow = roundIndex >= MVPConfig.SpecialIslands.MinimumTreasureRound
 		and (roundIndex - MVPConfig.SpecialIslands.MinimumTreasureRound) % treasureGap == 0
 	if treasureWindow
-		and random:NextNumber() <= math.clamp(MVPConfig.SpecialIslands.TreasureChance * specialChanceMultiplier, 0, 1)
+		and random:NextNumber() <= math.clamp(
+			MVPConfig.SpecialIslands.TreasureChance
+				* specialChanceMultiplier
+				* treasureMonetizationMultiplier,
+			0,
+			1
+		)
 	then
 		island:SetAttribute("IslandType", "Treasure")
 		island:SetAttribute("CanSpawnMonster", false)
@@ -111,7 +125,13 @@ function IslandTypeService.Classify(island, context)
 	end
 
 	if roundIndex >= MVPConfig.SpecialIslands.MinimumEliteRound
-		and random:NextNumber() <= math.clamp(MVPConfig.SpecialIslands.EliteChance * specialChanceMultiplier, 0, 1)
+		and random:NextNumber() <= math.clamp(
+			MVPConfig.SpecialIslands.EliteChance
+				* specialChanceMultiplier
+				* eliteMonetizationMultiplier,
+			0,
+			1
+		)
 	then
 		island:SetAttribute("IslandType", "Elite")
 		island:SetAttribute("CanSpawnMonster", true)

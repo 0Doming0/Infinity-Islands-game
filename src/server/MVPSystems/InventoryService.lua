@@ -7,6 +7,7 @@ local ItemCatalog = require(ReplicatedStorage:WaitForChild("ItemCatalog"))
 local PlayerDataService = require(
 	script.Parent.Parent.BlockParkour:WaitForChild("PlayerDataService_SkyDungeon_V10")
 )
+local MarketingOfferService = require(script.Parent:WaitForChild("MarketingOfferService"))
 
 local InventoryService = {}
 local started = false
@@ -130,6 +131,7 @@ function InventoryService.UseItem(player, itemId)
 
 	if definition.Effect == "Heal" then
 		humanoid.Health = math.min(humanoid.MaxHealth, humanoid.Health + definition.Amount)
+		MarketingOfferService.Record(player, "HealUsed", 1)
 	elseif definition.Effect == "Speed" or definition.Effect == "Jump" then
 		applyTimedModifier(player, humanoid, definition)
 	else

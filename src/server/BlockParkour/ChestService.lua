@@ -14,6 +14,7 @@ local AnimeOutline = require(ServerScriptService.MVPSystems:WaitForChild("AnimeO
 
 local ChestService = {}
 local RewardWheelService = require(script.Parent.Parent.MVPSystems:WaitForChild("RewardWheelService"))
+local MarketingOfferService = require(script.Parent.Parent.MVPSystems:WaitForChild("MarketingOfferService"))
 local active = setmetatable({}, { __mode = "k" })
 
 local function ensureFolder(parent, name)
@@ -285,6 +286,7 @@ local function activateChest(chest, player)
 	active[chest] = nil
 
 	if not state.IsMimic then
+		MarketingOfferService.Record(player, "ChestOpened", 1)
 		ScoreService.AwardCoins(player, state.CoinReward, "TreasureChest")
 		if state.IsRare then
 			RewardWheelService.Spin(player, "RareChest", {

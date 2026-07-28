@@ -2,91 +2,94 @@
 	PlayerSpawnSystem.server.lua
 
 	Sistema de spawn aleatorio para o jogo de exploracao nos ceus.
-	Apos a geracao procedural inicial completar, teleporta cada jogador
-	para uma plataforma aleatoria dentro da estrutura gerada.
+	Apos o novo mundo procedural possuir ilhas ativas, teleporta cada jogador
+	para uma das ilhas iniciais mais baixas.
 ]]
 
 local Players = game:GetService("Players")
 local CollectionService = game:GetService("CollectionService")
 local Workspace = game:GetService("Workspace")
 
--- Espera a pasta de estruturas procedurais existir.
-local generatedFolder = Workspace:FindFirstChild("ProceduralStructures")
-while not generatedFolder do
-	task.wait(0.5)
-	generatedFolder = Workspace:FindFirstChild("ProceduralStructures")
-end
+local Config = require(
+	script.Parent:WaitForChild("BlockParkour"):WaitForChild("Config_SkyDungeon_V10")
+)
 
--- Espera a geracao inicial completar.
-while not generatedFolder:GetAttribute("InitialGenerationComplete") do
-	task.wait(0.5)
-end
+local SPAWN_POSITION_TIMEOUT_SECONDS = 20
+local SPAWN_RETRY_INTERVAL_SECONDS = 0.2
 
--- Coleta as posicoes de spawn validas a partir das plataformas geradas.
-local function findIsland(instance)
-	local current = instance
-	while current and current ~= Workspace do
-		if current:IsA("Model") and current:GetAttribute("IsSkyIsland") == true then
-			return current
-		end
-		current = current.Parent
-	end
-	return nil
-end
-
-local function getSpawnPosition()
-	local platforms = CollectionService:GetTagged("ProceduralPlatform")
-	if #platforms == 0 then
+local function getGeneratedWorld()
+	local generatedWorld = Workspace:FindFirstChild(Config.WORLD_MODEL_NAME)
+	if not generatedWorld then
 		return nil
 	end
 
-	-- Filtra apenas plataformas que ainda existem e nao sao obstaculos de passagem.
-	local validPlatforms = {}
-	local sanctuaryPlatforms = {}
-	for _, platform in platforms do
-		if platform.Parent then
-			local isPassage = platform:GetAttribute("IsPassageObstacle") or false
-			if not isPassage then
-				table.insert(validPlatforms, platform)
-				local island = findIsland(platform)
-				local role = island and island:GetAttribute("IslandRole") or ""
+	local requiredChunkCount = math.max(
+		1,
+		math.floor(tonumber(Config.INITIAL_CHUNK_COUNT) or 1)
+	)
+	local chunkCount = tonumber(generatedWorld:GetAttribute("ChunkCount")) or 0
+	local activeChunkCount = tonumber(generatedWorld:GetAttribute("ActiveChunkCount")) or 0
+	if chunkCount < requiredChunkCount or activeChunkCount <= 0 then
+		return nil
+	end
+
+	return generatedWorld
+end
+
+local function getSpawnPosition()
+	local generatedWorld = getGeneratedWorld()
+	if not generatedWorld then
+		return nil
+	end
+
+	-- As tags novas apontam para Models. O PrimaryPart de cada node e o IslandFloor.
+	local validNodes = {}
+	local sanctuaryNodes = {}
+	for _, node in CollectionService:GetTagged("SkyDungeonIslandNode") do
+		if node:IsA("Model") and node:IsDescendantOf(generatedWorld) then
+			local floor = node.PrimaryPart
+			if floor and floor:IsA("BasePart") and floor.CanCollide then
+				local candidate = {
+					Node = node,
+					Floor = floor,
+				}
+				table.insert(validNodes, candidate)
 				if
-					island
-					and (
-						island:GetAttribute("IsSanctuary") == true
-						or string.find(tostring(role), "Sanctuary", 1, true) ~= nil
-					)
+					CollectionService:HasTag(node, "SkyDungeonSanctuary")
+					or node:GetAttribute("IsSanctuary") == true
 				then
-					table.insert(sanctuaryPlatforms, platform)
+					table.insert(sanctuaryNodes, candidate)
 				end
 			end
 		end
 	end
 
-	if #validPlatforms == 0 then
+	if #validNodes == 0 then
 		return nil
 	end
 
-	local candidates = #sanctuaryPlatforms > 0 and sanctuaryPlatforms or validPlatforms
+	local candidates = #sanctuaryNodes > 0 and sanctuaryNodes or validNodes
 	table.sort(candidates, function(a, b)
-		if a.Position.Y ~= b.Position.Y then
-			return a.Position.Y < b.Position.Y
+		if a.Floor.Position.Y ~= b.Floor.Position.Y then
+			return a.Floor.Position.Y < b.Floor.Position.Y
 		end
-		return a:GetFullName() < b:GetFullName()
+		return a.Node:GetFullName() < b.Node:GetFullName()
 	end)
-	-- Entre as plataformas seguras mais baixas, preserve uma pequena variação sem
+
+	-- Entre as ilhas seguras mais baixas, preserve uma pequena variacao sem
 	-- mandar o jogador para uma ilha perigosa distante.
 	local safeBand = math.min(#candidates, 3)
-	local platform = candidates[math.random(1, safeBand)]
-	local surfaceY = platform:GetAttribute("SurfaceY") or (platform.Position.Y + platform.Size.Y * 0.5)
+	local floor = candidates[math.random(1, safeBand)].Floor
 
-	-- Posicao aleatoria dentro da plataforma (40% do raio para evitar bordas).
-	local halfX = platform.Size.X * 0.4
-	local halfZ = platform.Size.Z * 0.4
+	-- Posicao aleatoria na area central da ilha para evitar as bordas.
+	local halfX = floor.Size.X * 0.4
+	local halfZ = floor.Size.Z * 0.4
 	local offsetX = math.random() * (halfX * 2) - halfX
 	local offsetZ = math.random() * (halfZ * 2) - halfZ
 
-	return Vector3.new(platform.Position.X + offsetX, surfaceY + 3, platform.Position.Z + offsetZ)
+	return floor.CFrame:PointToWorldSpace(
+		Vector3.new(offsetX, floor.Size.Y * 0.5 + 3, offsetZ)
+	)
 end
 
 local function spawnPlayer(player, character)
@@ -107,16 +110,36 @@ local function spawnPlayer(player, character)
 	return true
 end
 
+local function positionCharacterWhenWorldIsReady(player, character)
+	local deadline = os.clock() + SPAWN_POSITION_TIMEOUT_SECONDS
+	while player.Parent and character.Parent and os.clock() < deadline do
+		if spawnPlayer(player, character) then
+			return
+		end
+		task.wait(SPAWN_RETRY_INTERVAL_SECONDS)
+	end
+
+	if player.Parent and character.Parent then
+		player:SetAttribute("InitialStartState", "SpawnPositionTimeout")
+		warn(string.format(
+			"[PlayerSpawnSystem] Nao foi possivel posicionar %s em uma ilha ativa.",
+			player.Name
+		))
+	end
+end
+
 local function onPlayerAdded(player)
 	player.CharacterAdded:Connect(function(character)
-		-- Pequeno delay para garantir que o character esta totalmente carregado.
-		task.wait(0.1)
-		spawnPlayer(player, character)
+		task.spawn(function()
+			-- Pequeno delay para garantir que o character esta totalmente carregado.
+			task.wait(0.1)
+			positionCharacterWhenWorldIsReady(player, character)
+		end)
 	end)
 
 	-- Se o character ja existe (caso raro).
 	if player.Character then
-		spawnPlayer(player, player.Character)
+		task.spawn(positionCharacterWhenWorldIsReady, player, player.Character)
 	end
 end
 

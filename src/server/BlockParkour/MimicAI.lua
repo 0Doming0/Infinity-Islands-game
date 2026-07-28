@@ -458,7 +458,10 @@ local function nearestPlayer(position, maximumDistance, state)
 	local distance = maximumDistance
 	local originIslandOccupied = false
 	for _, player in ipairs(Players:GetPlayers()) do
-		if player:GetAttribute("IsDowned") == true then
+		if
+			player:GetAttribute("IsDowned") == true
+			or player:GetAttribute("InvisibleToEnemies") == true
+		then
 			continue
 		end
 		local character = player.Character

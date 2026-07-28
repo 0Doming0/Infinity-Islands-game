@@ -70,6 +70,32 @@ Catalog.Sources = table.freeze({
 		CoinMaximum = 300,
 		CoinPerLevel = 12,
 	}),
+	PaidSpin = table.freeze({
+		DisplayName = "Giro comprado",
+		-- Estas probabilidades precisam permanecer iguais ao texto mostrado
+		-- antes da compra em MonetizationCatalog.
+		CategoryWeights = table.freeze({
+			Coins = 75,
+			Relic = 15,
+			Sword = 10,
+			Companion = 0,
+		}),
+		CoinMinimum = 80,
+		CoinMaximum = 180,
+		CoinPerLevel = 6,
+	}),
+	RewardedAd = table.freeze({
+		DisplayName = "Giro por anuncio",
+		CategoryWeights = table.freeze({
+			Coins = 90,
+			Relic = 7,
+			Sword = 3,
+			Companion = 0,
+		}),
+		CoinMinimum = 50,
+		CoinMaximum = 120,
+		CoinPerLevel = 4,
+	}),
 })
 
 -- Itens mais fortes possuem peso menor. ClassicSword nao participa porque

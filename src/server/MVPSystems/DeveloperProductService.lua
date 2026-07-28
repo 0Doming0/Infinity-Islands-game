@@ -1,6 +1,6 @@
 -- Roteador único de Developer Products.
 -- MarketplaceService.ProcessReceipt só pode possuir um callback; cada sistema
--- registra aqui seu ProductId sem sobrescrever as compras dos demais.
+-- registra aqui seu go sem sobrescrever as compras dos demais.
 
 local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")

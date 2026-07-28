@@ -98,10 +98,11 @@ local Config = {
 		MediumChance = 0.08,
 		LargeChance = 0.16,
 		SoloMerchantChance = 0.07,
-		MinimumBuildingCount = 2,
-		MaximumBuildingCount = 3,
-		MinimumVillagerCount = 2,
-		MaximumVillagerCount = 4,
+		MinimumBuildingCount = 1,
+		MaximumBuildingCount = 2,
+		-- O MVP usa somente um tipo de NPC e uma instancia dele por vila.
+		MinimumVillagerCount = 1,
+		MaximumVillagerCount = 1,
 		RandomSalt = 73428767,
 		ShopTag = "ProceduralSwordVillager",
 		PromptDistance = 13,
@@ -179,8 +180,28 @@ local Config = {
 	Death = {
 		PauseSeconds = 8,
 		FreeRespawnDelaySeconds = 4,
-		-- Substitua pelo ID de um Developer Product publicado nesta experiencia.
-		ReviveWithoutCoinLossProductId = 0,
+	},
+
+	Monetization = {
+		-- O algoritmo apenas prepara uma recomendacao dentro do mercador.
+		-- Nunca abre uma janela de compra sozinho.
+		FirstOfferDelaySeconds = 180,
+		OfferEvaluationSeconds = 20,
+		OfferCooldownSeconds = 6 * 60,
+		RefusedProductCooldownSeconds = 15 * 60,
+		MaximumOffersPerSession = 2,
+		CombatQuietSeconds = 12,
+		MinimumWaterGapStuds = 30,
+		-- Pontuacao final normalizada (0-100):
+		-- 60% comportamento/contexto, 25% intencao observada na sessao e
+		-- 15% Platform Spender Status. Quando o segmento nao esta disponivel,
+		-- os primeiros dois pesos sao normalizados para 70,6% e 29,4%.
+		BehaviorContextWeight = 0.60,
+		SessionIntentWeight = 0.25,
+		PlatformSpenderWeight = 0.15,
+		MinimumOfferScore = 42,
+		StoreOpenIntentDebounceSeconds = 5,
+		TemporaryWingUsesPerPurchase = 3,
 	},
 
 	SpecialIslands = {

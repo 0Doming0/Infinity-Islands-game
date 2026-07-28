@@ -30,7 +30,11 @@ local schedulerCursor = 1
 local inactiveScheduleEntries = 0
 
 local function livingCharacter(player)
-	if not player or player:GetAttribute("IsDowned") == true then
+	if
+		not player
+		or player:GetAttribute("IsDowned") == true
+		or player:GetAttribute("InvisibleToEnemies") == true
+	then
 		return nil
 	end
 	local character = player and player.Character
