@@ -213,9 +213,12 @@ local function storeEntry(player, definition, recommendation)
 		ProductType = definition.ProductType,
 		AssetId = assetId,
 		SuggestedRobux = definition.SuggestedRobux,
+		PreviousRobux = definition.PreviousRobux,
 		CoinPrice = definition.CoinPrice,
 		Configured = assetId > 0,
 		OddsText = definition.OddsText,
+		HeroImageId = definition.HeroImageId,
+		MerchantPitch = definition.MerchantPitch,
 		Recommended = recommendation ~= nil and recommendation.ProductId == definition.Id,
 		RecommendationReason = recommendation and recommendation.ProductId == definition.Id
 			and recommendation.Reason or nil,
@@ -322,12 +325,18 @@ local function registerDeveloperProducts()
 	DeveloperProductService.Register(spin.ProductId, spin.Id, grantPaidSpin)
 end
 
+local function isSkyMerchantOpen(player)
+	return player:GetAttribute("ShopOpen") == true
+		and player:GetAttribute("ActiveShopId") == "SkyMerchant"
+		and player:GetAttribute("SkyMerchantOfferValid") == true
+end
+
 local function promptPurchase(player, productId)
 	local definition = MonetizationCatalog.Get(productId)
 	if not definition or productId == "ReviveNoCoinLoss" then
 		return false, "Oferta invalida."
 	end
-	if player:GetAttribute("ShopOpen") ~= true then
+	if not isSkyMerchantOpen(player) then
 		return false, "Fale com o Mercador do Ceu para comprar."
 	end
 	if definition.PaidRandomItem and not policyFor(player).PaidRandomItemsAllowed then
@@ -503,6 +512,9 @@ function MonetizationService.Start()
 		if action == "GetStore" then
 			return MonetizationService.GetStore(player)
 		elseif action == "OpenStore" then
+			if not isSkyMerchantOpen(player) then
+				return nil
+			end
 			MarketingOfferService.RecordStoreOpened(player)
 			return MonetizationService.GetStore(player)
 		elseif action == "GetEntitlements" then

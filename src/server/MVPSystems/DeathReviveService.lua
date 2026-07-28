@@ -7,7 +7,9 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
 
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
+local MonetizationCatalog = require(ReplicatedStorage:WaitForChild("MonetizationCatalog"))
 local WorldConfig = require(script.Parent.Parent.BlockParkour:WaitForChild("Config_SkyDungeon_V10"))
+local ChunkManager = require(script.Parent.Parent.BlockParkour:WaitForChild("ChunkManager_SkyDungeon_V10"))
 local SwordCatalog = require(ReplicatedStorage:WaitForChild("SwordCatalog"))
 local RelicCatalog = require(ReplicatedStorage:WaitForChild("RelicCatalog"))
 local CompanionCatalog = require(ReplicatedStorage:WaitForChild("CompanionCatalog"))
@@ -19,6 +21,9 @@ local DeathReviveService = {}
 local pending = setmetatable({}, { __mode = "k" })
 local initialStates = setmetatable({}, { __mode = "k" })
 local started = false
+local WORLD_LOAD_TIMEOUT_SECONDS = 35
+local INITIAL_SPAWN_TIMEOUT_SECONDS = 25
+local INITIAL_PROTECTION_TIMEOUT_SECONDS = 35
 
 -- O Roblox não deve recriar o personagem sozinho: todo renascimento depois
 -- da morte passa pelos botões validados por este serviço.
@@ -47,15 +52,27 @@ if not startRequest then
 end
 
 local function productId()
-	return math.max(0, math.floor(tonumber(MVPConfig.Death.ReviveWithoutCoinLossProductId) or 0))
+	local definition = MonetizationCatalog.Get("ReviveNoCoinLoss")
+	local catalogId = math.max(0, math.floor(tonumber(definition and definition.ProductId) or 0))
+	local legacyId = MVPConfig.Death.ReviveWithoutCoinLossProductId
+	if catalogId > 0 then
+		return catalogId
+	end
+	return math.max(0, math.floor(tonumber(legacyId) or 0))
+end
+
+local function setLifecycle(player, state)
+	player:SetAttribute("PlayerLifecycleState", state)
 end
 
 local function beginRespawn(player, expectedState)
 	local sequence = (tonumber(player:GetAttribute("RespawnSequence")) or 0) + 1
 	player:SetAttribute("RespawnSequence", sequence)
 	player:SetAttribute("RespawnState", "Preparing")
+	setLifecycle(player, "Respawning")
 	if expectedState then
 		expectedState.RespawnSequence = sequence
+		expectedState.RespawnStartedAt = os.clock()
 	end
 	deathEvent:FireClient(player, {
 		Action = "PreparingRespawn",
@@ -64,21 +81,20 @@ local function beginRespawn(player, expectedState)
 	return sequence
 end
 
-local function loadCharacterIfDead(player, expectedState)
+local function loadCharacterIfDead(player, expectedState, forceReload)
 	if not player.Parent then
 		return false
 	end
 	local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-	if humanoid and humanoid.Health > 0 then
+	if humanoid and humanoid.Health > 0 and not forceReload then
 		return false
 	end
 
 	if expectedState then
-		if pending[player] ~= expectedState or expectedState.Respawning then
+		if pending[player] ~= expectedState or (expectedState.Respawning and not forceReload) then
 			return false
 		end
 		expectedState.Respawning = true
-		pending[player] = nil
 	end
 
 	local respawnSequence = beginRespawn(player, expectedState)
@@ -94,6 +110,7 @@ local function loadCharacterIfDead(player, expectedState)
 		pending[player] = expectedState
 	end
 	player:SetAttribute("RespawnState", "Failed")
+	setLifecycle(player, "Failed")
 	warn(string.format("[DeathReviveService] Falha ao renascer %s: %s", player.Name, tostring(loadError)))
 	deathEvent:FireClient(player, {
 		Action = "Error",
@@ -116,7 +133,11 @@ local function worldIsReady()
 	local chunkCount = tonumber(generated:GetAttribute("ChunkCount")) or 0
 	local activeChunkCount = tonumber(generated:GetAttribute("ActiveChunkCount")) or 0
 
-	return chunkCount >= requiredChunkCount and activeChunkCount > 0
+	return activeChunkCount > 0
+		and (
+			generated:GetAttribute("InitialGenerationComplete") == true
+			or chunkCount >= requiredChunkCount
+		)
 end
 
 local function startSnapshot(player)
@@ -176,10 +197,12 @@ local function protectInitialCharacter(player, character)
 	forceField.Parent = character
 	player:SetAttribute("InitialStartProtection", true)
 	task.spawn(function()
+		local deadline = os.clock() + INITIAL_PROTECTION_TIMEOUT_SECONDS
 		while
 			player.Parent
 			and character.Parent
 			and player:GetAttribute("InitialSpawnPositioned") ~= true
+			and os.clock() < deadline
 		do
 			task.wait(0.05)
 		end
@@ -199,9 +222,11 @@ local function spawnInitialCharacter(player, state)
 	end
 	state.Spawning = true
 	state.Started = true
+	state.SpawnStartedAt = os.clock()
 	player:SetAttribute("InitialGameStarted", true)
 	player:SetAttribute("InitialSpawnPositioned", false)
 	player:SetAttribute("InitialStartState", "Positioning")
+	setLifecycle(player, "InitialSpawning")
 	local loaded, loadError = pcall(function()
 		player:LoadCharacter()
 	end)
@@ -210,6 +235,7 @@ local function spawnInitialCharacter(player, state)
 		state.Started = false
 		player:SetAttribute("InitialGameStarted", false)
 		player:SetAttribute("InitialStartState", "Ready")
+		setLifecycle(player, "AwaitingStart")
 		warn(string.format(
 			"[DeathReviveService] Falha no primeiro spawn de %s: %s",
 			player.Name,
@@ -231,21 +257,77 @@ local function prepareInitialPlayer(player)
 	player:SetAttribute("InitialGameStarted", false)
 	player:SetAttribute("InitialSpawnPositioned", false)
 	player:SetAttribute("InitialStartState", "LoadingData")
+	player:SetAttribute("RespawnState", "NotStarted")
+	setLifecycle(player, "LoadingData")
 	player.CharacterAdded:Connect(function(character)
 		protectInitialCharacter(player, character)
 	end)
+	player:GetAttributeChangedSignal("RespawnState"):Connect(function()
+		local respawnState = player:GetAttribute("RespawnState")
+		if respawnState == "Ready" then
+			state.Spawning = false
+			if player:GetAttribute("InitialGameStarted") == true then
+				state.Started = true
+				player:SetAttribute("InitialSpawnPositioned", true)
+				player:SetAttribute("InitialStartState", "Playing")
+				setLifecycle(player, "Playing")
+			end
+			local reviveState = pending[player]
+			if reviveState and reviveState.Respawning then
+				pending[player] = nil
+				player:SetAttribute("PendingReviveCoinRefund", 0)
+			end
+		elseif respawnState == "Failed" then
+			state.Spawning = false
+			setLifecycle(player, "Failed")
+		end
+	end)
 	task.spawn(function()
-		PlayerDataService.Load(player)
+		state.Loading = true
+		local dataLoaded, dataError = pcall(PlayerDataService.Load, player)
 		if not player.Parent or initialStates[player] ~= state then
 			return
 		end
+		if not dataLoaded then
+			player:SetAttribute("InitialStartState", "DataLoadFailed")
+			setLifecycle(player, "Failed")
+			state.Loading = false
+			warn(string.format(
+				"[DeathReviveService] Falha ao carregar dados de %s: %s",
+				player.Name,
+				tostring(dataError)
+			))
+			return
+		end
 		player:SetAttribute("InitialStartState", "PreparingWorld")
-		while player.Parent and initialStates[player] == state and not worldIsReady() do
+		setLifecycle(player, "LoadingWorld")
+		local deadline = os.clock() + WORLD_LOAD_TIMEOUT_SECONDS
+		while
+			player.Parent
+			and initialStates[player] == state
+			and not worldIsReady()
+			and os.clock() < deadline
+		do
 			task.wait(0.25)
 		end
 		if player.Parent and initialStates[player] == state then
-			state.Ready = true
-			player:SetAttribute("InitialStartState", "Ready")
+			if worldIsReady() then
+				state.Ready = true
+				state.WorldFailed = false
+				player:SetAttribute("InitialStartState", "Ready")
+				setLifecycle(player, "AwaitingStart")
+			else
+				state.Ready = false
+				state.WorldFailed = true
+				player:SetAttribute("InitialStartState", "WorldLoadFailed")
+				setLifecycle(player, "Failed")
+				warn(string.format(
+					"[DeathReviveService] O mundo nao ficou pronto em %ds para %s.",
+					WORLD_LOAD_TIMEOUT_SECONDS,
+					player.Name
+				))
+			end
+			state.Loading = false
 		end
 	end)
 end
@@ -263,6 +345,8 @@ function DeathReviveService.RecordDeath(player, runScore, lostCoins, cause)
 	pending[player] = state
 	player:SetAttribute("DeathScreenSerial", serial)
 	player:SetAttribute("PendingReviveCoinRefund", state.LostCoins)
+	player:SetAttribute("RespawnState", "Dead")
+	setLifecycle(player, "AwaitingReviveChoice")
 	deathEvent:FireClient(player, {
 		Action = "Show",
 		Serial = serial,
@@ -310,13 +394,83 @@ function DeathReviveService.Start()
 	started = true
 	Players.CharacterAutoLoads = false
 	DeveloperProductService.Start()
-	DeveloperProductService.Register(productId(), "ReviveWithoutCoinLoss", processRevivePurchase)
+	local configuredProductId = productId()
+	if configuredProductId > 0 then
+		DeveloperProductService.Register(
+			configuredProductId,
+			"ReviveWithoutCoinLoss",
+			processRevivePurchase
+		)
+	end
 	startRequest.OnServerInvoke = function(player, action)
 		local state = initialStates[player]
 		if not state then
 			return { Success = false, Ready = false, State = "LoadingData" }
 		end
-		if action == "Get" then
+		if state.WorldFailed and worldIsReady() then
+			state.Ready = true
+			state.WorldFailed = false
+			player:SetAttribute("InitialStartState", "Ready")
+			setLifecycle(player, "AwaitingStart")
+		end
+		if action == "RetryLoading" then
+			if state.Loading then
+				return { Success = true, Ready = false, Pending = true }
+			end
+			local retryData = player:GetAttribute("InitialStartState") == "DataLoadFailed"
+			state.Loading = true
+			state.WorldFailed = false
+			player:SetAttribute("InitialStartState", "PreparingWorld")
+			setLifecycle(player, "LoadingWorld")
+			task.spawn(function()
+				if retryData then
+					local dataOk, dataError = pcall(PlayerDataService.Load, player)
+					if not dataOk then
+						state.Loading = false
+						state.WorldFailed = true
+						player:SetAttribute("InitialStartState", "DataLoadFailed")
+						setLifecycle(player, "Failed")
+						warn(string.format(
+							"[DeathReviveService] Retry de dados falhou para %s: %s",
+							player.Name,
+							tostring(dataError)
+						))
+						return
+					end
+				end
+				if not ChunkManager.IsRunning() then
+					local startOk, startResult = pcall(ChunkManager.Start)
+					if not startOk or startResult == false then
+						warn(string.format(
+							"[DeathReviveService] Retry do gerador falhou para %s: %s",
+							player.Name,
+							tostring(startResult)
+						))
+					end
+				end
+				local deadline = os.clock() + WORLD_LOAD_TIMEOUT_SECONDS
+				while
+					player.Parent
+					and initialStates[player] == state
+					and not worldIsReady()
+					and os.clock() < deadline
+				do
+					task.wait(0.25)
+				end
+				if not player.Parent or initialStates[player] ~= state then
+					return
+				end
+				state.Ready = worldIsReady()
+				state.WorldFailed = not state.Ready
+				state.Loading = false
+				player:SetAttribute(
+					"InitialStartState",
+					state.Ready and "Ready" or "WorldLoadFailed"
+				)
+				setLifecycle(player, state.Ready and "AwaitingStart" or "Failed")
+			end)
+			return { Success = true, Ready = false, Pending = true }
+		elseif action == "Get" then
 			return {
 				Success = true,
 				Ready = state.Ready,
@@ -331,14 +485,45 @@ function DeathReviveService.Start()
 			end
 			state.LastRequestAt = now
 			if not state.Ready then
-				return { Success = false, Ready = false, Message = "O mundo ainda está carregando." }
+				local failed = state.WorldFailed
+					or player:GetAttribute("InitialStartState") == "DataLoadFailed"
+				return {
+					Success = false,
+					Ready = false,
+					State = player:GetAttribute("InitialStartState"),
+					Message = failed
+						and "O carregamento falhou. Tente novamente em alguns segundos."
+						or "O mundo ainda está carregando.",
+				}
 			end
 			if state.Started then
-				if player.Character or player:GetAttribute("InitialSpawnPositioned") == true then
+				local character = player.Character
+				local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+				local playing = player:GetAttribute("PlayerLifecycleState") == "Playing"
+					and player:GetAttribute("InitialSpawnPositioned") == true
+					and humanoid
+					and humanoid.Health > 0
+				if playing then
 					return { Success = true, Ready = true, Started = true }
+				end
+				local timedOut = os.clock() - (state.SpawnStartedAt or 0)
+					>= INITIAL_SPAWN_TIMEOUT_SECONDS
+				local failed = player:GetAttribute("RespawnState") == "Failed"
+				if not timedOut and not failed then
+					return {
+						Success = true,
+						Ready = true,
+						Started = true,
+						Pending = true,
+					}
+				end
+				if character then
+					pcall(character.Destroy, character)
 				end
 				state.Started = false
 				state.Spawning = false
+				player:SetAttribute("InitialGameStarted", false)
+				player:SetAttribute("InitialSpawnPositioned", false)
 			end
 			local success = spawnInitialCharacter(player, state)
 			return {
@@ -366,10 +551,33 @@ function DeathReviveService.Start()
 				})
 				return
 			end
-			MarketplaceService:PromptProductPurchase(player, productId())
+			local promptOk, promptError = pcall(
+				MarketplaceService.PromptProductPurchase,
+				MarketplaceService,
+				player,
+				productId()
+			)
+			if not promptOk then
+				deathEvent:FireClient(player, {
+					Action = "Error",
+					Message = "Não foi possível abrir a compra. Tente novamente.",
+				})
+				warn(string.format(
+					"[DeathReviveService] Falha ao abrir compra para %s: %s",
+					player.Name,
+					tostring(promptError)
+				))
+			end
 		elseif request.Action == "FreeRespawn" then
 			if os.clock() - state.CreatedAt >= MVPConfig.Death.FreeRespawnDelaySeconds then
 				loadCharacterIfDead(player, state)
+			end
+		elseif request.Action == "RetryRespawn" then
+			local timedOut = os.clock() - (state.RespawnStartedAt or 0)
+				>= INITIAL_SPAWN_TIMEOUT_SECONDS
+			if player:GetAttribute("RespawnState") == "Failed" or timedOut then
+				state.Respawning = false
+				loadCharacterIfDead(player, state, true)
 			end
 		end
 	end)

@@ -24,13 +24,37 @@ local function setRespawnState(player, state)
 	local sequence = tonumber(player:GetAttribute("RespawnSequence")) or 0
 	player:SetAttribute("RespawnState", state)
 	if state == "Ready" then
+		player:SetAttribute("PlayerLifecycleState", "Playing")
+		if
+			player:GetAttribute("InitialGameStarted") == true
+			and player:GetAttribute("InitialSpawnPositioned") ~= true
+		then
+			player:SetAttribute("InitialSpawnPositioned", true)
+			player:SetAttribute("InitialStartState", "Playing")
+		end
 		player:SetAttribute("RespawnReadySequence", sequence)
 		local event = ReplicatedStorage:FindFirstChild("DeathReviveEvent")
-		if event and event:IsA("RemoteEvent") then
+		-- Sequencia zero pertence ao primeiro nascimento. A tela de morte nunca
+		-- deve ser aberta ou liberada por esse fluxo.
+		if sequence > 0 and event and event:IsA("RemoteEvent") then
 			event:FireClient(player, {
 				Action = "RespawnReady",
 				RespawnSequence = sequence,
 			})
+		end
+	elseif state == "Positioning" then
+		local initialSpawn = player:GetAttribute("InitialSpawnPositioned") ~= true
+		player:SetAttribute(
+			"PlayerLifecycleState",
+			initialSpawn and "InitialSpawning" or "Respawning"
+		)
+		if initialSpawn then
+			player:SetAttribute("InitialStartState", "Positioning")
+		end
+	elseif state == "Failed" then
+		player:SetAttribute("PlayerLifecycleState", "Failed")
+		if player:GetAttribute("InitialSpawnPositioned") ~= true then
+			player:SetAttribute("InitialStartState", "SpawnFailed")
 		end
 	end
 end
@@ -127,7 +151,7 @@ end
 
 local currentWaterY = CONFIG.WATER_START_SURFACE_Y
 local currentWaterSpeed = 0
-local systemStartedAt = os.clock()
+local gameplayStartedAt
 local observedWorldRebaseSerial = tonumber(workspace:GetAttribute("WorldRebaseSerial")) or 0
 local waterHalfHeight = water.Size.Y / 2
 water.Position = Vector3.new(MapConfig.CENTER_WORLD.X, currentWaterY - waterHalfHeight, MapConfig.CENTER_WORLD.Z)
@@ -269,11 +293,24 @@ local function hasSanctuaryFloodGrace(player, data, canStart)
 end
 
 local function calculateTargetWaterSpeed()
-	if #Players:GetPlayers() == 0 then
+	local playingCount = 0
+	for _, player in ipairs(Players:GetPlayers()) do
+		local character = player.Character
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		if
+			player:GetAttribute("PlayerLifecycleState") == "Playing"
+			and humanoid
+			and humanoid.Health > 0
+		then
+			playingCount += 1
+		end
+	end
+	if playingCount == 0 then
 		return 0, "Waiting", 0, 0, 0
 	end
 
-	local elapsedSeconds = os.clock() - systemStartedAt
+	gameplayStartedAt = gameplayStartedAt or os.clock()
+	local elapsedSeconds = os.clock() - gameplayStartedAt
 	if elapsedSeconds < CONFIG.WATER_WARMUP_SECONDS then
 		local warmupAlpha = math.clamp(elapsedSeconds / math.max(1, CONFIG.WATER_WARMUP_SECONDS), 0, 1)
 		return CONFIG.WATER_RISE_SPEED * CONFIG.WATER_MIN_SPEED_MULTIPLIER * warmupAlpha, "Warmup", 0, 0, 0
@@ -592,6 +629,7 @@ local function requestRescueIslandAfterPartyWipe()
 end
 
 local function onCharacterAdded(player, character)
+	character:SetAttribute("RespawnReady", false)
 	setRespawnState(player, "Positioning")
 	playerData[player] = {
 		alive = true,
@@ -622,7 +660,6 @@ local function onCharacterAdded(player, character)
 			data.respawning = true
 		end
 		addSpawnProtection(character)
-		local wasAnchored = rootPart.Anchored
 		rootPart.Anchored = true
 		task.wait(0.5)
 		if rootPart.Parent and player.Parent and humanoid and humanoid.Health > 0 then
@@ -639,7 +676,9 @@ local function onCharacterAdded(player, character)
 			rootPart.AssemblyLinearVelocity = Vector3.zero
 			rootPart.AssemblyAngularVelocity = Vector3.zero
 			rootPart.CFrame = spawnCFrame
-			rootPart.Anchored = wasAnchored
+			-- O personagem precisa ser liberado mesmo se algum sistema legado o
+			-- deixou ancorado antes do posicionamento.
+			rootPart.Anchored = false
 			addSpawnProtection(character)
 			if temporaryPlatform then
 				rescueFromTemporaryPlatform(player, character, temporaryPlatform)
@@ -655,12 +694,34 @@ local function onCharacterAdded(player, character)
 				setRespawnState(player, "Ready")
 			end
 		elseif rootPart.Parent then
-			rootPart.Anchored = wasAnchored
+			rootPart.Anchored = false
 			setRespawnState(player, "Failed")
 		end
 	else
 		setRespawnState(player, "Failed")
 	end
+end
+
+local function safelyPositionCharacter(player, character)
+	local success, positionError = xpcall(function()
+		onCharacterAdded(player, character)
+	end, debug.traceback)
+	if success then
+		return
+	end
+
+	local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+	if rootPart then
+		rootPart.Anchored = false
+	end
+	if player.Parent and player.Character == character then
+		setRespawnState(player, "Failed")
+	end
+	warn(string.format(
+		"[WaterRiseSystem] Falha ao posicionar %s: %s",
+		player.Name,
+		tostring(positionError)
+	))
 end
 
 local function onPlayerAdded(player)
@@ -674,10 +735,10 @@ local function onPlayerAdded(player)
 	clearSanctuaryFloodState(player, playerData[player])
 	setWaterDamageActive(player, false)
 	player.CharacterAdded:Connect(function(character)
-		onCharacterAdded(player, character)
+		task.spawn(safelyPositionCharacter, player, character)
 	end)
 	if player.Character then
-		task.spawn(onCharacterAdded, player, player.Character)
+		task.spawn(safelyPositionCharacter, player, player.Character)
 	end
 end
 

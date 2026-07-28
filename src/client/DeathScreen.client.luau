@@ -2,6 +2,7 @@
 -- ProcessReceipt; o cliente nunca concede moedas.
 
 local Players = game:GetService("Players")
+local MarketplaceService = game:GetService("MarketplaceService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
@@ -156,10 +157,22 @@ local current
 local transitionSequence
 local transitionToken = 0
 local openingTransition = false
+local TRANSITION_SERVER_TIMEOUT_SECONDS = 30
+local STREAMING_TIMEOUT_SECONDS = 20
+local showRespawnFailure
+local openRespawnTransition
 
 local function showRespawnTransition(sequence)
+	-- A primeira entrada pertence exclusivamente a StartScreen. Ausencia de
+	-- Character antes de INICIAR nao significa morte.
+	if player:GetAttribute("InitialGameStarted") ~= true then
+		return
+	end
 	transitionToken += 1
-	transitionSequence = tonumber(sequence) or transitionSequence
+	local numericSequence = tonumber(sequence)
+	if numericSequence then
+		transitionSequence = math.max(transitionSequence or 0, numericSequence)
+	end
 	openingTransition = false
 	topCurtain.Position = UDim2.fromScale(0, 0)
 	bottomCurtain.Position = UDim2.fromScale(0, 0.495)
@@ -168,6 +181,17 @@ local function showRespawnTransition(sequence)
 	loadingText.Text = "PREPARANDO O MUNDO"
 	transitionGui.Enabled = true
 	gui.Enabled = false
+	local token = transitionToken
+	task.delay(TRANSITION_SERVER_TIMEOUT_SECONDS, function()
+		if token ~= transitionToken or not transitionGui.Enabled then
+			return
+		end
+		if player:GetAttribute("RespawnState") == "Ready" then
+			openRespawnTransition(tonumber(player:GetAttribute("RespawnSequence")) or 0)
+			return
+		end
+		showRespawnFailure("O renascimento demorou demais. Tente novamente.")
+	end)
 end
 
 local function cancelRespawnTransition()
@@ -180,6 +204,26 @@ local function cancelRespawnTransition()
 	end
 end
 
+showRespawnFailure = function(message)
+	transitionToken += 1
+	openingTransition = false
+	transitionGui.Enabled = false
+	gui.Enabled = true
+	current = current or {
+		Serial = tonumber(player:GetAttribute("DeathScreenSerial")) or 0,
+		ProductId = 0,
+		FreeAt = 0,
+	}
+	current.Retry = true
+	result.Text = tostring(message or "Não foi possível posicionar seu personagem.")
+	freeButton.Active = true
+	freeButton.AutoButtonColor = true
+	freeButton.Text = "TENTAR RENASCER NOVAMENTE"
+	robuxButton.Active = false
+	robuxButton.AutoButtonColor = false
+	robuxButton.Text = "AGUARDE O RENASCIMENTO"
+end
+
 local function hasLoadedFloor(character, rootPart)
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
@@ -189,12 +233,15 @@ local function hasLoadedFloor(character, rootPart)
 	return hit ~= nil and hit.Instance:IsA("BasePart") and hit.Instance.CanCollide
 end
 
-local function openRespawnTransition(sequence)
+openRespawnTransition = function(sequence)
 	if openingTransition or not transitionGui.Enabled then
 		return
 	end
-	if transitionSequence and sequence and sequence ~= transitionSequence then
+	if transitionSequence and sequence and sequence < transitionSequence then
 		return
+	end
+	if sequence and (not transitionSequence or sequence > transitionSequence) then
+		transitionSequence = sequence
 	end
 	openingTransition = true
 	local token = transitionToken
@@ -214,6 +261,7 @@ local function openRespawnTransition(sequence)
 
 		local stableFrames = 0
 		local waitingSince = os.clock()
+		local streamingDeadline = waitingSince + STREAMING_TIMEOUT_SECONDS
 		local nextStreamingRequest = os.clock() + 4
 		repeat
 			RunService.Heartbeat:Wait()
@@ -235,7 +283,7 @@ local function openRespawnTransition(sequence)
 					end)
 				end)
 			end
-		until stableFrames >= 2
+		until stableFrames >= 2 or os.clock() >= streamingDeadline
 
 		if token ~= transitionToken then
 			openingTransition = false
@@ -258,6 +306,7 @@ local function openRespawnTransition(sequence)
 			transitionGui.Enabled = false
 			transitionSequence = nil
 			openingTransition = false
+			current = nil
 		end
 	end)
 end
@@ -267,12 +316,18 @@ robuxButton.Activated:Connect(function()
 		return
 	end
 	robuxButton.Active = false
+	current.PurchasePending = true
 	robuxButton.Text = "ABRINDO COMPRA..."
 	deathEvent:FireServer({ Action = "Purchase", Serial = current.Serial })
 end)
 
 freeButton.Activated:Connect(function()
-	if current and os.clock() >= current.FreeAt then
+	if current and current.Retry then
+		current.Retry = false
+		freeButton.Active = false
+		showRespawnTransition(player:GetAttribute("RespawnSequence"))
+		deathEvent:FireServer({ Action = "RetryRespawn", Serial = current.Serial })
+	elseif current and os.clock() >= current.FreeAt then
 		freeButton.Active = false
 		showRespawnTransition(nil)
 		deathEvent:FireServer({ Action = "FreeRespawn", Serial = current.Serial })
@@ -284,6 +339,12 @@ RunService.RenderStepped:Connect(function(deltaTime)
 		loadingMark.Rotation = (loadingMark.Rotation + 135 * deltaTime) % 360
 	end
 	if not current or not gui.Enabled then
+		return
+	end
+	if current.Retry then
+		freeButton.Active = true
+		freeButton.AutoButtonColor = true
+		freeButton.Text = "TENTAR RENASCER NOVAMENTE"
 		return
 	end
 	local remaining = math.max(0, math.ceil(current.FreeAt - os.clock()))
@@ -302,6 +363,8 @@ deathEvent.OnClientEvent:Connect(function(data)
 			Serial = data.Serial,
 			ProductId = tonumber(data.ProductId) or 0,
 			FreeAt = os.clock() + (tonumber(data.FreeRespawnDelaySeconds) or 4),
+			Retry = false,
+			PurchasePending = false,
 		}
 		local cause = data.Cause == "Water" and "A água alcançou você." or "Sua tentativa terminou."
 		result.Text = string.format(
@@ -315,6 +378,9 @@ deathEvent.OnClientEvent:Connect(function(data)
 		robuxButton.Text = current.ProductId > 0 and "RENASCER SEM PERDER MOEDAS" or "CONFIGURE O PRODUTO ROBUX"
 		gui.Enabled = true
 	elseif data.Action == "Granted" then
+		if current then
+			current.PurchasePending = false
+		end
 		showRespawnTransition(data.RespawnSequence)
 		result.Text =
 			string.format("Renascimento confirmado!\n%d moedas devolvidas.", tonumber(data.CoinsRefunded) or 0)
@@ -323,22 +389,37 @@ deathEvent.OnClientEvent:Connect(function(data)
 		showRespawnTransition(data.RespawnSequence)
 	elseif data.Action == "RespawnReady" then
 		local sequence = tonumber(data.RespawnSequence) or 0
-		transitionSequence = transitionSequence or sequence
+		transitionSequence = math.max(transitionSequence or 0, sequence)
 		openRespawnTransition(sequence)
 	elseif data.Action == "Error" then
-		cancelRespawnTransition()
-		result.Text = tostring(data.Message or "Não foi possível abrir a compra.")
-		robuxButton.Active = current ~= nil and current.ProductId > 0
+		if current then
+			current.PurchasePending = false
+		end
+		if player:GetAttribute("RespawnState") == "Failed" then
+			showRespawnFailure(data.Message)
+		else
+			cancelRespawnTransition()
+			result.Text = tostring(data.Message or "Não foi possível abrir a compra.")
+			robuxButton.Active = current ~= nil and current.ProductId > 0
+			robuxButton.AutoButtonColor = robuxButton.Active
+			robuxButton.Text = robuxButton.Active
+				and "RENASCER SEM PERDER MOEDAS"
+				or "CONFIGURE O PRODUTO ROBUX"
+		end
 	end
 end)
 
 player.CharacterAdded:Connect(function(character)
-	if not transitionGui.Enabled then
+	local sequence = tonumber(player:GetAttribute("RespawnSequence")) or 0
+	local isRespawning = player:GetAttribute("InitialGameStarted") == true
+		and sequence > 0
+		and player:GetAttribute("PlayerLifecycleState") ~= "Playing"
+	if isRespawning and not transitionGui.Enabled then
 		showRespawnTransition(player:GetAttribute("RespawnSequence"))
 	end
-	current = nil
-	local sequence = tonumber(player:GetAttribute("RespawnSequence")) or 0
 	if
+		isRespawning
+		and
 		(tonumber(player:GetAttribute("RespawnReadySequence")) or -1) >= sequence
 		and character:GetAttribute("RespawnReady") == true
 	then
@@ -351,11 +432,42 @@ player:GetAttributeChangedSignal("RespawnReadySequence"):Connect(function()
 		return
 	end
 	local sequence = tonumber(player:GetAttribute("RespawnReadySequence")) or -1
-	if not transitionSequence or sequence >= transitionSequence then
+	if sequence > 0 and (not transitionSequence or sequence >= transitionSequence) then
 		openRespawnTransition(sequence)
 	end
 end)
 
-if not player.Character or player:GetAttribute("RespawnState") ~= "Ready" then
+player:GetAttributeChangedSignal("RespawnState"):Connect(function()
+	local state = player:GetAttribute("RespawnState")
+	if state == "Ready" and transitionGui.Enabled then
+		openRespawnTransition(tonumber(player:GetAttribute("RespawnSequence")) or 0)
+	elseif state == "Failed" and player:GetAttribute("InitialGameStarted") == true then
+		showRespawnFailure("Não foi possível encontrar uma área segura.")
+	end
+end)
+
+MarketplaceService.PromptProductPurchaseFinished:Connect(function(userId, purchasedProductId, purchased)
+	if
+		userId ~= player.UserId
+		or not current
+		or purchasedProductId ~= current.ProductId
+		or not current.PurchasePending
+	then
+		return
+	end
+	current.PurchasePending = false
+	if not purchased then
+		robuxButton.Active = true
+		robuxButton.AutoButtonColor = true
+		robuxButton.Text = "RENASCER SEM PERDER MOEDAS"
+		result.Text = "Compra cancelada. Você ainda pode escolher como renascer."
+	end
+end)
+
+if
+	player:GetAttribute("InitialGameStarted") == true
+	and (tonumber(player:GetAttribute("RespawnSequence")) or 0) > 0
+	and player:GetAttribute("RespawnState") ~= "Ready"
+then
 	showRespawnTransition(player:GetAttribute("RespawnSequence"))
 end

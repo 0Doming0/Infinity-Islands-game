@@ -51,6 +51,43 @@ local function getShop(model)
 	return model and VillageShopCatalog.GetShop(model:GetAttribute("ShopId")) or nil
 end
 
+local function getSkyIsland(instance)
+	local current = instance and instance.Parent
+	while current do
+		if current:IsA("Model") and current:GetAttribute("IsSkyIsland") == true then
+			return current
+		end
+		current = current.Parent
+	end
+	return nil
+end
+
+local function getIslandSurfaceY(villager)
+	local island = getSkyIsland(villager)
+	local floor = island and island:FindFirstChild("IslandFloor")
+	if floor and floor:IsA("BasePart") then
+		return floor.Position.Y + floor.Size.Y / 2
+	end
+	return nil
+end
+
+local function waterReachedMerchantIsland(villager)
+	local islandSurfaceY = getIslandSurfaceY(villager)
+	local water = workspace:FindFirstChild("Water")
+	local waterSurfaceY = water and tonumber(water:GetAttribute("SurfaceY"))
+	if not islandSurfaceY or not waterSurfaceY then
+		return false
+	end
+	return waterSurfaceY >= islandSurfaceY
+end
+
+local function clearShopSession(player)
+	playerSessions[player] = nil
+	player:SetAttribute("ShopOpen", false)
+	player:SetAttribute("ActiveShopId", nil)
+	player:SetAttribute("SkyMerchantOfferValid", nil)
+end
+
 local function offerKey(itemType, itemId)
 	return tostring(itemType or "") .. ":" .. tostring(itemId or "")
 end
@@ -97,6 +134,9 @@ local function takeWeightedOffer(pool, random)
 end
 
 local function createStockState(model, shop)
+	if shop.SpecialPanel == "Rewards" then
+		return { Stock = {}, SpecialPanel = "Rewards" }
+	end
 	local island = model:FindFirstAncestorWhichIsA("Model")
 	while island and island:GetAttribute("IsSkyIsland") ~= true do
 		island = island:FindFirstAncestorWhichIsA("Model")
@@ -137,6 +177,9 @@ end
 local function isOutOfStock(state)
 	if not state then
 		return true
+	end
+	if state.SpecialPanel then
+		return false
 	end
 	for _, entry in pairs(state.Stock) do
 		if entry.Stock > 0 then
@@ -194,7 +237,8 @@ local function updateAvailability(model, root, shop, state)
 	end
 	local prompt = root:FindFirstChild("VillageShopPrompt") or root:FindFirstChild("SwordShopPrompt")
 	if prompt and prompt:IsA("ProximityPrompt") then
-		prompt.ActionText = empty and "Conversar"
+		prompt.ActionText = shop.SpecialPanel == "Rewards" and "Coletar"
+			or empty and "Conversar"
 			or "Negociar"
 		prompt.ObjectText = empty and (shop.DisplayName .. " — SEM ESTOQUE") or shop.DisplayName
 	end
@@ -226,7 +270,7 @@ end
 
 local function buildInventory(player, shop, state)
 	local inventory = {}
-	if shop.IncludesRewards == true then
+	if shop.SpecialPanel == "Rewards" or shop.IncludesRewards == true then
 		local snapshot = RewardService.GetSnapshot(player)
 		local rewards = {
 			{
@@ -344,8 +388,26 @@ local function sendShop(player, message, success)
 	if not shop or not state then
 		return
 	end
+	if shop.ShopId == VillageShopCatalog.GetSkyMerchantShopId() then
+		villagerEvent:FireClient(player, {
+			action = "showSkyMerchant",
+			shopId = shop.ShopId,
+			shopTitle = shop.DisplayName,
+			shopColor = shop.Color,
+			message = message,
+			success = success,
+			expiresWhenWaterReachesIsland = true,
+		})
+		return
+	end
 	local inventory = buildInventory(player, shop, state)
 	local emptyStock = isOutOfStock(state)
+	local emptyMessage
+	if emptyStock then
+		emptyMessage = shop.IncludesPremiumStore == true
+			and "ITENS ESGOTADOS — recompensas e ofertas especiais continuam disponiveis."
+			or "SEM ESTOQUE — explore outras ilhas para encontrar novas ofertas."
+	end
 	villagerEvent:FireClient(player, {
 		action = "showShop",
 		shopId = shop.ShopId,
@@ -353,11 +415,7 @@ local function sendShop(player, message, success)
 		shopColor = shop.Color,
 		inventory = inventory,
 		coins = ScoreService.GetCoins(player),
-		message = message or (
-			emptyStock
-				and "ITENS ESGOTADOS — recompensas e ofertas especiais continuam disponiveis."
-				or nil
-		),
+		message = message or emptyMessage,
 		success = success,
 		emptyStock = emptyStock,
 		specialPanel = shop.SpecialPanel,
@@ -368,6 +426,15 @@ end
 local function isSessionValid(player)
 	local villager = playerSessions[player]
 	if not villager or not villager.Parent or not activeVillagers[villager] or not getShop(villager) then
+		return false
+	end
+	local shop = getShop(villager)
+	if shop.ShopId == VillageShopCatalog.GetSkyMerchantShopId()
+		and (
+			player:GetAttribute("SkyMerchantOfferValid") ~= true
+			or waterReachedMerchantIsland(villager)
+		)
+	then
 		return false
 	end
 	local character = player.Character
@@ -506,8 +573,19 @@ local function registerVillager(model)
 
 	prompt.Triggered:Connect(function(player)
 		if player.Parent == Players then
+			local isSkyMerchant = shop.ShopId == VillageShopCatalog.GetSkyMerchantShopId()
+			if isSkyMerchant and waterReachedMerchantIsland(model) then
+				clearShopSession(player)
+				villagerEvent:FireClient(player, {
+					action = "merchantOfferExpired",
+					message = "A água já chegou à ilha. O Mercador partiu e esta oferta terminou.",
+				})
+				return
+			end
 			playerSessions[player] = model
 			player:SetAttribute("ShopOpen", true)
+			player:SetAttribute("ActiveShopId", shop.ShopId)
+			player:SetAttribute("SkyMerchantOfferValid", isSkyMerchant and true or nil)
 			sendShop(player)
 		end
 	end)
@@ -515,8 +593,7 @@ local function registerVillager(model)
 		activeVillagers[model] = nil
 		for player, villager in pairs(playerSessions) do
 			if villager == model then
-				playerSessions[player] = nil
-				player:SetAttribute("ShopOpen", false)
+				clearShopSession(player)
 				villagerEvent:FireClient(player, { action = "closeShop" })
 			end
 		end
@@ -535,13 +612,11 @@ villagerEvent.OnServerEvent:Connect(function(player, data)
 		return
 	end
 	if data.action == "closeShop" then
-		playerSessions[player] = nil
-		player:SetAttribute("ShopOpen", false)
+		clearShopSession(player)
 		return
 	end
 	if not isSessionValid(player) then
-		playerSessions[player] = nil
-		player:SetAttribute("ShopOpen", false)
+		clearShopSession(player)
 		villagerEvent:FireClient(player, { action = "shopError", message = "Aproxime-se novamente do aldeao." })
 		return
 	end
@@ -596,10 +671,14 @@ villagerEvent.OnServerEvent:Connect(function(player, data)
 		end
 		local success, message = RelicService.Equip(player, itemId)
 		sendShop(player, message, success)
-	elseif data.action == "claimDailyReward" and shop.IncludesRewards == true then
+	elseif data.action == "claimDailyReward"
+		and (shop.SpecialPanel == "Rewards" or shop.IncludesRewards == true)
+	then
 		local success, message = RewardService.ClaimDaily(player)
 		sendShop(player, message, success)
-	elseif data.action == "claimTimeReward" and shop.IncludesRewards == true then
+	elseif data.action == "claimTimeReward"
+		and (shop.SpecialPanel == "Rewards" or shop.IncludesRewards == true)
+	then
 		local success, message = RewardService.ClaimPlaytime(player, data.minutes)
 		sendShop(player, message, success)
 	elseif data.action == "purchaseService" then
@@ -629,8 +708,27 @@ villagerEvent.OnServerEvent:Connect(function(player, data)
 	end
 end)
 
+task.spawn(function()
+	while true do
+		task.wait(0.25)
+		for player, villager in pairs(playerSessions) do
+			local shop = getShop(villager)
+			if shop
+				and shop.ShopId == VillageShopCatalog.GetSkyMerchantShopId()
+				and waterReachedMerchantIsland(villager)
+			then
+				clearShopSession(player)
+				villagerEvent:FireClient(player, {
+					action = "merchantOfferExpired",
+					message = "A água chegou à ilha. O Mercador partiu e a oferta terminou.",
+				})
+			end
+		end
+	end
+end)
+
 Players.PlayerRemoving:Connect(function(player)
 	playerSessions[player] = nil
 end)
 
-print("[VillageShop] Mercador do Ceu iniciado com validacao no servidor.")
+print("[VillageShop] Comerciantes variados e Mercador do Ceu iniciados com validacao no servidor.")

@@ -14,6 +14,35 @@ local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 local VillageShopCatalog = require(ReplicatedStorage:WaitForChild("VillageShopCatalog"))
 local VILLAGE_CONFIG = MVPConfig.Village
 local processedIslands = setmetatable({}, { __mode = "k" })
+local warnedMissingVillagerTemplates = {}
+
+local VILLAGER_TEMPLATE_ALIASES = {
+	Blacksmith = {
+		"blacksmith",
+		"ferreiro",
+		"swordmerchant",
+		"swordshopkeeper",
+	},
+	RelicDealer = {
+		"relicdealer",
+		"relicmerchant",
+		"mercadordereliquias",
+		"mercadorderelíquias",
+	},
+	Healer = {
+		"healer",
+		"curandeira",
+	},
+	Explorer = {
+		"explorer",
+		"explorador",
+	},
+	SkyMerchant = {
+		"skymerchant",
+		"mercadordoceu",
+		"mercadordocéu",
+	},
+}
 
 local function isTerrainIsland(instance)
 	return instance:IsA("Model")
@@ -48,17 +77,38 @@ local function getTemplates(category)
 	table.sort(result, function(a, b)
 		return a.Name < b.Name
 	end)
-	if category == "Villagers" and #result > 0 then
-		for _, template in ipairs(result) do
-			if template.Name == "SkyMerchant" then
-				return { template }
-			end
-		end
-		-- Ate que o asset definitivo seja renomeado para SkyMerchant, reutiliza
-		-- sempre o primeiro rig para preservar um unico tipo visual de NPC.
-		return { result[1] }
-	end
 	return result
+end
+
+local function normalizeTemplateName(value)
+	return string.lower(tostring(value or "")):gsub("[^%w]", "")
+end
+
+local function templateMatchesShop(template, shopId)
+	local configuredShopId = template:GetAttribute("ShopId")
+	if typeof(configuredShopId) == "string" and configuredShopId ~= "" then
+		return configuredShopId == shopId
+	end
+	if shopId == "SkyMerchant" and template:GetAttribute("IsSkyMerchant") == true then
+		return true
+	end
+	local normalizedName = normalizeTemplateName(template.Name)
+	for _, alias in ipairs(VILLAGER_TEMPLATE_ALIASES[shopId] or {}) do
+		if string.find(normalizedName, normalizeTemplateName(alias), 1, true) then
+			return true
+		end
+	end
+	return false
+end
+
+local function getVillagerTemplatesForShop(templates, shopId)
+	local matches = {}
+	for _, template in ipairs(templates) do
+		if templateMatchesShop(template, shopId) then
+			table.insert(matches, template)
+		end
+	end
+	return matches
 end
 
 local function prepareStatic(instance)
@@ -194,11 +244,20 @@ local function spawnBuilding(parent, templates, index, position, yaw, random)
 end
 
 local function spawnVillager(parent, templates, position, yaw, random, shop, index)
-	local template = chooseTemplate(templates, random)
+	local matchingTemplates = getVillagerTemplatesForShop(templates, shop.ShopId)
+	local template = chooseTemplate(matchingTemplates, random)
 	local model
 	if template then
 		model = alignToSurface(template:Clone(), position, yaw)
 	else
+		if not warnedMissingVillagerTemplates[shop.ShopId] then
+			warn(string.format(
+				"[MVP Village] Nenhum modelo encontrado para %s (ShopId=%s); usando modelo de exemplo.",
+				shop.DisplayName,
+				shop.ShopId
+			))
+			warnedMissingVillagerTemplates[shop.ShopId] = true
+		end
 		model = createExampleVillager(position, yaw, shop)
 	end
 	model.Name = string.format("Villager_%02d_%s", index, shop.ShopId)
@@ -303,15 +362,24 @@ local function populateIsland(island)
 		folder.Name = "MVPSoloMerchant"
 		folder:SetAttribute("ProceduralSoloMerchant", true)
 		folder.Parent = island
-		local shopIds = VillageShopCatalog.GetShopIds()
-		local shop = VillageShopCatalog.GetShop(shopIds[random:NextInteger(1, #shopIds)])
+		local shop = VillageShopCatalog.GetShop(VillageShopCatalog.GetSkyMerchantShopId())
 		local templates = getTemplates("Villagers")
 		spawnVillager(folder, templates, center, angle, random, shop, 1)
-		print(string.format("[MVP Village] Comerciante solitario criado em %s.", island:GetFullName()))
+		print(string.format("[MVP Village] Mercador do Ceu solitario criado em %s.", island:GetFullName()))
 		return
 	end
 	local buildingCount = random:NextInteger(VILLAGE_CONFIG.MinimumBuildingCount, VILLAGE_CONFIG.MaximumBuildingCount)
 	local shopIds = VillageShopCatalog.GetShopIds()
+	-- Toda vila mantém o ferreiro para não bloquear a progressão principal.
+	-- As demais profissões continuam aleatórias e nunca se repetem.
+	for index, shopId in ipairs(shopIds) do
+		if shopId == "Blacksmith" then
+			table.remove(shopIds, index)
+			break
+		end
+	end
+	shuffle(shopIds, random)
+	table.insert(shopIds, 1, "Blacksmith")
 	local villagerCount = math.min(
 		random:NextInteger(VILLAGE_CONFIG.MinimumVillagerCount, VILLAGE_CONFIG.MaximumVillagerCount),
 		#shopIds
@@ -361,8 +429,9 @@ local function populateIsland(island)
 	)
 	pad.CanCollide = true
 	print(string.format(
-		"[MVP Village] Vila procedural criada em %s com o Mercador do Ceu.",
-		island:GetFullName()
+		"[MVP Village] Vila procedural criada em %s com %d aldeoes.",
+		island:GetFullName(),
+		villagerCount
 	))
 end
 

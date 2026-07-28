@@ -1564,7 +1564,6 @@ function ChunkManager.Start()
 		return
 	end
 	validateConfig()
-	running = true
 	baseSeed = Config.SEED or (os.time() % 2147483647)
 	nodeSerial = 0
 	totalNodeCount = 0
@@ -1611,7 +1610,19 @@ function ChunkManager.Start()
 	latestCollectiveSnapshot = CollectiveProgressService.GetSnapshot()
 	prepareWorld()
 	local startSpec = IslandGraphPlanner.GetNodeSpec(baseSeed, 0, 0, 0)
-	local startNode = assert(createNode(startSpec, "WorldStart"))
+	local startNode, _, startError = createNode(startSpec, "WorldStart")
+	if not startNode then
+		if worldModel then
+			worldModel:SetAttribute("InitialGenerationSuccessful", false)
+			worldModel:SetAttribute("InitialGenerationError", tostring(startError or "WorldStartFailed"))
+		end
+		running = false
+		warn("[SkyDungeon] Falha ao criar a ilha inicial: " .. tostring(startError))
+		return false, startError
+	end
+	-- IsRunning so se torna verdadeiro depois que existe uma ilha inicial
+	-- utilizavel. Assim uma falha de bootstrap pode ser tentada novamente.
+	running = true
 	startNode.Model:SetAttribute("Discovered", false)
 	enqueueDetail(startNode, false, 2000)
 	-- O mapa inicial ja nasce com um round inteiro. O primeiro jogador nunca ve
@@ -1689,6 +1700,7 @@ function ChunkManager.Start()
 	end)
 
 	print(string.format("[SkyDungeon] Rounds reativos por intencao iniciados | Seed %d", baseSeed))
+	return true
 end
 
 -- A agua consulta o buffer, mas nao cria ilhas sem aproximacao dos jogadores.
