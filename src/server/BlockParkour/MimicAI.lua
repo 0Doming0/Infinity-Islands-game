@@ -458,6 +458,9 @@ local function nearestPlayer(position, maximumDistance, state)
 	local distance = maximumDistance
 	local originIslandOccupied = false
 	for _, player in ipairs(Players:GetPlayers()) do
+		if player:GetAttribute("IsDowned") == true then
+			continue
+		end
 		local character = player.Character
 		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 		local root = character and character:FindFirstChild("HumanoidRootPart")
@@ -668,7 +671,11 @@ local function targetIsValidForAttack(state, extraRange)
 	end
 
 	local player = Players:GetPlayerFromCharacter(humanoid.Parent)
-	if not player or not playerIsOnOriginIsland(player, state) then
+	if
+		not player
+		or player:GetAttribute("IsDowned") == true
+		or not playerIsOnOriginIsland(player, state)
+	then
 		return false
 	end
 
@@ -729,7 +736,11 @@ local function targetIsValidForSpecialJump(state)
 	end
 
 	local player = Players:GetPlayerFromCharacter(humanoid.Parent)
-	if not player or not playerIsOnOriginIsland(player, state) then
+	if
+		not player
+		or player:GetAttribute("IsDowned") == true
+		or not playerIsOnOriginIsland(player, state)
+	then
 		return false
 	end
 

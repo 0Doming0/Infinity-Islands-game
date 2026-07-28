@@ -7,8 +7,8 @@ Catalog.AnimationDuration = 3.6
 Catalog.WheelSlotCount = 10
 Catalog.MinimumFullRotations = 5
 Catalog.MaximumFullRotations = 7
-Catalog.DuplicateCompensationRatio = 0.35
-Catalog.MinimumDuplicateCompensation = 90
+Catalog.DuplicateCompensationRatio = 0.10
+Catalog.MinimumDuplicateCompensation = 20
 
 Catalog.CategoryInfo = table.freeze({
 	Coins = table.freeze({
@@ -37,38 +37,38 @@ Catalog.Sources = table.freeze({
 	HeightLevel = table.freeze({
 		DisplayName = "Nível de altura",
 		CategoryWeights = table.freeze({
-			Coins = 72,
-			Relic = 14,
-			Sword = 9,
+			Coins = 84,
+			Relic = 7,
+			Sword = 4,
 			Companion = 5,
 		}),
-		CoinMinimum = 35,
-		CoinMaximum = 90,
-		CoinPerLevel = 8,
+		CoinMinimum = 20,
+		CoinMaximum = 50,
+		CoinPerLevel = 5,
 	}),
 	RareChest = table.freeze({
 		DisplayName = "Baú raro",
 		CategoryWeights = table.freeze({
-			Coins = 58,
-			Relic = 20,
-			Sword = 14,
-			Companion = 8,
+			Coins = 72,
+			Relic = 11,
+			Sword = 7,
+			Companion = 10,
 		}),
-		CoinMinimum = 110,
-		CoinMaximum = 260,
-		CoinPerLevel = 12,
+		CoinMinimum = 70,
+		CoinMaximum = 160,
+		CoinPerLevel = 8,
 	}),
 	Boss = table.freeze({
 		DisplayName = "Boss derrotado",
 		CategoryWeights = table.freeze({
-			Coins = 45,
-			Relic = 25,
-			Sword = 18,
-			Companion = 12,
+			Coins = 60,
+			Relic = 15,
+			Sword = 10,
+			Companion = 15,
 		}),
-		CoinMinimum = 220,
-		CoinMaximum = 480,
-		CoinPerLevel = 20,
+		CoinMinimum = 140,
+		CoinMaximum = 300,
+		CoinPerLevel = 12,
 	}),
 })
 
@@ -93,8 +93,6 @@ Catalog.RewardPools = table.freeze({
 		table.freeze({ Id = "BlueSlime", DisplayName = "Slime Azul", Weight = 20 }),
 		table.freeze({ Id = "RedSlime", DisplayName = "Slime Vermelho", Weight = 16 }),
 		table.freeze({ Id = "GoldenSlime", DisplayName = "Slime Dourado", Weight = 4 }),
-		table.freeze({ Id = "Golem", DisplayName = "Golem", Weight = 9 }),
-		table.freeze({ Id = "StoneGolem", DisplayName = "Golem de Pedra", Weight = 6 }),
 	}),
 })
 

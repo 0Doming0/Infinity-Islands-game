@@ -16,6 +16,7 @@ local RunService = game:GetService("RunService")
 local SlimeAnimator = require(script.Parent.SlimeAnimator)
 local MobEventModifiers = require(script.Parent.MobEventModifiers)
 local PlayerDamageService = require(script.Parent.Parent.MVPSystems:WaitForChild("PlayerDamageService"))
+local PlayerStatusService = require(script.Parent.Parent.MVPSystems:WaitForChild("PlayerStatusService"))
 
 local SlimeController = {}
 
@@ -40,13 +41,14 @@ local GOLDEN_NEAREST_DESTINATION_COUNT = 3
 
 local active = {}
 local islandCells = setmetatable({}, { __mode = "k" })
+local fireDamageAt = setmetatable({}, { __mode = "k" })
 
 local function serverTime()
 	return workspace:GetServerTimeNow()
 end
 
 local function getLivingCharacter(player)
-	if not player or player.Parent ~= Players then
+	if not player or player.Parent ~= Players or player:GetAttribute("IsDowned") == true then
 		return nil
 	end
 	local character = player.Character
@@ -482,6 +484,57 @@ local function damagePlayersInRadius(position, radius, damage)
 	end
 end
 
+local function createFireGround(state, position)
+	local definition = state.Definition
+	local radius = math.max(2, tonumber(definition.GroundEffectRadius) or 5)
+	local duration = math.max(0.5, tonumber(definition.GroundEffectDuration) or 5)
+	local interval = math.max(0.25, tonumber(definition.GroundEffectInterval) or 0.75)
+	local damage = math.max(0, tonumber(definition.GroundEffectDamage) or 2)
+	local fire = Instance.new("Part")
+	fire.Name = "FireSlimeGround"
+	fire.Shape = Enum.PartType.Cylinder
+	fire.Size = Vector3.new(0.12, radius * 2, radius * 2)
+	fire.CFrame = CFrame.new(position + Vector3.new(0, 0.09, 0))
+		* CFrame.Angles(0, 0, math.pi / 2)
+	fire.Anchored = true
+	fire.CanCollide = false
+	fire.CanTouch = false
+	fire.CanQuery = false
+	fire.Material = Enum.Material.Neon
+	fire.Color = Color3.fromRGB(255, 105, 24)
+	fire.Transparency = 0.35
+	fire.Parent = state.Island and state.Island.Parent and state.Island or workspace
+	Debris:AddItem(fire, duration + 0.2)
+
+	task.spawn(function()
+		local expiresAt = serverTime() + duration
+		while fire.Parent and serverTime() < expiresAt do
+			local water = workspace:FindFirstChild("Water")
+			local waterY = water and tonumber(water:GetAttribute("SurfaceY")) or -math.huge
+			if waterY >= position.Y + 0.2 then
+				break
+			end
+			local now = serverTime()
+			for _, player in ipairs(Players:GetPlayers()) do
+				local _, humanoid, root = getLivingCharacter(player)
+				if
+					humanoid
+					and horizontalDistance(root.Position, position) <= radius
+					and math.abs(root.Position.Y - position.Y) <= 8
+					and now - (fireDamageAt[player] or -math.huge) >= interval * 0.9
+				then
+					fireDamageAt[player] = now
+					PlayerDamageService.Apply(player, humanoid, damage, "FireSlimeGround")
+				end
+			end
+			task.wait(interval)
+		end
+		if fire.Parent then
+			fire:Destroy()
+		end
+	end)
+end
+
 local function mortarAttack(state, targetCharacter, targetRoot)
 	local definition = state.Definition
 	local velocity = targetRoot.AssemblyLinearVelocity
@@ -507,12 +560,12 @@ local function mortarAttack(state, targetCharacter, targetRoot)
 	marker.CanTouch = false
 	marker.CanQuery = false
 	marker.Material = Enum.Material.Neon
-	marker.Color = Color3.fromRGB(255, 30, 30)
+	marker.Color = definition.Color
 	marker.Transparency = 0.62
 	marker.Parent = workspace
 
 	local projectile = Instance.new("Part")
-	projectile.Name = "RedSlimeMortar"
+	projectile.Name = definition.Behavior == "FireMortar" and "FireSlimeMortar" or "RedSlimeMortar"
 	projectile.Shape = Enum.PartType.Ball
 	projectile.Size = Vector3.new(1.45, 1.45, 1.45)
 	projectile.Anchored = true
@@ -520,7 +573,7 @@ local function mortarAttack(state, targetCharacter, targetRoot)
 	projectile.CanTouch = false
 	projectile.CanQuery = false
 	projectile.Material = Enum.Material.Neon
-	projectile.Color = Color3.fromRGB(255, 65, 45)
+	projectile.Color = definition.Color
 	projectile.Position = state.Root.Position + Vector3.new(0, 2, 0)
 	projectile.Parent = workspace
 
@@ -549,7 +602,10 @@ local function mortarAttack(state, targetCharacter, targetRoot)
 			return
 		end
 		damagePlayersInRadius(impactPosition, definition.ImpactRadius, definition.AttackDamage)
-		createBurst(impactPosition + Vector3.new(0, 0.5, 0), Color3.fromRGB(255, 55, 45), 2.2)
+		createBurst(impactPosition + Vector3.new(0, 0.5, 0), definition.Color, 2.2)
+		if definition.Behavior == "FireMortar" then
+			createFireGround(state, impactPosition)
+		end
 		projectile:Destroy()
 		marker:Destroy()
 		state.Busy = false
@@ -570,7 +626,9 @@ local function straightProjectileAttack(state, targetRoot)
 	state.NextAttackAt = serverTime() + definition.AttackCooldown
 	local direction = offset.Unit
 	local projectile = Instance.new("Part")
-	projectile.Name = "BlueSlimeProjectile"
+	projectile.Name = definition.Behavior == "IceRanged"
+		and "IceSlimeProjectile"
+		or "BlueSlimeProjectile"
 	projectile.Shape = Enum.PartType.Ball
 	projectile.Size = Vector3.new(PROJECTILE_SIZE, PROJECTILE_SIZE, PROJECTILE_SIZE)
 	projectile.Position = origin
@@ -579,7 +637,7 @@ local function straightProjectileAttack(state, targetRoot)
 	projectile.CanTouch = false
 	projectile.CanQuery = false
 	projectile.Material = Enum.Material.Neon
-	projectile.Color = Color3.fromRGB(65, 165, 255)
+	projectile.Color = definition.Color
 	projectile.Parent = workspace
 
 	local params = RaycastParams.new()
@@ -600,6 +658,13 @@ local function straightProjectileAttack(state, targetRoot)
 				local _, hitHumanoid = getLivingCharacter(hitPlayer)
 				if hitHumanoid then
 					PlayerDamageService.Apply(hitPlayer, hitHumanoid, definition.AttackDamage, "SlimeProjectile")
+					if definition.Behavior == "IceRanged" then
+						PlayerStatusService.ApplyFreeze(
+							hitPlayer,
+							definition.FreezeDuration,
+							definition.FreezeImmunity
+						)
+					end
 				end
 				createBurst(result.Position, definition.Color, 1.2)
 				projectile:Destroy()
@@ -871,6 +936,100 @@ local function thinkRed(state, now)
 		end
 	end
 	updateRangedMovement(state, now, targetRoot, "Hunt")
+end
+
+local function beginLightningDash(state, player, targetRoot)
+	if state.Busy or state.Model:GetAttribute("CombatStunned") == true then
+		return
+	end
+	local definition = state.Definition
+	stopMoving(state, "DashWindup")
+	facePosition(state, targetRoot.Position)
+	state.Busy = true
+	state.NextAttackAt = serverTime() + definition.AttackCooldown
+	task.delay(definition.DashWindup or 0.45, function()
+		if not isAlive(state) then
+			return
+		end
+		local _, targetHumanoid, currentRoot = getLivingCharacter(player)
+		if not currentRoot then
+			state.Busy = false
+			return
+		end
+		local destination = chooseCellNearPosition(state, currentRoot.Position)
+		requestMove(
+			state,
+			destination,
+			definition.DashSpeedMultiplier or 1.8,
+			"Dash",
+			0
+		)
+		local hit = false
+		local expiresAt = serverTime() + (definition.DashDuration or 0.48)
+		while isAlive(state) and serverTime() < expiresAt do
+			local _, humanoid, root = getLivingCharacter(player)
+			if
+				humanoid
+				and horizontalDistance(state.Root.Position, root.Position)
+					<= definition.AttackRange + 1.5
+				and math.abs(state.Root.Position.Y - root.Position.Y) <= MELEE_HEIGHT_TOLERANCE
+			then
+				PlayerDamageService.ApplyToHumanoid(
+					humanoid,
+					definition.AttackDamage,
+					"LightningSlimeDash"
+				)
+				createBurst(root.Position, definition.OutSideColor, 1.1)
+				hit = true
+				break
+			end
+			RunService.Heartbeat:Wait()
+		end
+		if isAlive(state) then
+			stopMoving(state, hit and "DashHit" or "DashMiss")
+			if not hit then
+				state.Model:SetAttribute(
+					"VulnerableUntil",
+					serverTime() + (definition.MissVulnerability or 0.75)
+				)
+			end
+			state.Busy = false
+			state.IdleUntil = serverTime() + 0.15
+		end
+	end)
+end
+
+local function thinkLightning(state, now)
+	local definition = state.Definition
+	local detectionRange = MobEventModifiers.GetAggroRange(
+		state.Model,
+		definition.DetectionRange or 68
+	)
+	local player, targetRoot = nearestPlayer(state.Root.Position, detectionRange)
+	if not targetRoot then
+		state.Model:SetAttribute("AggroUserId", nil)
+		state.Model:SetAttribute("TargetUserId", nil)
+		thinkWander(state, now)
+		return
+	end
+	state.Model:SetAttribute("AggroUserId", player.UserId)
+	state.Model:SetAttribute("TargetUserId", player.UserId)
+	if state.Busy then
+		return
+	end
+	local distance = horizontalDistance(state.Root.Position, targetRoot.Position)
+	if distance <= (definition.DashTriggerRange or 15) and now >= state.NextAttackAt then
+		beginLightningDash(state, player, targetRoot)
+		return
+	end
+	local destination = chooseCellNearPosition(state, targetRoot.Position)
+	requestMove(
+		state,
+		destination,
+		definition.CombatSpeedMultiplier or 1.8,
+		"Chase",
+		PATH_RECOMPUTE_INTERVAL
+	)
 end
 
 local function getRuntimeMonsterFolder(island)
@@ -1164,10 +1323,12 @@ function SlimeController.Start(entry, definition, random, callbacks)
 				setAIState(state, "Stunned")
 			elseif definition.Behavior == "NeutralMelee" then
 				thinkGreen(state, currentTime)
-			elseif definition.Behavior == "NeutralRanged" then
+			elseif definition.Behavior == "NeutralRanged" or definition.Behavior == "IceRanged" then
 				thinkBlue(state, currentTime)
-			elseif definition.Behavior == "HostileMortar" then
+			elseif definition.Behavior == "HostileMortar" or definition.Behavior == "FireMortar" then
 				thinkRed(state, currentTime)
+			elseif definition.Behavior == "LightningDash" then
+				thinkLightning(state, currentTime)
 			elseif definition.Behavior == "GoldenEscape" then
 				thinkGolden(state, currentTime)
 			end

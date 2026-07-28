@@ -515,6 +515,32 @@ local teamCount = createLabel(
 )
 teamCount.TextXAlignment = Enum.TextXAlignment.Right
 
+local unlockCoinsButton = createButton(
+	teamSection,
+	"UnlockCoins",
+	"+ SLOT COM MOEDAS",
+	UDim2.new(1, -390, 0, 5),
+	UDim2.fromOffset(150, 27),
+	Color3.fromRGB(92, 73, 27),
+	COLORS.Gold
+)
+unlockCoinsButton.TextSize = 9
+unlockCoinsButton.ZIndex = 24
+addStroke(unlockCoinsButton, COLORS.Gold, 0.55, 1)
+
+local unlockRobuxButton = createButton(
+	teamSection,
+	"UnlockRobux",
+	"+ SLOT COM ROBUX",
+	UDim2.new(1, -232, 0, 5),
+	UDim2.fromOffset(142, 27),
+	COLORS.PrimaryDark,
+	COLORS.Text
+)
+unlockRobuxButton.TextSize = 9
+unlockRobuxButton.ZIndex = 24
+addStroke(unlockRobuxButton, COLORS.PrimarySoft, 0.55, 1)
+
 local slots = Instance.new("Frame")
 slots.Name = "EquippedSlots"
 slots.Position = UDim2.fromOffset(12, 36)
@@ -1131,6 +1157,9 @@ local snapshot = {
 	Entries = {},
 	EquippedCompanions = {},
 	MaxEquipped = CompanionCatalog.MaxEquipped,
+	MaximumEquipSlots = CompanionCatalog.MaxEquipped,
+	NextSlotCoinPrice = nil,
+	SlotProductConfigured = false,
 	MaxLevel = CompanionCatalog.MaxLevel,
 	UpgradeOrder = CompanionCatalog.UpgradeOrder,
 	UpgradeDefinitions = CompanionCatalog.Upgrades,
@@ -1475,8 +1504,21 @@ local function renderOverview()
 	clearGuiObjects(collectionList)
 
 	local maxEquipped = snapshot.MaxEquipped or CompanionCatalog.MaxEquipped
+	local maximumEquipSlots = snapshot.MaximumEquipSlots or CompanionCatalog.MaxEquipped
 	local active = equippedCount()
 	teamCount.Text = string.format("%d DE %d", active, maxEquipped)
+	local canUnlock = maxEquipped < maximumEquipSlots
+	unlockCoinsButton.Visible = canUnlock and snapshot.NextSlotCoinPrice ~= nil
+	unlockRobuxButton.Visible = canUnlock and snapshot.SlotProductConfigured == true
+	unlockCoinsButton.Text = snapshot.NextSlotCoinPrice
+			and string.format("+ SLOT · %d ¤", snapshot.NextSlotCoinPrice)
+		or "+ SLOT COM MOEDAS"
+	slotsLayout.CellSize = UDim2.new(
+		1 / math.max(1, maxEquipped),
+		-math.max(0, 9 * (maxEquipped - 1) / math.max(1, maxEquipped)),
+		1,
+		0
+	)
 	collectionCount.Text = string.format("%d DESBLOQUEADOS", #snapshot.Entries)
 	collectionEmpty.Visible = #snapshot.Entries == 0
 	collectionList.Visible = #snapshot.Entries > 0
@@ -1961,6 +2003,16 @@ equipButton.Activated:Connect(function()
 	end
 end)
 
+unlockCoinsButton.Activated:Connect(function()
+	if invoke("BuySlotCoins") then
+		render()
+	end
+end)
+
+unlockRobuxButton.Activated:Connect(function()
+	invoke("BuySlotRobux")
+end)
+
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed or not isOpen or input.KeyCode ~= Enum.KeyCode.Escape then
 		return
@@ -1985,6 +2037,8 @@ event.OnClientEvent:Connect(function(payload)
 	if payload.Snapshot then
 		snapshot = payload.Snapshot
 		render()
+	elseif payload.Action == "Refresh" then
+		refresh()
 	end
 	showToast(payload.Message, payload.Success)
 end)

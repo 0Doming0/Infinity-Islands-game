@@ -5,8 +5,10 @@ local Players = game:GetService("Players")
 local ScoreService = require(script.Parent.BlockParkour:WaitForChild("ScoreService_SkyDungeon_V10"))
 local RunLevelService = require(script.Parent.BlockParkour:WaitForChild("RunLevelService"))
 local DeathReviveService = require(script.Parent.MVPSystems:WaitForChild("DeathReviveService"))
+local DownedService = require(script.Parent.MVPSystems:WaitForChild("DownedService"))
 ScoreService.Start()
 DeathReviveService.Start()
+DownedService.Start()
 
 local function removeHealthRegeneration(instance)
 	if instance.Name == "Health" and instance:IsA("BaseScript") then

@@ -231,31 +231,19 @@ local function grantCompanion(player, sourceId)
 	if not entry or not CompanionCatalog.Entries[entry.Id] then
 		return nil
 	end
-	local companionsBefore, equippedBefore = PlayerDataService.GetCompanions(player)
-	if companionsBefore[entry.Id] then
-		local amount = awardCoins(player, RewardWheelCatalog.MinimumDuplicateCompensation * 2, sourceId, true)
-		if amount <= 0 then
-			return nil
-		end
-		return {
-			Category = "Coins",
-			OriginalCategory = "Companion",
-			RewardId = "Coins",
-			OriginalRewardId = entry.Id,
-			DisplayName = string.format("%d moedas", amount),
-			OriginalDisplayName = entry.DisplayName,
-			Amount = amount,
-			IsDuplicate = true,
-		}
-	end
-	local success, unlocked = PlayerDataService.UnlockCompanion(player, entry.Id, entry.DisplayName)
+	local _, equippedBefore = PlayerDataService.GetCompanions(player)
+	local success, unlocked, instanceId = PlayerDataService.UnlockCompanion(
+		player,
+		entry.Id,
+		entry.DisplayName
+	)
 	if not success or not unlocked then
 		return nil
 	end
 	-- O primeiro companheiro e equipado automaticamente pelo dado persistente;
 	-- esta chamada tambem cria seu modelo no mundo imediatamente.
 	if #equippedBefore == 0 then
-		CompanionService.SetEquipped(player, entry.Id, true)
+		CompanionService.SetEquipped(player, instanceId, true)
 	end
 	local companionEvent = ReplicatedStorage:FindFirstChild("CompanionEvent")
 	if companionEvent and companionEvent:IsA("RemoteEvent") then
@@ -269,6 +257,7 @@ local function grantCompanion(player, sourceId)
 	return {
 		Category = "Companion",
 		RewardId = entry.Id,
+		CompanionInstanceId = instanceId,
 		DisplayName = entry.DisplayName,
 		ImageId = companionImageId(entry.Id),
 		IsDuplicate = false,

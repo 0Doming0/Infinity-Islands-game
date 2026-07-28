@@ -5,7 +5,15 @@
 
 local CompanionCatalog = {}
 
+CompanionCatalog.InitialEquippedSlots = 1
 CompanionCatalog.MaxEquipped = 4
+CompanionCatalog.MaximumStored = 500
+CompanionCatalog.EquipSlotDeveloperProductId = 0
+CompanionCatalog.EquipSlotCoinPrices = table.freeze({
+	[2] = 20000,
+	[3] = 75000,
+	[4] = 250000,
+})
 CompanionCatalog.MaxLevel = 50
 CompanionCatalog.MaxDisplayNameLength = 20
 CompanionCatalog.LevelDamageBonus = 0.04
@@ -52,14 +60,77 @@ CompanionCatalog.Upgrades = table.freeze({
 -- Espaco reservado para todas as variantes atualmente conhecidas.
 -- Exemplo: ImageId = "rbxassetid://1234567890"
 CompanionCatalog.Entries = table.freeze({
-	GreenSlime = table.freeze({ ImageId = "" }),
-	BlueSlime = table.freeze({ ImageId = "" }),
-	RedSlime = table.freeze({ ImageId = "" }),
-	GoldenSlime = table.freeze({ ImageId = "" }),
-	PrototypeSlime = table.freeze({ ImageId = "" }),
-	Golem = table.freeze({ ImageId = "" }),
-	StoneGolem = table.freeze({ ImageId = "" }),
+	GreenSlime = table.freeze({
+		DisplayName = "Slime Verde",
+		ImageId = "",
+		Color = Color3.fromRGB(91, 219, 128),
+		CaptureChance = 0.06,
+	}),
+	BlueSlime = table.freeze({
+		DisplayName = "Slime Azul",
+		ImageId = "",
+		Color = Color3.fromRGB(70, 170, 255),
+		CaptureChance = 0.04,
+	}),
+	RedSlime = table.freeze({
+		DisplayName = "Slime Vermelho",
+		ImageId = "",
+		Color = Color3.fromRGB(238, 78, 65),
+		CaptureChance = 0.03,
+	}),
+	FireSlime = table.freeze({
+		DisplayName = "Slime de Fogo",
+		ImageId = "",
+		Color = Color3.fromRGB(255, 119, 43),
+		CaptureChance = 0.025,
+	}),
+	IceSlime = table.freeze({
+		DisplayName = "Slime de Gelo",
+		ImageId = "",
+		Color = Color3.fromRGB(92, 238, 255),
+		CaptureChance = 0.025,
+	}),
+	LightningSlime = table.freeze({
+		DisplayName = "Slime do Raio",
+		ImageId = "",
+		Color = Color3.fromRGB(245, 245, 255),
+		CaptureChance = 0.02,
+	}),
+	GoldenSlime = table.freeze({
+		DisplayName = "Slime Dourado",
+		ImageId = "",
+		Color = Color3.fromRGB(255, 210, 65),
+		CaptureChance = 0.01,
+	}),
+	PrototypeSlime = table.freeze({
+		DisplayName = "Slime",
+		ImageId = "",
+		Color = Color3.fromRGB(111, 230, 159),
+		CaptureChance = 0.06,
+	}),
 })
+
+function CompanionCatalog.Get(monsterId)
+	return CompanionCatalog.Entries[monsterId]
+end
+
+function CompanionCatalog.IsSupported(monsterId)
+	return CompanionCatalog.Entries[monsterId] ~= nil
+end
+
+function CompanionCatalog.GetCaptureChance(monsterId, isElite)
+	local entry = CompanionCatalog.Entries[monsterId]
+	local chance = entry and math.clamp(tonumber(entry.CaptureChance) or 0, 0, 1) or 0
+	if isElite then
+		chance = math.min(0.10, chance * 2)
+	end
+	return chance
+end
+
+function CompanionCatalog.GetEquipSlotCoinPrice(targetSlot)
+	local slot = math.floor(tonumber(targetSlot) or 0)
+	return CompanionCatalog.EquipSlotCoinPrices[slot]
+end
 
 function CompanionCatalog.GetImageId(monsterId, attributeValue)
 	if type(attributeValue) == "string" and attributeValue ~= "" then

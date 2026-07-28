@@ -149,6 +149,23 @@ local Config = {
 		},
 	},
 
+	Social = {
+		Downed = {
+			DurationSeconds = 15,
+			ReviveHoldSeconds = 3,
+			ReviveHealthRatio = 0.35,
+			ProtectionSeconds = 3,
+			WeaknessSeconds = 60,
+			ReviveDistanceStuds = 10,
+		},
+		Trade = {
+			MaximumCompanionsPerOffer = 4,
+			InviteLifetimeSeconds = 30,
+			MaximumDistanceStuds = 60,
+			ConfirmationCountdownSeconds = 3,
+		},
+	},
+
 	Tutorial = {
 		-- "NewPlayers" usa o progresso salvo; "AllPlayers" repete para todos.
 		-- Por seguranca, AllPlayers so funciona no Studio por padrao.

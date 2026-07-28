@@ -9,11 +9,15 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local ServerStorage = game:GetService("ServerStorage")
 local TextService = game:GetService("TextService")
+local MarketplaceService = game:GetService("MarketplaceService")
 
 local CompanionCatalog = require(ReplicatedStorage:WaitForChild("CompanionCatalog"))
 local PlayerDataService = require(
 	script.Parent.Parent.BlockParkour:WaitForChild("PlayerDataService_SkyDungeon_V10")
 )
+local ScoreService = require(script.Parent.Parent.BlockParkour:WaitForChild("ScoreService_SkyDungeon_V10"))
+local DeveloperProductService = require(script.Parent:WaitForChild("DeveloperProductService"))
+local TradeService = require(script.Parent:WaitForChild("TradeService"))
 local SlimeVariants = require(script.Parent.Parent.BlockParkour:WaitForChild("SlimeVariants"))
 local SlimeAnimator = require(script.Parent.Parent.BlockParkour:WaitForChild("SlimeAnimator"))
 local CompanionCombat = require(script.Parent.Parent.MonsterSystem.CompanionCombat)
@@ -21,7 +25,6 @@ local MonsterConfig = require(script.Parent.Parent.MonsterSystem.MonsterConfig)
 local MonsterAnimationLoader = require(script.Parent.Parent.MonsterSystem.MonsterAnimationLoader)
 
 local CompanionService = {}
-local DEFAULT_UNLOCK_CHANCE = 0.12
 local THINK_INTERVAL = 0.15
 local COMPANION_GROUP = "MVPMonsters"
 local FALLBACK_FLOOR_Y = -150
@@ -141,7 +144,8 @@ local function getSpeciesDisplayName(monsterId, template)
 			return humanoid.DisplayName
 		end
 	end
-	return monsterId
+	local catalogEntry = CompanionCatalog.Get(monsterId)
+	return catalogEntry and catalogEntry.DisplayName or monsterId
 end
 
 local function getTemplateMetadata(monsterId)
@@ -172,16 +176,22 @@ end
 
 function CompanionService.GetSnapshot(player)
 	local companions, equipped = PlayerDataService.GetCompanions(player)
+	local equipSlots = PlayerDataService.GetCompanionEquipSlots(player)
 	local equippedSlots = {}
-	for slot, monsterId in ipairs(equipped) do
-		equippedSlots[monsterId] = slot
+	for slot, instanceId in ipairs(equipped) do
+		equippedSlots[instanceId] = slot
 	end
 	local entries = {}
-	for monsterId, record in pairs(companions) do
-		local _, imageId, speciesName = getTemplateMetadata(monsterId)
+	for instanceId, record in pairs(companions) do
+		local speciesId = record.SpeciesId
+		local _, imageId, speciesName = getTemplateMetadata(speciesId)
 		local spentPoints = CompanionCatalog.SpentPoints(record.Upgrades)
 		table.insert(entries, {
-			MonsterId = monsterId,
+			-- MonsterId permanece como o identificador selecionável para manter a
+			-- interface antiga compatível. SpeciesId identifica o tipo do slime.
+			MonsterId = instanceId,
+			InstanceId = instanceId,
+			SpeciesId = speciesId,
 			DisplayName = record.DisplayName,
 			SpeciesName = speciesName,
 			ImageId = imageId,
@@ -189,11 +199,11 @@ function CompanionService.GetSnapshot(player)
 			XP = record.XP,
 			XPRequired = xpRequired(record.Level),
 			Kills = record.Kills,
-			Equipped = equippedSlots[monsterId] ~= nil,
-			Slot = equippedSlots[monsterId],
+			Equipped = equippedSlots[instanceId] ~= nil,
+			Slot = equippedSlots[instanceId],
 			UpgradePoints = math.max(0, record.Level - 1 - spentPoints),
 			Upgrades = table.clone(record.Upgrades),
-			Stats = computedEntryStats(monsterId, record),
+			Stats = computedEntryStats(speciesId, record),
 		})
 	end
 	table.sort(entries, function(a, b)
@@ -211,7 +221,12 @@ function CompanionService.GetSnapshot(player)
 	return {
 		Entries = entries,
 		EquippedCompanions = equipped,
-		MaxEquipped = CompanionCatalog.MaxEquipped,
+		MaxEquipped = equipSlots,
+		MaximumEquipSlots = CompanionCatalog.MaxEquipped,
+		NextSlotCoinPrice = CompanionCatalog.GetEquipSlotCoinPrice(equipSlots + 1),
+		SlotProductConfigured = CompanionCatalog.EquipSlotDeveloperProductId > 0,
+		StoredCount = #entries,
+		MaximumStored = CompanionCatalog.MaximumStored,
 		MaxLevel = CompanionCatalog.MaxLevel,
 		UpgradeOrder = CompanionCatalog.UpgradeOrder,
 		UpgradeDefinitions = CompanionCatalog.Upgrades,
@@ -275,6 +290,9 @@ local function destroyActive(player)
 end
 
 local function ownerCharacter(player)
+	if player:GetAttribute("IsDowned") == true then
+		return nil
+	end
 	local character = player.Character
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 	local root = character and character:FindFirstChild("HumanoidRootPart")
@@ -598,12 +616,13 @@ local function teleportToOwner(state, ownerCharacter, ownerRoot)
 	return true
 end
 
-local function spawnState(player, monsterId, record, slot)
-	local template = findTemplate(monsterId)
-	local model = template and template:Clone() or createFallback(monsterId)
-	model.Name = string.format("Companion_%d_%d_%s", player.UserId, slot, monsterId)
-	if template and string.find(monsterId, "Slime$") and SlimeVariants.IsSlime(model) then
-		local variant = string.match(monsterId, "^(%a+)Slime$")
+local function spawnState(player, instanceId, record, slot)
+	local speciesId = record.SpeciesId
+	local template = findTemplate(speciesId)
+	local model = template and template:Clone() or createFallback(speciesId)
+	model.Name = string.format("Companion_%d_%d_%s", player.UserId, slot, speciesId)
+	if template and string.find(speciesId, "Slime$") and SlimeVariants.IsSlime(model) then
+		local variant = string.match(speciesId, "^(%a+)Slime$")
 		if variant and SlimeVariants.GetDefinition(variant) then
 			SlimeVariants.ConfigureClone(model, template, random, variant)
 		end
@@ -620,9 +639,10 @@ local function spawnState(player, monsterId, record, slot)
 	model:SetAttribute("IsCompanion", true)
 	model:SetAttribute("CompanionOwnerUserId", player.UserId)
 	model:SetAttribute("CompanionSlot", slot)
-		model:SetAttribute("MonsterId", monsterId)
-		model:SetAttribute("CompanionLevel", record.Level)
-		model:SetAttribute("CompanionDisplayName", record.DisplayName)
+	model:SetAttribute("CompanionInstanceId", instanceId)
+	model:SetAttribute("MonsterId", speciesId)
+	model:SetAttribute("CompanionLevel", record.Level)
+	model:SetAttribute("CompanionDisplayName", record.DisplayName)
 	model:SetAttribute("Invulnerable", true)
 	model:SetAttribute("AIController", "Companion")
 	model:SetAttribute("UseCustomAI", true)
@@ -658,7 +678,8 @@ local function spawnState(player, monsterId, record, slot)
 		Model = model,
 		Root = root,
 		Humanoid = humanoid,
-		MonsterId = monsterId,
+		InstanceId = instanceId,
+		MonsterId = speciesId,
 		DisplayName = record.DisplayName,
 		Slot = slot,
 		Level = record.Level,
@@ -698,7 +719,7 @@ local function spawnState(player, monsterId, record, slot)
 			return isOwnersEnemy(player, modelToCheck)
 		end,
 	}
-	state.CombatStats = CompanionCombat.GetStats(model, monsterId, state.Level, state.Upgrades)
+	state.CombatStats = CompanionCombat.GetStats(model, speciesId, state.Level, state.Upgrades)
 	humanoid.WalkSpeed = state.CombatStats.WalkSpeed
 	state.NextTeleportAt = workspace:GetServerTimeNow()
 		+ (state.CombatStats.TeleportInterval or math.huge)
@@ -714,10 +735,10 @@ local function spawnRoster(player)
 	local companions, equipped = PlayerDataService.GetCompanions(player)
 	local states = {}
 	active[player] = states
-	for slot, monsterId in ipairs(equipped) do
-		local record = companions[monsterId]
+	for slot, instanceId in ipairs(equipped) do
+		local record = companions[instanceId]
 		if record then
-			local state = spawnState(player, monsterId, record, slot)
+			local state = spawnState(player, instanceId, record, slot)
 			if state then
 				table.insert(states, state)
 			end
@@ -981,6 +1002,20 @@ local function followOwner(state, ownerCharacter, ownerRoot, dt, now)
 end
 
 local function updateCompanion(player, state, dt, now)
+	if player:GetAttribute("IsDowned") == true then
+		if not state.PausedForDowned then
+			state.PausedForDowned = true
+			state.AttackSerial += 1
+			state.Target = nil
+			state.Busy = false
+			clearFollowNavigation(state)
+			state.Humanoid:MoveTo(state.Root.Position)
+			setMovementMode(state, "Idle")
+		end
+		return
+	elseif state.PausedForDowned then
+		state.PausedForDowned = false
+	end
 	local ownerModel, ownerHumanoid, ownerRoot = ownerCharacter(player)
 	if not ownerRoot or not ownerHumanoid then
 		return
@@ -1033,19 +1068,19 @@ local function updateCompanion(player, state, dt, now)
 	end
 end
 
-local function refreshState(player, monsterId, record)
+local function refreshState(player, instanceId, record)
 	local states = active[player]
 	if not states then
 		return
 	end
 	for _, state in ipairs(states) do
-		if state.MonsterId == monsterId then
+		if state.InstanceId == instanceId then
 			state.DisplayName = record.DisplayName
 			state.Level = record.Level
 			state.Upgrades = table.clone(record.Upgrades)
 			state.CombatStats = CompanionCombat.GetStats(
 				state.Model,
-				monsterId,
+				record.SpeciesId,
 				record.Level,
 				record.Upgrades
 			)
@@ -1064,8 +1099,11 @@ local function refreshState(player, monsterId, record)
 	end
 end
 
-function CompanionService.SetEquipped(player, monsterId, shouldEquip)
-	local success, errorMessage = PlayerDataService.SetCompanionEquipped(player, monsterId, shouldEquip)
+function CompanionService.SetEquipped(player, instanceId, shouldEquip)
+	if TradeService.IsCompanionLocked(player, instanceId) then
+		return false, "Esse companheiro está bloqueado em uma troca."
+	end
+	local success, errorMessage = PlayerDataService.SetCompanionEquipped(player, instanceId, shouldEquip)
 	if not success then
 		return false, errorMessage
 	end
@@ -1129,6 +1167,9 @@ local function filterNameForBroadcast(player, requestedName)
 end
 
 function CompanionService.Rename(player, monsterId, requestedName)
+	if TradeService.IsCompanionLocked(player, monsterId) then
+		return false, "Esse companheiro está bloqueado em uma troca."
+	end
 	local companions = PlayerDataService.GetCompanions(player)
 	if type(monsterId) ~= "string" or not companions[monsterId] then
 		return false, "Companheiro inválido."
@@ -1160,6 +1201,9 @@ function CompanionService.Rename(player, monsterId, requestedName)
 end
 
 function CompanionService.Discard(player, monsterId)
+	if TradeService.IsCompanionLocked(player, monsterId) then
+		return false, "Esse companheiro está bloqueado em uma troca."
+	end
 	local companions = PlayerDataService.GetCompanions(player)
 	local record = type(monsterId) == "string" and companions[monsterId] or nil
 	if not record then
@@ -1186,6 +1230,9 @@ function CompanionService.Discard(player, monsterId)
 end
 
 function CompanionService.Upgrade(player, monsterId, statName)
+	if TradeService.IsCompanionLocked(player, monsterId) then
+		return false, "Esse companheiro está bloqueado em uma troca."
+	end
 	local success, message = PlayerDataService.UpgradeCompanionStat(player, monsterId, statName)
 	if not success then
 		return false, message
@@ -1212,7 +1259,7 @@ function CompanionService.RecordDefeat(player, monster)
 	local progress = PlayerDataService.AddEquippedCompanionsXP(player, xp)
 	local firstLevelUp
 	for _, result in ipairs(progress) do
-		refreshState(player, result.MonsterId, result.Record)
+		refreshState(player, result.InstanceId, result.Record)
 		if result.Leveled and not firstLevelUp then
 			firstLevelUp = result.Record
 		end
@@ -1223,22 +1270,26 @@ function CompanionService.RecordDefeat(player, monster)
 	local displayName = monster:GetAttribute("DisplayName")
 		or (monsterHumanoid and monsterHumanoid.DisplayName)
 		or monsterId
-	local companions = PlayerDataService.GetCompanions(player)
-	local canUnlock = monster:GetAttribute("CanBecomeCompanion") ~= false and not companions[monsterId]
-	local chance = math.clamp(
-		tonumber(monster:GetAttribute("CompanionUnlockChance")) or DEFAULT_UNLOCK_CHANCE,
-		0,
-		1
+	local canUnlock = monster:GetAttribute("CanBecomeCompanion") ~= false
+		and CompanionCatalog.IsSupported(monsterId)
+	local chance = CompanionCatalog.GetCaptureChance(
+		monsterId,
+		monster:GetAttribute("IsElite") == true
 	)
-	if monster:GetAttribute("IsElite") == true then
-		chance = math.max(chance, 0.25)
-	end
+	player:SetAttribute("LastCompanionCaptureChance", chance)
+	player:SetAttribute(
+		"LastCompanionCaptureAttemptSerial",
+		(tonumber(player:GetAttribute("LastCompanionCaptureAttemptSerial")) or 0) + 1
+	)
 	local unlocked = false
 	if canUnlock and random:NextNumber() <= chance then
-		local success
-		success, unlocked = PlayerDataService.UnlockCompanion(player, monsterId, displayName)
+		local success, instanceId
+		success, unlocked, instanceId = PlayerDataService.UnlockCompanion(player, monsterId, displayName)
 		if success and unlocked and #equippedBefore == 0 then
 			spawnRoster(player)
+		end
+		if unlocked then
+			player:SetAttribute("LastCapturedCompanionInstanceId", instanceId)
 		end
 	end
 
@@ -1253,6 +1304,60 @@ function CompanionService.RecordDefeat(player, monster)
 	elseif #progress > 0 then
 		push(player)
 	end
+end
+
+local function buyEquipSlotWithCoins(player)
+	local current = PlayerDataService.GetCompanionEquipSlots(player)
+	if current >= CompanionCatalog.MaxEquipped then
+		return false, "Todos os slots já estão desbloqueados."
+	end
+	local targetSlot = current + 1
+	local price = CompanionCatalog.GetEquipSlotCoinPrice(targetSlot)
+	if not price then
+		return false, "Preço do próximo slot não configurado."
+	end
+	local paid, remaining = ScoreService.TrySpendCoins(player, price)
+	if not paid then
+		return false, string.format("Você precisa de %d moedas.", price)
+	end
+	local granted, newLimit = PlayerDataService.GrantCompanionEquipSlot(player)
+	if not granted then
+		ScoreService.RefundCoins(player, price, "CompanionSlotRollback")
+		return false, "Não foi possível desbloquear o slot."
+	end
+	player:SetAttribute("CompanionEquipSlots", newLimit)
+	player:SetAttribute("Coins", remaining)
+	task.spawn(PlayerDataService.Save, player, false)
+	return true, string.format("Slot %d desbloqueado!", newLimit)
+end
+
+local function promptEquipSlotProduct(player)
+	if PlayerDataService.GetCompanionEquipSlots(player) >= CompanionCatalog.MaxEquipped then
+		return false, "Todos os slots já estão desbloqueados."
+	end
+	local productId = math.max(
+		0,
+		math.floor(tonumber(CompanionCatalog.EquipSlotDeveloperProductId) or 0)
+	)
+	if productId <= 0 then
+		return false, "Configure o Developer Product de slot."
+	end
+	MarketplaceService:PromptProductPurchase(player, productId)
+	return true, "Compra aberta."
+end
+
+local function grantPurchasedEquipSlot(player)
+	PlayerDataService.Load(player)
+	local granted, newLimit = PlayerDataService.GrantCompanionEquipSlot(player)
+	if not granted then
+		-- A compra pode chegar depois de o jogador obter o último slot com moedas.
+		-- Nesse caso ela é concluída sem tentar conceder um quinto slot inválido.
+		return true
+	end
+	player:SetAttribute("CompanionEquipSlots", newLimit)
+	task.spawn(PlayerDataService.Save, player, false)
+	push(player, string.format("Slot %d desbloqueado com sucesso!", newLimit), true)
+	return true
 end
 
 function CompanionService.Start()
@@ -1317,12 +1422,39 @@ function CompanionService.Start()
 				Message = message,
 				Snapshot = CompanionService.GetSnapshot(player),
 			}
+		elseif action == "BuySlotCoins" then
+			local success, message = buyEquipSlotWithCoins(player)
+			return {
+				Success = success,
+				Message = message,
+				Snapshot = CompanionService.GetSnapshot(player),
+			}
+		elseif action == "BuySlotRobux" then
+			local success, message = promptEquipSlotProduct(player)
+			return {
+				Success = success,
+				Message = message,
+				Snapshot = CompanionService.GetSnapshot(player),
+			}
 		end
 		return { Success = false, Message = "Pedido inválido." }
 	end
 
+	ScoreService.Start()
+	DeveloperProductService.Start()
+	TradeService.Start()
+	DeveloperProductService.Register(
+		CompanionCatalog.EquipSlotDeveloperProductId,
+		"CompanionEquipSlot",
+		grantPurchasedEquipSlot
+	)
+
 	local function setup(player)
 		PlayerDataService.Load(player)
+		player:SetAttribute(
+			"CompanionEquipSlots",
+			PlayerDataService.GetCompanionEquipSlots(player)
+		)
 		player.CharacterAdded:Connect(function()
 			task.delay(1, function()
 				if player.Parent == Players then

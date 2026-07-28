@@ -30,7 +30,7 @@
 	DropItemId          String   ""
 	Peaceful            Boolean  false
 	UseCentralAI        Boolean  true
-	SlimeVariant        String   "Random", "Green", "Blue", "Red" ou "Golden"
+	SlimeVariant        String   "Random", "Green", "Blue", "Red", "Fire", "Ice", "Lightning" ou "Golden"
 	KeepEmbeddedAIScripts Boolean false
 ]]
 
@@ -95,6 +95,10 @@ local SIZE_RANK = {
 }
 
 local activeMonsters = {}
+local REMOVED_MONSTER_IDS = {
+	Golem = true,
+	StoneGolem = true,
+}
 local activeLoot = {}
 local monsterCount = 0
 local initialized = false
@@ -285,7 +289,9 @@ local function createPrototypeMonster(folder)
 	model:SetAttribute("GroupSpacing", 5)
 	model:SetAttribute("Peaceful", false)
 	model:SetAttribute("UseCentralAI", true)
-	model:SetAttribute("CompanionUnlockChance", 0.18)
+	-- A chance autoritativa vem do CompanionCatalog; este Attribute permanece
+	-- apenas como telemetria/compatibilidade com assets antigos.
+	model:SetAttribute("CompanionUnlockChance", 0.06)
 	model:SetAttribute("CompanionImageId", "")
 	model:SetAttribute("CompanionScale", 0.72)
 	model:SetAttribute("PrototypeModel", true)
@@ -318,6 +324,10 @@ local function getTemplates()
 	local folder = getMonsterFolder()
 	local templates = {}
 	for _, template in ipairs(folder:GetChildren()) do
+		local monsterId = template:GetAttribute("MonsterId") or template.Name
+		if REMOVED_MONSTER_IDS[monsterId] or REMOVED_MONSTER_IDS[template.Name] then
+			continue
+		end
 		local valid, errors = MonsterValidator.Validate(template)
 		if valid then
 			table.insert(templates, template)
@@ -1011,8 +1021,17 @@ function MonsterSpawner.PopulateIsland(island, freeCells, context)
 		local marker = createMarker(pointsFolder, cellRecord, index, template, spawnMode)
 		local monsterSeed = normalizedSeed(seed + index * 101)
 		local monsterRandom = Random.new(monsterSeed)
+		local roundIndex = tonumber(island:GetAttribute("RoundIndex")) or 1
+		local difficultyTier = math.clamp(
+			math.floor((roundIndex - 1) / MVPConfig.Difficulty.RoundsPerTier) + 1,
+			1,
+			MVPConfig.Difficulty.MaximumTier
+		)
 		local slimeVariant = SlimeVariants.IsSlime(template)
-			and SlimeVariants.SelectVariant(template, monsterRandom, { DisallowGolden = eliteIsland })
+			and SlimeVariants.SelectVariant(template, monsterRandom, {
+				DisallowGolden = eliteIsland,
+				DifficultyTier = difficultyTier,
+			})
 			or nil
 		if
 			spawnClone(

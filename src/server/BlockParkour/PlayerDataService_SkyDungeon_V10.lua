@@ -15,7 +15,7 @@ local CompanionCatalog = require(ReplicatedStorage:WaitForChild("CompanionCatalo
 
 local DATASTORE_NAME = "SkyDungeonPlayerData_V10"
 local LEGACY_MVP_DATASTORE_NAME = "BlockParkour_PlayerData_v1"
-local SCHEMA_VERSION = 8
+local SCHEMA_VERSION = 10
 local SCORE_SCALE_VERSION = 3
 local STARTER_SWORD_ID = "ClassicSword"
 local LOAD_RETRIES = 4
@@ -48,6 +48,7 @@ local function defaultData()
 		EquippedRelic = nil,
 		OwnedCompanions = {},
 		EquippedCompanions = {},
+		CompanionEquipSlots = CompanionCatalog.InitialEquippedSlots,
 		Inventory = {},
 		LegacyMVPMigrated = false,
 		TutorialStage = 1,
@@ -124,13 +125,54 @@ local function normalizeCompanionDisplayName(raw, fallback)
 	return value
 end
 
+local function companionInstanceId(savedId, speciesId, record, legacy)
+	local explicit = type(record.InstanceId) == "string" and record.InstanceId or nil
+	if explicit and explicit ~= "" then
+		return explicit
+	end
+	if not legacy and type(savedId) == "string" and savedId ~= "" then
+		return savedId
+	end
+	local safeSpecies = string.gsub(speciesId, "[^%w_%-]", "_")
+	return "legacy_" .. safeSpecies
+end
+
 local function sanitizeOwnedCompanions(raw)
 	local owned = {}
+	local migratedIds = {}
 	if type(raw) ~= "table" then
-		return owned
+		return owned, migratedIds
 	end
-	for monsterId, record in pairs(raw) do
-		if type(monsterId) == "string" and monsterId ~= "" and type(record) == "table" then
+
+	local savedIds = {}
+	for savedId in pairs(raw) do
+		if type(savedId) == "string" and savedId ~= "" then
+			table.insert(savedIds, savedId)
+		end
+	end
+	table.sort(savedIds)
+
+	local storedCount = 0
+	for _, savedId in ipairs(savedIds) do
+		if storedCount >= CompanionCatalog.MaximumStored then
+			break
+		end
+		local record = raw[savedId]
+		if type(record) == "table" then
+			local speciesId = type(record.SpeciesId) == "string" and record.SpeciesId
+				or type(record.MonsterId) == "string" and record.MonsterId
+				or savedId
+			local legacy = record.SpeciesId == nil and record.MonsterId == nil
+			if not CompanionCatalog.IsSupported(speciesId) then
+				continue
+			end
+			local instanceId = companionInstanceId(savedId, speciesId, record, legacy)
+			local suffix = 2
+			local baseId = instanceId
+			while owned[instanceId] do
+				instanceId = string.format("%s_%d", baseId, suffix)
+				suffix += 1
+			end
 			local level = math.clamp(
 				math.floor(tonumber(record.Level) or 1),
 				1,
@@ -148,34 +190,44 @@ local function sanitizeOwnedCompanions(raw)
 				upgrades[statName] = math.min(requested, remaining)
 				remaining -= upgrades[statName]
 			end
-			owned[monsterId] = {
-				DisplayName = normalizeCompanionDisplayName(record.DisplayName, monsterId),
+			owned[instanceId] = {
+				InstanceId = instanceId,
+				SpeciesId = speciesId,
+				DisplayName = normalizeCompanionDisplayName(record.DisplayName, speciesId),
 				Level = level,
 				XP = math.max(0, math.floor(tonumber(record.XP) or 0)),
 				Kills = math.max(0, math.floor(tonumber(record.Kills) or 0)),
 				Upgrades = upgrades,
 			}
+			migratedIds[savedId] = instanceId
+			storedCount += 1
 		end
 	end
-	return owned
+	return owned, migratedIds
 end
 
-local function sanitizeEquippedCompanions(raw, legacy, owned)
+local function sanitizeEquippedCompanions(raw, legacy, owned, migratedIds, equipSlots)
 	local equipped = {}
 	local seen = {}
-	local function add(monsterId)
+	local limit = math.clamp(
+		math.floor(tonumber(equipSlots) or CompanionCatalog.InitialEquippedSlots),
+		CompanionCatalog.InitialEquippedSlots,
+		CompanionCatalog.MaxEquipped
+	)
+	local function add(instanceId)
+		instanceId = migratedIds and migratedIds[instanceId] or instanceId
 		if
-			#equipped < CompanionCatalog.MaxEquipped
-			and type(monsterId) == "string"
-			and owned[monsterId]
-			and not seen[monsterId]
+			#equipped < limit
+			and type(instanceId) == "string"
+			and owned[instanceId]
+			and not seen[instanceId]
 		then
-			seen[monsterId] = true
-			table.insert(equipped, monsterId)
+			seen[instanceId] = true
+			table.insert(equipped, instanceId)
 		end
 	end
 	if type(raw) == "table" then
-		for index = 1, CompanionCatalog.MaxEquipped do
+		for index = 1, limit do
 			add(raw[index])
 		end
 	end
@@ -210,7 +262,8 @@ local function sanitize(raw)
 	data.BestScore = migrateBestScore(raw, sourceVersion)
 	data.OwnedSwords = sanitizeOwnedSwords(raw.OwnedSwords)
 	data.OwnedRelics = sanitizeOwnedRelics(raw.OwnedRelics)
-	data.OwnedCompanions = sanitizeOwnedCompanions(raw.OwnedCompanions)
+	local migratedCompanionIds
+	data.OwnedCompanions, migratedCompanionIds = sanitizeOwnedCompanions(raw.OwnedCompanions)
 	data.Inventory = sanitizeInventory(raw.Inventory or raw.OwnedItems)
 	data.LegacyMVPMigrated = raw.LegacyMVPMigrated == true
 	-- Perfis anteriores ao tutorial que ja possuem progresso sao tratados como
@@ -231,10 +284,21 @@ local function sanitize(raw)
 	if equippedRelic and data.OwnedRelics[equippedRelic] then
 		data.EquippedRelic = equippedRelic
 	end
+	local requestedEquipSlots = math.clamp(
+		math.floor(tonumber(raw.CompanionEquipSlots) or CompanionCatalog.InitialEquippedSlots),
+		CompanionCatalog.InitialEquippedSlots,
+		CompanionCatalog.MaxEquipped
+	)
+	if sourceVersion < SCHEMA_VERSION and type(raw.EquippedCompanions) == "table" then
+		requestedEquipSlots = math.max(requestedEquipSlots, math.min(#raw.EquippedCompanions, CompanionCatalog.MaxEquipped))
+	end
+	data.CompanionEquipSlots = requestedEquipSlots
 	data.EquippedCompanions = sanitizeEquippedCompanions(
 		raw.EquippedCompanions,
 		raw.EquippedCompanion,
-		data.OwnedCompanions
+		data.OwnedCompanions,
+		migratedCompanionIds,
+		data.CompanionEquipSlots
 	)
 	data.DailyLastClaimDay = math.max(0, math.floor(tonumber(raw.DailyLastClaimDay) or 0))
 	data.DailyStreak = math.clamp(math.floor(tonumber(raw.DailyStreak) or 0), 0, 7)
@@ -251,8 +315,10 @@ end
 
 local function cloneCompanions(source)
 	local result = {}
-	for monsterId, record in pairs(source) do
-		result[monsterId] = {
+	for instanceId, record in pairs(source) do
+		result[instanceId] = {
+			InstanceId = instanceId,
+			SpeciesId = record.SpeciesId,
 			DisplayName = record.DisplayName,
 			Level = record.Level,
 			XP = record.XP,
@@ -275,6 +341,7 @@ local function cloneData(data)
 		EquippedRelic = data.EquippedRelic,
 		OwnedCompanions = cloneCompanions(data.OwnedCompanions),
 		EquippedCompanions = table.clone(data.EquippedCompanions),
+		CompanionEquipSlots = data.CompanionEquipSlots,
 		Inventory = cloneDictionary(data.Inventory),
 		LegacyMVPMigrated = data.LegacyMVPMigrated == true,
 		TutorialStage = data.TutorialStage,
@@ -365,6 +432,11 @@ end
 function PlayerDataService.Get(player)
 	local session = sessions[player]
 	return session and session.Data or nil
+end
+
+function PlayerDataService.CanSave(player)
+	local session = sessions[player]
+	return session ~= nil and session.CanSave == true
 end
 
 function PlayerDataService.GetSnapshot(player)
@@ -577,41 +649,79 @@ end
 function PlayerDataService.GetCompanions(player)
 	local data = PlayerDataService.Get(player)
 	return data and cloneCompanions(data.OwnedCompanions) or {},
-		data and table.clone(data.EquippedCompanions) or {}
+			data and table.clone(data.EquippedCompanions) or {}
+end
+
+function PlayerDataService.GetCompanionEquipSlots(player)
+	local data = PlayerDataService.Get(player)
+	return data and data.CompanionEquipSlots or CompanionCatalog.InitialEquippedSlots
+end
+
+function PlayerDataService.GrantCompanionEquipSlot(player)
+	local session = sessions[player]
+	if not session then
+		return false, CompanionCatalog.InitialEquippedSlots
+	end
+	local current = math.clamp(
+		math.floor(tonumber(session.Data.CompanionEquipSlots) or CompanionCatalog.InitialEquippedSlots),
+		CompanionCatalog.InitialEquippedSlots,
+		CompanionCatalog.MaxEquipped
+	)
+	if current >= CompanionCatalog.MaxEquipped then
+		return false, current
+	end
+	session.Data.CompanionEquipSlots = current + 1
+	markDirty(session)
+	return true, session.Data.CompanionEquipSlots
 end
 
 function PlayerDataService.UnlockCompanion(player, monsterId, displayName)
 	local session = sessions[player]
-	if not session or type(monsterId) ~= "string" or monsterId == "" then
-		return false, false
+	if
+		not session
+		or type(monsterId) ~= "string"
+		or monsterId == ""
+		or not CompanionCatalog.IsSupported(monsterId)
+	then
+		return false, false, nil
 	end
-	if session.Data.OwnedCompanions[monsterId] then
-		return true, false
+	local count = 0
+	for _ in pairs(session.Data.OwnedCompanions) do
+		count += 1
 	end
-	session.Data.OwnedCompanions[monsterId] = {
+	if count >= CompanionCatalog.MaximumStored then
+		return false, false, nil
+	end
+	local instanceId = "companion_" .. HttpService:GenerateGUID(false)
+	session.Data.OwnedCompanions[instanceId] = {
+		InstanceId = instanceId,
+		SpeciesId = monsterId,
 		DisplayName = normalizeCompanionDisplayName(displayName, monsterId),
 		Level = 1,
 		XP = 0,
 		Kills = 0,
 		Upgrades = CompanionCatalog.EmptyUpgrades(),
 	}
-	if #session.Data.EquippedCompanions == 0 then
-		table.insert(session.Data.EquippedCompanions, monsterId)
+	if
+		#session.Data.EquippedCompanions == 0
+		and session.Data.CompanionEquipSlots >= 1
+	then
+		table.insert(session.Data.EquippedCompanions, instanceId)
 	end
 	markDirty(session)
-	return true, true
+	return true, true, instanceId
 end
 
-function PlayerDataService.SetCompanionEquipped(player, monsterId, shouldEquip)
+function PlayerDataService.SetCompanionEquipped(player, instanceId, shouldEquip)
 	local session = sessions[player]
 	if
 		not session
-		or type(monsterId) ~= "string"
-		or not session.Data.OwnedCompanions[monsterId]
+		or type(instanceId) ~= "string"
+		or not session.Data.OwnedCompanions[instanceId]
 	then
 		return false, "Companheiro inválido."
 	end
-	local equippedIndex = table.find(session.Data.EquippedCompanions, monsterId)
+	local equippedIndex = table.find(session.Data.EquippedCompanions, instanceId)
 	if shouldEquip == false then
 		if equippedIndex then
 			table.remove(session.Data.EquippedCompanions, equippedIndex)
@@ -622,17 +732,153 @@ function PlayerDataService.SetCompanionEquipped(player, monsterId, shouldEquip)
 	if equippedIndex then
 		return true
 	end
-	if #session.Data.EquippedCompanions >= CompanionCatalog.MaxEquipped then
-		return false, string.format("Você já equipou %d companheiros.", CompanionCatalog.MaxEquipped)
+	if #session.Data.EquippedCompanions >= session.Data.CompanionEquipSlots then
+		return false, string.format(
+			"Você possui %d slot(s) de companheiro.",
+			session.Data.CompanionEquipSlots
+		)
 	end
-	table.insert(session.Data.EquippedCompanions, monsterId)
+	table.insert(session.Data.EquippedCompanions, instanceId)
 	markDirty(session)
 	return true
 end
 
-function PlayerDataService.RenameCompanion(player, monsterId, displayName)
+function PlayerDataService.IsCompanionEquipped(player, instanceId)
+	local data = PlayerDataService.Get(player)
+	return data ~= nil and table.find(data.EquippedCompanions, instanceId) ~= nil
+end
+
+local function countCompanions(source)
+	local count = 0
+	for _ in pairs(source) do
+		count += 1
+	end
+	return count
+end
+
+local function validateTradeOffer(session, instanceIds)
+	local seen = {}
+	local records = {}
+	if type(instanceIds) ~= "table" or #instanceIds > 4 then
+		return nil, "Oferta inválida."
+	end
+	for _, instanceId in ipairs(instanceIds) do
+		if type(instanceId) ~= "string" or seen[instanceId] then
+			return nil, "Oferta contém um companheiro inválido."
+		end
+		seen[instanceId] = true
+		local record = session.Data.OwnedCompanions[instanceId]
+		if not record then
+			return nil, "Um companheiro da oferta não pertence mais ao jogador."
+		end
+		if table.find(session.Data.EquippedCompanions, instanceId) then
+			return nil, "Desequipe o companheiro antes de trocá-lo."
+		end
+		records[instanceId] = cloneCompanions({ [instanceId] = record })[instanceId]
+	end
+	return records
+end
+
+function PlayerDataService.TransferCompanions(playerA, playerB, offerA, offerB)
+	local sessionA = sessions[playerA]
+	local sessionB = sessions[playerB]
+	if not sessionA or not sessionB or playerA == playerB then
+		return false, "Jogadores indisponíveis."
+	end
+	local recordsA, errorA = validateTradeOffer(sessionA, offerA)
+	if not recordsA then
+		return false, errorA
+	end
+	local recordsB, errorB = validateTradeOffer(sessionB, offerB)
+	if not recordsB then
+		return false, errorB
+	end
+	if
+		countCompanions(sessionA.Data.OwnedCompanions) - #offerA + #offerB
+			> CompanionCatalog.MaximumStored
+		or countCompanions(sessionB.Data.OwnedCompanions) - #offerB + #offerA
+			> CompanionCatalog.MaximumStored
+	then
+		return false, "Um dos inventários atingiu o limite técnico."
+	end
+	for instanceId in pairs(recordsA) do
+		if sessionB.Data.OwnedCompanions[instanceId] then
+			return false, "Identidade duplicada detectada; a troca foi cancelada."
+		end
+	end
+	for instanceId in pairs(recordsB) do
+		if sessionA.Data.OwnedCompanions[instanceId] then
+			return false, "Identidade duplicada detectada; a troca foi cancelada."
+		end
+	end
+
+	for instanceId in pairs(recordsA) do
+		sessionA.Data.OwnedCompanions[instanceId] = nil
+		sessionB.Data.OwnedCompanions[instanceId] = recordsA[instanceId]
+	end
+	for instanceId in pairs(recordsB) do
+		sessionB.Data.OwnedCompanions[instanceId] = nil
+		sessionA.Data.OwnedCompanions[instanceId] = recordsB[instanceId]
+	end
+	markDirty(sessionA)
+	markDirty(sessionB)
+	for instanceId in pairs(recordsA) do
+		sessionA.DiscardedCompanions[instanceId] = sessionA.Revision
+	end
+	for instanceId in pairs(recordsB) do
+		sessionB.DiscardedCompanions[instanceId] = sessionB.Revision
+	end
+	return true, nil, recordsA, recordsB
+end
+
+function PlayerDataService.ApplyTradeRecovery(player, outgoingIds, incomingRecords)
 	local session = sessions[player]
-	local record = session and session.Data.OwnedCompanions[monsterId]
+	if not session or type(outgoingIds) ~= "table" or type(incomingRecords) ~= "table" then
+		return false
+	end
+	local changed = false
+	local removed = {}
+	for _, instanceId in ipairs(outgoingIds) do
+		if type(instanceId) == "string" and session.Data.OwnedCompanions[instanceId] then
+			for equippedIndex = #session.Data.EquippedCompanions, 1, -1 do
+				if session.Data.EquippedCompanions[equippedIndex] == instanceId then
+					table.remove(session.Data.EquippedCompanions, equippedIndex)
+				end
+			end
+			session.Data.OwnedCompanions[instanceId] = nil
+			table.insert(removed, instanceId)
+			changed = true
+		end
+	end
+	for instanceId, record in pairs(incomingRecords) do
+		if
+			type(instanceId) == "string"
+			and type(record) == "table"
+			and CompanionCatalog.IsSupported(record.SpeciesId)
+			and not session.Data.OwnedCompanions[instanceId]
+		then
+			if countCompanions(session.Data.OwnedCompanions) >= CompanionCatalog.MaximumStored then
+				return false
+			end
+			local copy = cloneCompanions({ [instanceId] = record })[instanceId]
+			if copy then
+				session.Data.OwnedCompanions[instanceId] = copy
+				changed = true
+			end
+		end
+	end
+	if changed then
+		markDirty(session)
+		for _, instanceId in ipairs(removed) do
+			session.DiscardedCompanions[instanceId] = session.Revision
+		end
+	end
+	return true
+end
+
+function PlayerDataService.RenameCompanion(player, instanceId, displayName)
+	local session = sessions[player]
+	local record = session and session.Data.OwnedCompanions[instanceId]
 	if not record or type(displayName) ~= "string" then
 		return false, "Companheiro inválido."
 	end
@@ -645,43 +891,52 @@ function PlayerDataService.RenameCompanion(player, monsterId, displayName)
 	return true
 end
 
-function PlayerDataService.DiscardCompanion(player, monsterId)
+function PlayerDataService.DiscardCompanion(player, instanceId)
 	local session = sessions[player]
 	if
 		not session
-		or type(monsterId) ~= "string"
-		or not session.Data.OwnedCompanions[monsterId]
+		or type(instanceId) ~= "string"
+		or not session.Data.OwnedCompanions[instanceId]
 	then
 		return false, "Companheiro inválido."
 	end
 
 	for index = #session.Data.EquippedCompanions, 1, -1 do
-		if session.Data.EquippedCompanions[index] == monsterId then
+		if session.Data.EquippedCompanions[index] == instanceId then
 			table.remove(session.Data.EquippedCompanions, index)
 		end
 	end
-	session.Data.OwnedCompanions[monsterId] = nil
+	session.Data.OwnedCompanions[instanceId] = nil
 	markDirty(session)
-	session.DiscardedCompanions[monsterId] = session.Revision
+	session.DiscardedCompanions[instanceId] = session.Revision
 	return true
 end
 
 -- Compatibilidade com consumidores antigos: substitui toda a equipe por um mob.
-function PlayerDataService.SetEquippedCompanion(player, monsterId)
+function PlayerDataService.SetEquippedCompanion(player, companionId)
 	local session = sessions[player]
 	if not session then
 		return false
 	end
-	if monsterId == nil or monsterId == "" then
+	if companionId == nil or companionId == "" then
 		table.clear(session.Data.EquippedCompanions)
 		markDirty(session)
 		return true
 	end
-	if type(monsterId) ~= "string" or not session.Data.OwnedCompanions[monsterId] then
+	local instanceId = type(companionId) == "string" and companionId or nil
+	if instanceId and not session.Data.OwnedCompanions[instanceId] then
+		for candidateId, record in pairs(session.Data.OwnedCompanions) do
+			if record.SpeciesId == companionId then
+				instanceId = candidateId
+				break
+			end
+		end
+	end
+	if not instanceId or not session.Data.OwnedCompanions[instanceId] then
 		return false
 	end
-	if #session.Data.EquippedCompanions ~= 1 or session.Data.EquippedCompanions[1] ~= monsterId then
-		session.Data.EquippedCompanions = { monsterId }
+	if #session.Data.EquippedCompanions ~= 1 or session.Data.EquippedCompanions[1] ~= instanceId then
+		session.Data.EquippedCompanions = { instanceId }
 		markDirty(session)
 	end
 	return true
@@ -713,12 +968,13 @@ function PlayerDataService.AddEquippedCompanionsXP(player, amount)
 		return {}
 	end
 	local results = {}
-	for _, monsterId in ipairs(session.Data.EquippedCompanions) do
-		local record = session.Data.OwnedCompanions[monsterId]
+	for _, instanceId in ipairs(session.Data.EquippedCompanions) do
+		local record = session.Data.OwnedCompanions[instanceId]
 		if record then
 			local leveled = grantCompanionXP(record, clean)
 			table.insert(results, {
-				MonsterId = monsterId,
+				InstanceId = instanceId,
+				MonsterId = record.SpeciesId,
 				Record = {
 					DisplayName = record.DisplayName,
 					Level = record.Level,
@@ -744,9 +1000,9 @@ function PlayerDataService.AddEquippedCompanionXP(player, amount)
 		result and result.Leveled or false
 end
 
-function PlayerDataService.UpgradeCompanionStat(player, monsterId, statName)
+function PlayerDataService.UpgradeCompanionStat(player, instanceId, statName)
 	local session = sessions[player]
-	local record = session and session.Data.OwnedCompanions[monsterId]
+	local record = session and session.Data.OwnedCompanions[instanceId]
 	local definition = CompanionCatalog.Upgrades[statName]
 	if not record or not definition then
 		return false, "Companheiro ou atributo inválido."
@@ -829,13 +1085,13 @@ function PlayerDataService.Save(player, force)
 					snapshot.OwnedRelics[relicId] = true
 				end
 			end
-			for monsterId, previousRecord in pairs(previousData.OwnedCompanions) do
-				if not snapshotDiscardedCompanions[monsterId] then
-					local currentRecord = snapshot.OwnedCompanions[monsterId]
+			for instanceId, previousRecord in pairs(previousData.OwnedCompanions) do
+				if not snapshotDiscardedCompanions[instanceId] then
+					local currentRecord = snapshot.OwnedCompanions[instanceId]
 					if not currentRecord then
-						snapshot.OwnedCompanions[monsterId] = previousRecord
+						snapshot.OwnedCompanions[instanceId] = previousRecord
 					elseif previousRecord.Level > currentRecord.Level then
-						snapshot.OwnedCompanions[monsterId] = previousRecord
+						snapshot.OwnedCompanions[instanceId] = previousRecord
 					elseif previousRecord.Level == currentRecord.Level then
 						currentRecord.XP = math.max(currentRecord.XP, previousRecord.XP)
 						currentRecord.Kills = math.max(currentRecord.Kills, previousRecord.Kills)
@@ -850,6 +1106,10 @@ function PlayerDataService.Save(player, force)
 			end
 			snapshot.BestScore = math.max(snapshot.BestScore, previousData.BestScore)
 			snapshot.Stamina = math.max(snapshot.Stamina, previousData.Stamina)
+			snapshot.CompanionEquipSlots = math.max(
+				snapshot.CompanionEquipSlots,
+				previousData.CompanionEquipSlots
+			)
 			snapshot.TutorialCompleted = snapshot.TutorialCompleted or previousData.TutorialCompleted
 			snapshot.TutorialStage = snapshot.TutorialCompleted
 				and 5
@@ -863,7 +1123,9 @@ function PlayerDataService.Save(player, force)
 			snapshot.EquippedCompanions = sanitizeEquippedCompanions(
 				snapshot.EquippedCompanions,
 				nil,
-				snapshot.OwnedCompanions
+				snapshot.OwnedCompanions,
+				nil,
+				snapshot.CompanionEquipSlots
 			)
 			if previousData.DailyLastClaimDay > snapshot.DailyLastClaimDay then
 				snapshot.DailyLastClaimDay = previousData.DailyLastClaimDay

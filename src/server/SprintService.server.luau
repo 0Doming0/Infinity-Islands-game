@@ -55,6 +55,9 @@ local function setWalkSpeed(state, speed)
 	if not state.Humanoid.Parent then
 		return
 	end
+	if state.Character:GetAttribute("MovementLocked") == true then
+		speed = 0
+	end
 	state.WritingSpeed = true
 	state.Humanoid.WalkSpeed = speed
 	state.LastAppliedSpeed = speed
@@ -115,6 +118,7 @@ local function canUseMovementMode(state)
 		and humanoid.Health > 0
 		and humanoid.WalkSpeed > 0
 		and humanoid.Sit == false
+		and character:GetAttribute("MovementLocked") ~= true
 		and character:GetAttribute("CombatStunned") ~= true
 end
 
@@ -294,6 +298,13 @@ end)
 RunService.Heartbeat:Connect(function(deltaTime)
 	local now = os.clock()
 	for _, state in pairs(states) do
+		if state.Character:GetAttribute("MovementLocked") == true then
+			if state.Sprinting or state.Crouching then
+				stopMovementMode(state, false)
+			end
+			setWalkSpeed(state, 0)
+			continue
+		end
 		if state.Sprinting or state.Crouching then
 			if not canUseMovementMode(state) then
 				stopMovementMode(state, true)

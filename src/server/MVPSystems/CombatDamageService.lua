@@ -367,7 +367,7 @@ function DamageService.ApplySwordHit(attacker, attackerRoot, target, attack)
 	return true, healthBefore > 0 and humanoid.Health <= 0
 end
 
-function DamageService.ApplyDirectHit(attacker, target, amount, source)
+function DamageService.ApplyDirectHit(attacker, target, amount, source, alreadyRunScaled)
 	if not attacker or attacker.Parent ~= Players or typeof(target) ~= "table" then
 		return false, false
 	end
@@ -383,7 +383,13 @@ function DamageService.ApplyDirectHit(attacker, target, amount, source)
 	then
 		return false, false
 	end
-	local damage = mitigatedDamage(model, amount)
+	local runMultiplier = alreadyRunScaled == true and 1
+		or math.clamp(
+			tonumber(attacker:GetAttribute("RunDamageDealtMultiplier")) or 1,
+			0.05,
+			1
+		)
+	local damage = mitigatedDamage(model, math.max(0, tonumber(amount) or 0) * runMultiplier)
 	if damage <= 0 then
 		return false, false
 	end
@@ -400,7 +406,8 @@ function DamageService.ApplyCompanionHit(owner, target, amount, source)
 		owner,
 		target,
 		amount,
-		source or "Companion"
+		source or "Companion",
+		false
 	)
 	if success and target.Model then
 		-- Companheiros usam o mesmo feedback sonoro dos golpes da espada.

@@ -55,11 +55,11 @@ function CompanionCombat.GetStats(model, monsterId, level, upgrades)
 	local definition = slimeDefinition(model, monsterId)
 	local behavior = definition and definition.Behavior or config.AttackType
 	local attackType = config.AttackType
-	if behavior == "NeutralMelee" or behavior == "GoldenEscape" then
+	if behavior == "NeutralMelee" or behavior == "GoldenEscape" or behavior == "LightningDash" then
 		attackType = "Melee"
-	elseif behavior == "NeutralRanged" then
+	elseif behavior == "NeutralRanged" or behavior == "IceRanged" then
 		attackType = "Ranged"
-	elseif behavior == "HostileMortar" then
+	elseif behavior == "HostileMortar" or behavior == "FireMortar" then
 		attackType = "Mortar"
 	end
 
@@ -210,6 +210,33 @@ local function applyHit(state, target, damage, source)
 	local success = DamageService.ApplyCompanionHit(state.Owner, target, damage, source)
 	if success then
 		createBurst(target.Root.Position, attackColor(state), 0.8)
+		if state.CombatStats.Behavior == "IceRanged" then
+			local model = target.Model
+			local humanoid = target.Humanoid
+			local now = workspace:GetServerTimeNow()
+			local currentUntil = tonumber(model:GetAttribute("CompanionIceSlowUntil")) or 0
+			if now >= currentUntil and humanoid and humanoid.Health > 0 then
+				local token = (tonumber(model:GetAttribute("CompanionIceSlowToken")) or 0) + 1
+				local boss = model:GetAttribute("SpawnMode") == "Boss"
+					or model:GetAttribute("IsBoss") == true
+				local duration = boss and 0.45 or 1.2
+				local originalSpeed = humanoid.WalkSpeed
+				model:SetAttribute("CompanionIceSlowToken", token)
+				model:SetAttribute("CompanionIceSlowUntil", now + duration)
+				humanoid.WalkSpeed = originalSpeed * (boss and 0.85 or 0.6)
+				task.delay(duration, function()
+					if
+						model.Parent
+						and humanoid.Parent
+						and humanoid.Health > 0
+						and model:GetAttribute("CompanionIceSlowToken") == token
+					then
+						humanoid.WalkSpeed = originalSpeed
+						model:SetAttribute("CompanionIceSlowUntil", nil)
+					end
+				end)
+			end
+		end
 	end
 	return success
 end
@@ -348,6 +375,43 @@ local function damageEnemiesInRadius(state, position, radius, damage, source)
 	end
 end
 
+local function createCompanionFireGround(state, position, stats)
+	local radius = math.max(2.5, stats.ImpactRadius * 0.65)
+	local duration = 3
+	local interval = 0.75
+	local fire = Instance.new("Part")
+	fire.Name = "CompanionFireGround"
+	fire.Shape = Enum.PartType.Cylinder
+	fire.Size = Vector3.new(0.1, radius * 2, radius * 2)
+	fire.CFrame = CFrame.new(position + Vector3.new(0, 0.08, 0))
+		* CFrame.Angles(0, 0, math.pi / 2)
+	fire.Anchored = true
+	fire.CanCollide = false
+	fire.CanTouch = false
+	fire.CanQuery = false
+	fire.Material = Enum.Material.Neon
+	fire.Color = attackColor(state)
+	fire.Transparency = 0.48
+	fire.Parent = workspace
+	Debris:AddItem(fire, duration + 0.2)
+	task.spawn(function()
+		local expiresAt = workspace:GetServerTimeNow() + duration
+		while fire.Parent and isAlive(state) and workspace:GetServerTimeNow() < expiresAt do
+			damageEnemiesInRadius(
+				state,
+				position,
+				radius,
+				math.max(1, stats.Damage * 0.25),
+				"CompanionFireGround"
+			)
+			task.wait(interval)
+		end
+		if fire.Parent then
+			fire:Destroy()
+		end
+	end)
+end
+
 local function beginMortar(state, target, now)
 	local stats = state.CombatStats
 	local impactPosition = groundPosition(target.Root.Position, {
@@ -425,6 +489,9 @@ local function beginMortar(state, target, now)
 				"CompanionMortar"
 			)
 			createBurst(impactPosition + Vector3.new(0, 0.5, 0), attackColor(state), 2.2)
+			if stats.Behavior == "FireMortar" then
+				createCompanionFireGround(state, impactPosition, stats)
+			end
 		end
 		if projectile.Parent then
 			projectile:Destroy()

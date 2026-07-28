@@ -1,7 +1,7 @@
 --[[
 	SkyDungeon - SlimeVariants
 
-	Transforma um unico modelo-base em uma das quatro variantes de slime.
+	Transforma um unico modelo-base nas variantes de slime do MVP.
 	Somente a BasePart chamada SlimeInside recebe cor/material/transparencia.
 
 	O modelo-base pode forcar uma variante com o atributo SlimeVariant. Use
@@ -10,7 +10,7 @@
 
 local SlimeVariants = {}
 
-local VARIANT_ORDER = { "Green", "Blue", "Red", "Golden" }
+local VARIANT_ORDER = { "Green", "Blue", "Red", "Fire", "Ice", "Lightning", "Golden" }
 
 local DEFINITIONS = {
 	Green = {
@@ -23,7 +23,7 @@ local DEFINITIONS = {
 		Material = Enum.Material.SmoothPlastic,
 		Transparency = 0.15,
 		Reflectance = 0,
-		Weight = 64.5,
+		Weight = 49.5,
 		HealthMultiplier = 1,
 		ScoreMultiplier = 1,
 		CoinMultiplier = 1,
@@ -47,7 +47,7 @@ local DEFINITIONS = {
 		Material = Enum.Material.SmoothPlastic,
 		Transparency = 0.15,
 		Reflectance = 0,
-		Weight = 20,
+		Weight = 17,
 		HealthMultiplier = 1.1,
 		ScoreMultiplier = 1.4,
 		CoinMultiplier = 1.4,
@@ -75,7 +75,7 @@ local DEFINITIONS = {
 		Material = Enum.Material.SmoothPlastic,
 		Transparency = 0.1,
 		Reflectance = 0,
-		Weight = 15,
+		Weight = 12,
 		HealthMultiplier = 1.25,
 		ScoreMultiplier = 1.8,
 		CoinMultiplier = 1.8,
@@ -92,6 +92,99 @@ local DEFINITIONS = {
 		RepositionInterval = 2.8,
 		WanderPauseMin = 0.45,
 		WanderPauseMax = 1.4,
+	},
+	Fire = {
+		MonsterId = "FireSlime",
+		DisplayName = "Slime de Fogo",
+		Behavior = "FireMortar",
+		InitiallyPeaceful = false,
+		MinimumTier = 2,
+		Color = Color3.fromRGB(255, 112, 31),
+		OutSideColor = Color3.fromRGB(255, 171, 59),
+		Material = Enum.Material.Neon,
+		Transparency = 0.08,
+		Reflectance = 0,
+		Weight = 7,
+		HealthMultiplier = 1.3,
+		ScoreMultiplier = 2,
+		CoinMultiplier = 2,
+		AttackRange = 55,
+		AttackDamage = 8,
+		AttackCooldown = 4.2,
+		ImpactRadius = 6,
+		MortarWarningTime = 1.15,
+		MortarArcHeight = 25,
+		GroundEffectRadius = 5,
+		GroundEffectDuration = 5,
+		GroundEffectDamage = 2,
+		GroundEffectInterval = 0.75,
+		DetectionRange = 72,
+		CombatSpeedMultiplier = 0.8,
+		PreferredDistance = 35,
+		RetreatDistance = 20,
+		RepositionInterval = 2.8,
+		WanderPauseMin = 0.45,
+		WanderPauseMax = 1.35,
+	},
+	Ice = {
+		MonsterId = "IceSlime",
+		DisplayName = "Slime de Gelo",
+		Behavior = "IceRanged",
+		InitiallyPeaceful = false,
+		MinimumTier = 3,
+		Color = Color3.fromRGB(100, 239, 255),
+		OutSideColor = Color3.fromRGB(215, 251, 255),
+		Material = Enum.Material.Glass,
+		Transparency = 0.12,
+		Reflectance = 0.08,
+		Weight = 7,
+		HealthMultiplier = 1.2,
+		ScoreMultiplier = 2,
+		CoinMultiplier = 2,
+		AggroRange = 78,
+		CalmAfter = 10,
+		AttackRange = 48,
+		AttackDamage = 6,
+		AttackCooldown = 2.8,
+		ProjectileSpeed = 62,
+		FreezeDuration = 1.25,
+		FreezeImmunity = 4,
+		PassiveSpeedMultiplier = 0.62,
+		CombatSpeedMultiplier = 0.88,
+		PreferredDistance = 30,
+		RetreatDistance = 17,
+		RepositionInterval = 2.1,
+		WanderPauseMin = 0.7,
+		WanderPauseMax = 2,
+	},
+	Lightning = {
+		MonsterId = "LightningSlime",
+		DisplayName = "Slime do Raio",
+		Behavior = "LightningDash",
+		InitiallyPeaceful = false,
+		MinimumTier = 4,
+		Color = Color3.fromRGB(248, 248, 255),
+		OutSideColor = Color3.fromRGB(255, 231, 68),
+		Material = Enum.Material.Neon,
+		Transparency = 0.08,
+		Reflectance = 0.04,
+		Weight = 7,
+		HealthMultiplier = 1.15,
+		ScoreMultiplier = 2.2,
+		CoinMultiplier = 2.2,
+		DetectionRange = 68,
+		AttackRange = 5,
+		AttackDamage = 12,
+		AttackCooldown = 2.2,
+		DashTriggerRange = 15,
+		DashWindup = 0.45,
+		DashDuration = 0.48,
+		DashSpeedMultiplier = 1.8,
+		MissVulnerability = 0.75,
+		PassiveSpeedMultiplier = 0.9,
+		CombatSpeedMultiplier = 1.8,
+		WanderPauseMin = 0.25,
+		WanderPauseMax = 0.9,
 	},
 	Golden = {
 		MonsterId = "GoldenSlime",
@@ -136,15 +229,27 @@ end
 
 local function chooseVariant(template, random, options)
 	options = options or {}
+	local difficultyTier = math.max(1, math.floor(tonumber(options.DifficultyTier) or 1))
 	local forced = template:GetAttribute("SlimeVariant")
 	if typeof(forced) == "string" and forced ~= "" and forced ~= "Random" and DEFINITIONS[forced] then
-		return options.DisallowGolden and forced == "Golden" and "Red" or forced
+		local definition = DEFINITIONS[forced]
+		if (definition.MinimumTier or 1) <= difficultyTier then
+			return options.DisallowGolden and forced == "Golden" and "Red" or forced
+		end
+		return "Green"
 	end
 
 	local totalWeight = 0
+	local lockedWeight = 0
 	for _, variantName in ipairs(VARIANT_ORDER) do
-		totalWeight += getWeight(template, variantName, DEFINITIONS[variantName])
+		local definition = DEFINITIONS[variantName]
+		if (definition.MinimumTier or 1) <= difficultyTier then
+			totalWeight += getWeight(template, variantName, definition)
+		else
+			lockedWeight += getWeight(template, variantName, definition)
+		end
 	end
+	totalWeight += lockedWeight
 	if totalWeight <= 0 then
 		return "Green"
 	end
@@ -152,7 +257,14 @@ local function chooseVariant(template, random, options)
 	local roll = random:NextNumber(0, totalWeight)
 	local accumulated = 0
 	for _, variantName in ipairs(VARIANT_ORDER) do
-		accumulated += getWeight(template, variantName, DEFINITIONS[variantName])
+		local definition = DEFINITIONS[variantName]
+		if (definition.MinimumTier or 1) > difficultyTier then
+			continue
+		end
+		accumulated += getWeight(template, variantName, definition)
+		if variantName == "Green" then
+			accumulated += lockedWeight
+		end
 		if roll <= accumulated then
 			return options.DisallowGolden and variantName == "Golden" and "Red" or variantName
 		end

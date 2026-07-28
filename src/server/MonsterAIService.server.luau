@@ -30,6 +30,9 @@ local schedulerCursor = 1
 local inactiveScheduleEntries = 0
 
 local function livingCharacter(player)
+	if not player or player:GetAttribute("IsDowned") == true then
+		return nil
+	end
 	local character = player and player.Character
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 	local root = character and character:FindFirstChild("HumanoidRootPart")

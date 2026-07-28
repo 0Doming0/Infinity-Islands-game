@@ -4,13 +4,19 @@
 local MarketplaceService = game:GetService("MarketplaceService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
 
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
+local SwordCatalog = require(ReplicatedStorage:WaitForChild("SwordCatalog"))
+local RelicCatalog = require(ReplicatedStorage:WaitForChild("RelicCatalog"))
+local CompanionCatalog = require(ReplicatedStorage:WaitForChild("CompanionCatalog"))
 local ScoreService = require(script.Parent.Parent.BlockParkour:WaitForChild("ScoreService_SkyDungeon_V10"))
 local PlayerDataService = require(script.Parent.Parent.BlockParkour:WaitForChild("PlayerDataService_SkyDungeon_V10"))
+local DeveloperProductService = require(script.Parent:WaitForChild("DeveloperProductService"))
 
 local DeathReviveService = {}
 local pending = setmetatable({}, { __mode = "k" })
+local initialStates = setmetatable({}, { __mode = "k" })
 local started = false
 
 -- O Roblox não deve recriar o personagem sozinho: todo renascimento depois
@@ -26,6 +32,17 @@ if not deathEvent then
 	deathEvent = Instance.new("RemoteEvent")
 	deathEvent.Name = "DeathReviveEvent"
 	deathEvent.Parent = ReplicatedStorage
+end
+
+local startRequest = ReplicatedStorage:FindFirstChild("StartGameRequest")
+if startRequest and not startRequest:IsA("RemoteFunction") then
+	startRequest:Destroy()
+	startRequest = nil
+end
+if not startRequest then
+	startRequest = Instance.new("RemoteFunction")
+	startRequest.Name = "StartGameRequest"
+	startRequest.Parent = ReplicatedStorage
 end
 
 local function productId()
@@ -85,12 +102,138 @@ local function loadCharacterIfDead(player, expectedState)
 	return false
 end
 
-local function loadInitialCharacter(player)
-	-- O defer permite que PlayerRules e os outros sistemas conectem
-	-- CharacterAdded antes do primeiro personagem ser criado.
-	task.defer(function()
-		if player.Parent and not player.Character and not pending[player] then
-			loadCharacterIfDead(player, nil)
+local function worldIsReady()
+	local generated = Workspace:FindFirstChild("ProceduralStructures")
+	return generated ~= nil and generated:GetAttribute("InitialGenerationComplete") == true
+end
+
+local function startSnapshot(player)
+	local data = PlayerDataService.GetSnapshot(player)
+	if not data then
+		return nil
+	end
+	local sword = SwordCatalog.Get(data.EquippedSword)
+	local relic = data.EquippedRelic and RelicCatalog.Get(data.EquippedRelic) or nil
+	local companions = {}
+	for slot, instanceId in ipairs(data.EquippedCompanions) do
+		local record = data.OwnedCompanions[instanceId]
+		local species = record and CompanionCatalog.Get(record.SpeciesId) or nil
+		if record and species then
+			table.insert(companions, {
+				Slot = slot,
+				InstanceId = instanceId,
+				SpeciesId = record.SpeciesId,
+				DisplayName = record.DisplayName,
+				SpeciesName = species.DisplayName,
+				Level = record.Level,
+				Color = species.Color,
+				ImageId = CompanionCatalog.GetImageId(record.SpeciesId),
+			})
+		end
+	end
+	return {
+		BestScore = data.BestScore,
+		Coins = data.Coins,
+		CompanionEquipSlots = data.CompanionEquipSlots,
+		Sword = sword and {
+			Id = sword.SwordId,
+			DisplayName = sword.DisplayName,
+			Icon = sword.Icon,
+			Color = sword.Color,
+			AccentColor = sword.AccentColor,
+		} or nil,
+		Relic = relic and {
+			Id = relic.RelicId,
+			DisplayName = relic.DisplayName,
+			Icon = relic.Icon,
+			Color = relic.Color,
+			ImageId = relic.ImageId,
+		} or nil,
+		Companions = companions,
+	}
+end
+
+local function protectInitialCharacter(player, character)
+	local state = initialStates[player]
+	if not state or not state.Started or player:GetAttribute("InitialSpawnPositioned") == true then
+		return
+	end
+	local forceField = Instance.new("ForceField")
+	forceField.Name = "InitialStartProtection"
+	forceField.Visible = false
+	forceField.Parent = character
+	player:SetAttribute("InitialStartProtection", true)
+	task.spawn(function()
+		while
+			player.Parent
+			and character.Parent
+			and player:GetAttribute("InitialSpawnPositioned") ~= true
+		do
+			task.wait(0.05)
+		end
+		if forceField.Parent then
+			task.wait(0.5)
+			forceField:Destroy()
+		end
+		if player.Parent then
+			player:SetAttribute("InitialStartProtection", false)
+		end
+	end)
+end
+
+local function spawnInitialCharacter(player, state)
+	if not player.Parent or player.Character or state.Spawning then
+		return false
+	end
+	state.Spawning = true
+	state.Started = true
+	player:SetAttribute("InitialGameStarted", true)
+	player:SetAttribute("InitialSpawnPositioned", false)
+	player:SetAttribute("InitialStartState", "Positioning")
+	local loaded, loadError = pcall(function()
+		player:LoadCharacter()
+	end)
+	if not loaded then
+		state.Spawning = false
+		state.Started = false
+		player:SetAttribute("InitialGameStarted", false)
+		player:SetAttribute("InitialStartState", "Ready")
+		warn(string.format(
+			"[DeathReviveService] Falha no primeiro spawn de %s: %s",
+			player.Name,
+			tostring(loadError)
+		))
+		return false
+	end
+	return true
+end
+
+local function prepareInitialPlayer(player)
+	local state = {
+		Ready = false,
+		Started = false,
+		Spawning = false,
+		LastRequestAt = 0,
+	}
+	initialStates[player] = state
+	player:SetAttribute("InitialGameStarted", false)
+	player:SetAttribute("InitialSpawnPositioned", false)
+	player:SetAttribute("InitialStartState", "LoadingData")
+	player.CharacterAdded:Connect(function(character)
+		protectInitialCharacter(player, character)
+	end)
+	task.spawn(function()
+		PlayerDataService.Load(player)
+		if not player.Parent or initialStates[player] ~= state then
+			return
+		end
+		player:SetAttribute("InitialStartState", "PreparingWorld")
+		while player.Parent and initialStates[player] == state and not worldIsReady() do
+			task.wait(0.25)
+		end
+		if player.Parent and initialStates[player] == state then
+			state.Ready = true
+			player:SetAttribute("InitialStartState", "Ready")
 		end
 	end)
 end
@@ -140,16 +283,12 @@ local function grantPurchase(player)
 	return true
 end
 
-local function processReceipt(receipt)
-	if receipt.ProductId ~= productId() or receipt.ProductId == 0 then
-		return Enum.ProductPurchaseDecision.NotProcessedYet
-	end
-	local player = Players:GetPlayerByUserId(receipt.PlayerId)
-	if not player then
-		return Enum.ProductPurchaseDecision.NotProcessedYet
+local function processRevivePurchase(player)
+	if not pending[player] then
+		return false
 	end
 	grantPurchase(player)
-	return Enum.ProductPurchaseDecision.PurchaseGranted
+	return true
 end
 
 function DeathReviveService.Start()
@@ -158,8 +297,46 @@ function DeathReviveService.Start()
 	end
 	started = true
 	Players.CharacterAutoLoads = false
-	if productId() > 0 then
-		MarketplaceService.ProcessReceipt = processReceipt
+	DeveloperProductService.Start()
+	DeveloperProductService.Register(productId(), "ReviveWithoutCoinLoss", processRevivePurchase)
+	startRequest.OnServerInvoke = function(player, action)
+		local state = initialStates[player]
+		if not state then
+			return { Success = false, Ready = false, State = "LoadingData" }
+		end
+		if action == "Get" then
+			return {
+				Success = true,
+				Ready = state.Ready,
+				Started = state.Started,
+				State = player:GetAttribute("InitialStartState") or "LoadingData",
+				Snapshot = state.Ready and startSnapshot(player) or nil,
+			}
+		elseif action == "Start" then
+			local now = os.clock()
+			if now - state.LastRequestAt < 0.5 then
+				return { Success = false, Ready = state.Ready, Message = "Aguarde um instante." }
+			end
+			state.LastRequestAt = now
+			if not state.Ready then
+				return { Success = false, Ready = false, Message = "O mundo ainda está carregando." }
+			end
+			if state.Started then
+				if player.Character or player:GetAttribute("InitialSpawnPositioned") == true then
+					return { Success = true, Ready = true, Started = true }
+				end
+				state.Started = false
+				state.Spawning = false
+			end
+			local success = spawnInitialCharacter(player, state)
+			return {
+				Success = success,
+				Ready = true,
+				Started = success,
+				Message = success and nil or "Não foi possível iniciar. Tente novamente.",
+			}
+		end
+		return { Success = false, Ready = state.Ready, Message = "Pedido inválido." }
 	end
 	deathEvent.OnServerEvent:Connect(function(player, request)
 		if type(request) ~= "table" then
@@ -184,12 +361,13 @@ function DeathReviveService.Start()
 			end
 		end
 	end)
-	Players.PlayerAdded:Connect(loadInitialCharacter)
+	Players.PlayerAdded:Connect(prepareInitialPlayer)
 	for _, player in ipairs(Players:GetPlayers()) do
-		loadInitialCharacter(player)
+		prepareInitialPlayer(player)
 	end
 	Players.PlayerRemoving:Connect(function(player)
 		pending[player] = nil
+		initialStates[player] = nil
 	end)
 end
 
