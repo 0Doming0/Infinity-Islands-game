@@ -1309,6 +1309,9 @@ function CompanionService.RecordDefeat(player, monster)
 end
 
 local function buyEquipSlotWithCoins(player)
+	if player:GetAttribute("CompanionSlotPurchasePending") == true then
+		return false, "Conclua a compra de Robux antes de liberar outro slot."
+	end
 	local current = PlayerDataService.GetCompanionEquipSlots(player)
 	if current >= CompanionCatalog.MaxEquipped then
 		return false, "Todos os slots já estão desbloqueados."
@@ -1334,6 +1337,9 @@ local function buyEquipSlotWithCoins(player)
 end
 
 local function promptEquipSlotProduct(player)
+	if player:GetAttribute("CompanionSlotPurchasePending") == true then
+		return false, "A compra deste slot ja esta aberta."
+	end
 	if PlayerDataService.GetCompanionEquipSlots(player) >= CompanionCatalog.MaxEquipped then
 		return false, "Todos os slots já estão desbloqueados."
 	end
@@ -1344,20 +1350,41 @@ local function promptEquipSlotProduct(player)
 	if productId <= 0 then
 		return false, "Configure o Developer Product de slot."
 	end
-	MarketplaceService:PromptProductPurchase(player, productId)
+	player:SetAttribute("CompanionSlotPurchasePending", true)
+	player:SetAttribute(
+		"CompanionSlotPurchaseTarget",
+		PlayerDataService.GetCompanionEquipSlots(player) + 1
+	)
+	local prompted = pcall(
+		MarketplaceService.PromptProductPurchase,
+		MarketplaceService,
+		player,
+		productId
+	)
+	if not prompted then
+		player:SetAttribute("CompanionSlotPurchasePending", false)
+		player:SetAttribute("CompanionSlotPurchaseTarget", nil)
+		return false, "Nao foi possivel abrir a compra."
+	end
 	return true, "Compra aberta."
 end
 
 local function grantPurchasedEquipSlot(player)
 	PlayerDataService.Load(player)
 	local granted, newLimit = PlayerDataService.GrantCompanionEquipSlot(player)
+	player:SetAttribute("CompanionSlotPurchasePending", false)
+	player:SetAttribute("CompanionSlotPurchaseTarget", nil)
 	if not granted then
-		-- A compra pode chegar depois de o jogador obter o último slot com moedas.
-		-- Nesse caso ela é concluída sem tentar conceder um quinto slot inválido.
+		-- As duas interfaces bloqueiam a compra no limite e impedem que moedas
+		-- alterem o slot enquanto o prompt esta aberto. Este caso so permanece
+		-- como protecao para compras iniciadas fora da interface do jogo.
+		warn(string.format(
+			"[CompanionService] %s recebeu um recibo de slot ja estando no limite.",
+			player.Name
+		))
 		return true
 	end
 	player:SetAttribute("CompanionEquipSlots", newLimit)
-	task.spawn(PlayerDataService.Save, player, false)
 	push(player, string.format("Slot %d desbloqueado com sucesso!", newLimit), true)
 	return true
 end
@@ -1450,6 +1477,20 @@ function CompanionService.Start()
 		"CompanionEquipSlot",
 		grantPurchasedEquipSlot
 	)
+	MarketplaceService.PromptProductPurchaseFinished:Connect(function(
+		userId,
+		productId,
+		purchased
+	)
+		if productId ~= CompanionCatalog.EquipSlotDeveloperProductId or purchased then
+			return
+		end
+		local player = Players:GetPlayerByUserId(userId)
+		if player then
+			player:SetAttribute("CompanionSlotPurchasePending", false)
+			player:SetAttribute("CompanionSlotPurchaseTarget", nil)
+		end
+	end)
 
 	local function setup(player)
 		PlayerDataService.Load(player)
@@ -1472,6 +1513,8 @@ function CompanionService.Start()
 	Players.PlayerRemoving:Connect(function(player)
 		lastMutationAt[player] = nil
 		lastRenameAt[player] = nil
+		player:SetAttribute("CompanionSlotPurchasePending", nil)
+		player:SetAttribute("CompanionSlotPurchaseTarget", nil)
 		destroyActive(player)
 	end)
 	for _, player in ipairs(Players:GetPlayers()) do

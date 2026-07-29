@@ -21,6 +21,7 @@ local STARTER_SWORD_ID = "ClassicSword"
 local LOAD_RETRIES = 4
 local SAVE_RETRIES = 4
 local RETRY_DELAY_SECONDS = 1.5
+local MAX_PROCESSED_PURCHASE_IDS = 500
 
 local store = DataStoreService:GetDataStore(DATASTORE_NAME)
 local legacyMvpStore = DataStoreService:GetDataStore(LEGACY_MVP_DATASTORE_NAME)
@@ -58,8 +59,39 @@ local function defaultData()
 		Monetization = {
 			TreasureBoostUntil = 0,
 			EliteBoostUntil = 0,
+			PendingReviveLostCoins = 0,
+			PendingReviveSerial = 0,
+			PendingSpinAgainSource = "",
+			PendingSpinAgainLevel = 0,
+			ProcessedPurchaseIds = {},
 		},
 	}
+end
+
+local function sanitizeProcessedPurchaseIds(raw)
+	local entries = {}
+	if type(raw) == "table" then
+		for purchaseId, processedAt in pairs(raw) do
+			if type(purchaseId) == "string" and purchaseId ~= "" then
+				table.insert(entries, {
+					Id = purchaseId,
+					ProcessedAt = math.max(1, math.floor(tonumber(processedAt) or 1)),
+				})
+			end
+		end
+	end
+	table.sort(entries, function(left, right)
+		if left.ProcessedAt == right.ProcessedAt then
+			return left.Id > right.Id
+		end
+		return left.ProcessedAt > right.ProcessedAt
+	end)
+	local result = {}
+	for index = 1, math.min(#entries, MAX_PROCESSED_PURCHASE_IDS) do
+		local entry = entries[index]
+		result[entry.Id] = entry.ProcessedAt
+	end
+	return result
 end
 
 local function sanitizeOwnedSwords(raw)
@@ -310,6 +342,25 @@ local function sanitize(raw)
 	data.Monetization = {
 		TreasureBoostUntil = math.max(0, math.floor(tonumber(rawMonetization.TreasureBoostUntil) or 0)),
 		EliteBoostUntil = math.max(0, math.floor(tonumber(rawMonetization.EliteBoostUntil) or 0)),
+		PendingReviveLostCoins = math.max(
+			0,
+			math.floor(tonumber(rawMonetization.PendingReviveLostCoins) or 0)
+		),
+		PendingReviveSerial = math.max(
+			0,
+			math.floor(tonumber(rawMonetization.PendingReviveSerial) or 0)
+		),
+		PendingSpinAgainSource = (
+			rawMonetization.PendingSpinAgainSource == "Boss"
+				or rawMonetization.PendingSpinAgainSource == "RareChest"
+		) and rawMonetization.PendingSpinAgainSource or "",
+		PendingSpinAgainLevel = math.max(
+			0,
+			math.floor(tonumber(rawMonetization.PendingSpinAgainLevel) or 0)
+		),
+		ProcessedPurchaseIds = sanitizeProcessedPurchaseIds(
+			rawMonetization.ProcessedPurchaseIds
+		),
 	}
 	return data
 end
@@ -319,6 +370,12 @@ local function cloneDictionary(source)
 	for key, value in pairs(source) do
 		result[key] = value
 	end
+	return result
+end
+
+local function cloneMonetization(source)
+	local result = cloneDictionary(source)
+	result.ProcessedPurchaseIds = cloneDictionary(source.ProcessedPurchaseIds or {})
 	return result
 end
 
@@ -357,7 +414,7 @@ local function cloneData(data)
 		TutorialCompleted = data.TutorialCompleted == true,
 		DailyLastClaimDay = data.DailyLastClaimDay,
 		DailyStreak = data.DailyStreak,
-		Monetization = cloneDictionary(data.Monetization),
+		Monetization = cloneMonetization(data.Monetization),
 	}
 end
 
@@ -1055,10 +1112,129 @@ end
 
 function PlayerDataService.GetMonetizationState(player)
 	local data = PlayerDataService.Get(player)
-	return data and cloneDictionary(data.Monetization) or {
+	return data and cloneMonetization(data.Monetization) or {
 		TreasureBoostUntil = 0,
 		EliteBoostUntil = 0,
+		PendingReviveLostCoins = 0,
+		PendingReviveSerial = 0,
+		PendingSpinAgainSource = "",
+		PendingSpinAgainLevel = 0,
+		ProcessedPurchaseIds = {},
 	}
+end
+
+function PlayerDataService.HasProcessedPurchase(player, purchaseId)
+	local data = PlayerDataService.Get(player)
+	local cleanId = tostring(purchaseId or "")
+	return data ~= nil
+		and cleanId ~= ""
+		and type(data.Monetization.ProcessedPurchaseIds) == "table"
+		and data.Monetization.ProcessedPurchaseIds[cleanId] ~= nil
+end
+
+function PlayerDataService.MarkProcessedPurchase(player, purchaseId)
+	local session = sessions[player]
+	local cleanId = tostring(purchaseId or "")
+	if not session or cleanId == "" then
+		return false
+	end
+	local processed = session.Data.Monetization.ProcessedPurchaseIds
+	if processed[cleanId] == nil then
+		processed[cleanId] = os.time()
+		session.Data.Monetization.ProcessedPurchaseIds =
+			sanitizeProcessedPurchaseIds(processed)
+		markDirty(session)
+	end
+	return true
+end
+
+function PlayerDataService.SetPendingRevivePurchase(player, lostCoins, serial)
+	local session = sessions[player]
+	if not session then
+		return false
+	end
+	session.Data.Monetization.PendingReviveLostCoins =
+		math.max(0, math.floor(tonumber(lostCoins) or 0))
+	session.Data.Monetization.PendingReviveSerial =
+		math.max(0, math.floor(tonumber(serial) or 0))
+	markDirty(session)
+	return true
+end
+
+function PlayerDataService.GetPendingRevivePurchase(player)
+	local data = PlayerDataService.Get(player)
+	if not data then
+		return 0, 0
+	end
+	return math.max(
+		0,
+		math.floor(tonumber(data.Monetization.PendingReviveLostCoins) or 0)
+	), math.max(
+		0,
+		math.floor(tonumber(data.Monetization.PendingReviveSerial) or 0)
+	)
+end
+
+function PlayerDataService.ClearPendingRevivePurchase(player)
+	local session = sessions[player]
+	if not session then
+		return false
+	end
+	if
+		session.Data.Monetization.PendingReviveLostCoins ~= 0
+		or session.Data.Monetization.PendingReviveSerial ~= 0
+	then
+		session.Data.Monetization.PendingReviveLostCoins = 0
+		session.Data.Monetization.PendingReviveSerial = 0
+		markDirty(session)
+	end
+	return true
+end
+
+function PlayerDataService.SetPendingSpinAgainPurchase(player, sourceId, level)
+	local session = sessions[player]
+	if
+		not session
+		or (sourceId ~= "Boss" and sourceId ~= "RareChest")
+	then
+		return false
+	end
+	session.Data.Monetization.PendingSpinAgainSource = sourceId
+	session.Data.Monetization.PendingSpinAgainLevel =
+		math.max(1, math.floor(tonumber(level) or 1))
+	markDirty(session)
+	return true
+end
+
+function PlayerDataService.GetPendingSpinAgainPurchase(player)
+	local data = PlayerDataService.Get(player)
+	if not data then
+		return "", 0
+	end
+	local sourceId = data.Monetization.PendingSpinAgainSource
+	if sourceId ~= "Boss" and sourceId ~= "RareChest" then
+		return "", 0
+	end
+	return sourceId, math.max(
+		1,
+		math.floor(tonumber(data.Monetization.PendingSpinAgainLevel) or 1)
+	)
+end
+
+function PlayerDataService.ClearPendingSpinAgainPurchase(player)
+	local session = sessions[player]
+	if not session then
+		return false
+	end
+	if
+		session.Data.Monetization.PendingSpinAgainSource ~= ""
+		or session.Data.Monetization.PendingSpinAgainLevel ~= 0
+	then
+		session.Data.Monetization.PendingSpinAgainSource = ""
+		session.Data.Monetization.PendingSpinAgainLevel = 0
+		markDirty(session)
+	end
+	return true
 end
 
 function PlayerDataService.ExtendMonetizationBoost(player, boostName, durationSeconds)
@@ -1172,11 +1348,33 @@ function PlayerDataService.Save(player, force)
 				snapshot.Monetization.EliteBoostUntil,
 				previousData.Monetization.EliteBoostUntil
 			)
+			for purchaseId, processedAt in pairs(
+				previousData.Monetization.ProcessedPurchaseIds
+			) do
+				snapshot.Monetization.ProcessedPurchaseIds[purchaseId] = math.max(
+					tonumber(snapshot.Monetization.ProcessedPurchaseIds[purchaseId]) or 0,
+					processedAt
+				)
+			end
+			snapshot.Monetization.ProcessedPurchaseIds = sanitizeProcessedPurchaseIds(
+				snapshot.Monetization.ProcessedPurchaseIds
+			)
 			return snapshot
 		end)
 	end)
 	session.Saving = false
 	if success then
+		for purchaseId, processedAt in pairs(
+			snapshot.Monetization.ProcessedPurchaseIds
+		) do
+			session.Data.Monetization.ProcessedPurchaseIds[purchaseId] = math.max(
+				tonumber(session.Data.Monetization.ProcessedPurchaseIds[purchaseId]) or 0,
+				processedAt
+			)
+		end
+		session.Data.Monetization.ProcessedPurchaseIds = sanitizeProcessedPurchaseIds(
+			session.Data.Monetization.ProcessedPurchaseIds
+		)
 		for monsterId, discardedRevision in pairs(snapshotDiscardedCompanions) do
 			if session.DiscardedCompanions[monsterId] == discardedRevision then
 				session.DiscardedCompanions[monsterId] = nil

@@ -42,6 +42,7 @@ local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ScoreService = require(script.Parent.ScoreService_SkyDungeon_V10)
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
+local MonetizationCatalog = require(ReplicatedStorage:WaitForChild("MonetizationCatalog"))
 local InventoryService = require(script.Parent.Parent.MVPSystems:WaitForChild("InventoryService"))
 local ServerScriptService = game:GetService("ServerScriptService")
 local SlimeController = require(script.Parent.SlimeController)
@@ -762,7 +763,22 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 		local deathPosition = root.Position
 		local damager = getRecordedDamager(entry, clone, humanoid)
 		if damager then
-			awardRewards(damager, entry.ScoreValue, entry.CoinValue, deathPosition)
+			local monetizationRewardMultiplier = 1
+			if
+				clone:GetAttribute("IsElite") == true
+				and damager:GetAttribute("EliteBoostActive") == true
+			then
+				monetizationRewardMultiplier = math.max(
+					1,
+					tonumber(MonetizationCatalog.Get("EliteExpedition").RewardMultiplier) or 2
+				)
+			end
+			awardRewards(
+				damager,
+				entry.ScoreValue * monetizationRewardMultiplier,
+				entry.CoinValue * monetizationRewardMultiplier,
+				deathPosition
+			)
 			PartyService.RecordMissionProgress(damager, "MobDefeated", 1, clone)
 			CompanionService.RecordDefeat(damager, clone)
 			if clone:GetAttribute("SpawnMode") == "Boss" then

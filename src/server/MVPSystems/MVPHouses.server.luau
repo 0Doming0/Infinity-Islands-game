@@ -15,59 +15,36 @@ local VillageShopCatalog = require(ReplicatedStorage:WaitForChild("VillageShopCa
 local VILLAGE_CONFIG = MVPConfig.Village
 local processedIslands = setmetatable({}, { __mode = "k" })
 local warnedMissingVillagerTemplates = {}
-
-local VILLAGER_TEMPLATE_ALIASES = {
-	Blacksmith = {
-		"blacksmith",
-		"ferreiro",
-		"swordmerchant",
-		"swordshopkeeper",
-	},
-	RelicDealer = {
-		"relicdealer",
-		"relicmerchant",
-		"mercadordereliquias",
-		"mercadorderelíquias",
-	},
-	Healer = {
-		"healer",
-		"curandeira",
-	},
-	Explorer = {
-		"explorer",
-		"explorador",
-	},
-	SkyMerchant = {
-		"skymerchant",
-		"mercadordoceu",
-		"mercadordocéu",
-	},
-}
+local loggedVillagerTemplateResolution = {}
 
 local function isTerrainIsland(instance)
 	return instance:IsA("Model")
 		and instance:GetAttribute("IsSkyIsland") == true
 end
 
-local function getPreferredFolder(category)
+local function getTemplateFolders(category)
+	local folders = {}
 	local assets = ServerStorage:FindFirstChild("MVPAssets")
 	local village = assets and assets:FindFirstChild("Village")
 	local preferred = village and village:FindFirstChild(category)
-	if preferred and #preferred:GetChildren() > 0 then
-		return preferred
+	local preferredHasChildren = preferred and #preferred:GetChildren() > 0
+	if preferredHasChildren then
+		table.insert(folders, preferred)
 	end
 	local legacyName = category == "Buildings" and "MVPBuildings" or "MVPVillagers"
 	local legacy = ServerStorage:FindFirstChild(legacyName)
-	if legacy and #legacy:GetChildren() > 0 then
-		return legacy
+	if legacy
+		and legacy ~= preferred
+		and (category == "Villagers" or not preferredHasChildren)
+	then
+		table.insert(folders, legacy)
 	end
-	return nil
+	return folders
 end
 
 local function getTemplates(category)
-	local folder = getPreferredFolder(category)
 	local result = {}
-	if folder then
+	for _, folder in ipairs(getTemplateFolders(category)) do
 		for _, child in ipairs(folder:GetChildren()) do
 			if child:IsA("Model") or child:IsA("BasePart") then
 				table.insert(result, child)
@@ -80,40 +57,15 @@ local function getTemplates(category)
 	return result
 end
 
-local function normalizeTemplateName(value)
-	return string.lower(tostring(value or "")):gsub("[^%w]", "")
-end
-
-local function templateMatchesShop(template, shopId)
-	local configuredShopId = template:GetAttribute("ShopId")
-	if typeof(configuredShopId) == "string" and configuredShopId ~= "" then
-		return configuredShopId == shopId
-	end
-	if shopId == "SkyMerchant" and template:GetAttribute("IsSkyMerchant") == true then
-		return true
-	end
-	local normalizedName = normalizeTemplateName(template.Name)
-	for _, alias in ipairs(VILLAGER_TEMPLATE_ALIASES[shopId] or {}) do
-		if string.find(normalizedName, normalizeTemplateName(alias), 1, true) then
-			return true
-		end
-	end
-	return false
-end
-
-local function getVillagerTemplatesForShop(templates, shopId)
-	local matches = {}
-	for _, template in ipairs(templates) do
-		if templateMatchesShop(template, shopId) then
-			table.insert(matches, template)
-		end
-	end
-	return matches
-end
-
 local function prepareStatic(instance)
 	for _, descendant in ipairs(instance:GetDescendants()) do
 		if descendant:IsA("BaseScript") then
+			descendant:Destroy()
+		elseif descendant:IsA("ProximityPrompt") then
+			-- O visual sorteado nao pode trazer uma loja ou interacao antiga.
+			-- O VillagerSystem cria um prompt novo usando o ShopId sorteado.
+			descendant:Destroy()
+		elseif descendant:IsA("BillboardGui") and descendant.Name == "VillageShopLabel" then
 			descendant:Destroy()
 		elseif descendant:IsA("BasePart") then
 			descendant.Anchored = true
@@ -230,6 +182,26 @@ local function chooseTemplate(templates, random)
 	return templates[random:NextInteger(1, #templates)]
 end
 
+local function chooseVillagerTemplate(templates, random, usedTemplates)
+	if #templates == 0 then
+		return nil
+	end
+	local available = {}
+	for _, template in ipairs(templates) do
+		if not usedTemplates or not usedTemplates[template] then
+			table.insert(available, template)
+		end
+	end
+	if #available == 0 then
+		available = templates
+	end
+	local template = chooseTemplate(available, random)
+	if template and usedTemplates then
+		usedTemplates[template] = true
+	end
+	return template
+end
+
 local function spawnBuilding(parent, templates, index, position, yaw, random)
 	local template = chooseTemplate(templates, random)
 	local model
@@ -243,12 +215,24 @@ local function spawnBuilding(parent, templates, index, position, yaw, random)
 	return model
 end
 
-local function spawnVillager(parent, templates, position, yaw, random, shop, index)
-	local matchingTemplates = getVillagerTemplatesForShop(templates, shop.ShopId)
-	local template = chooseTemplate(matchingTemplates, random)
+local function spawnVillager(parent, templates, position, yaw, random, shop, index, usedTemplates)
+	local template = chooseVillagerTemplate(templates, random, usedTemplates)
 	local model
 	if template then
 		model = alignToSurface(template:Clone(), position, yaw)
+		CollectionService:RemoveTag(model, VILLAGE_CONFIG.ShopTag)
+		model:SetAttribute("SourceVillagerTemplate", template.Name)
+		model:SetAttribute("TemplateResolution", "RandomNPCAsset")
+		local resolutionKey = shop.ShopId .. ":" .. template.Name
+		if not loggedVillagerTemplateResolution[resolutionKey] then
+			print(string.format(
+				"[MVP Village] Modelo aleatorio '%s' aplicado a %s (ShopId=%s).",
+				template.Name,
+				shop.DisplayName,
+				shop.ShopId
+			))
+			loggedVillagerTemplateResolution[resolutionKey] = true
+		end
 	else
 		if not warnedMissingVillagerTemplates[shop.ShopId] then
 			warn(string.format(
@@ -341,6 +325,9 @@ local function populateIsland(island)
 	local seed = (tonumber(island:GetAttribute("IslandSeed")) or 1) + VILLAGE_CONFIG.RandomSalt
 	seed = math.floor(math.abs(seed)) % 2147483647
 	local random = Random.new(seed == 0 and 1 or seed)
+	-- O layout e as profissoes continuam deterministas pela seed da ilha, mas
+	-- os visuais mudam entre novas geracoes/sessoes.
+	local visualRandom = Random.new()
 	local createVillage = shouldSpawnVillage(island, random)
 	local createSoloMerchant = not createVillage and shouldSpawnSoloMerchant(island, random)
 	if not createVillage and not createSoloMerchant then
@@ -364,7 +351,7 @@ local function populateIsland(island)
 		folder.Parent = island
 		local shop = VillageShopCatalog.GetShop(VillageShopCatalog.GetSkyMerchantShopId())
 		local templates = getTemplates("Villagers")
-		spawnVillager(folder, templates, center, angle, random, shop, 1)
+		spawnVillager(folder, templates, center, angle, visualRandom, shop, 1, nil)
 		print(string.format("[MVP Village] Mercador do Ceu solitario criado em %s.", island:GetFullName()))
 		return
 	end
@@ -407,6 +394,7 @@ local function populateIsland(island)
 
 	local buildings = getTemplates("Buildings")
 	local villagers = getTemplates("Villagers")
+	local usedVillagerTemplates = {}
 	for index = 1, buildingCount do
 		local position = positions[index + 1]
 		local yaw = math.atan2(center.X - position.X, center.Z - position.Z)
@@ -416,7 +404,7 @@ local function populateIsland(island)
 		local shop = VillageShopCatalog.GetShop(shopIds[index])
 		local position = villagerPositions[index]
 		local yaw = math.atan2(center.X - position.X, center.Z - position.Z)
-		spawnVillager(village, villagers, position, yaw, random, shop, index)
+		spawnVillager(village, villagers, position, yaw, visualRandom, shop, index, usedVillagerTemplates)
 	end
 
 	local pad = makePart(

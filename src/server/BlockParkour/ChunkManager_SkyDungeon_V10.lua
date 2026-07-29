@@ -407,7 +407,7 @@ local function recycleEdgeModel(model)
 	return true
 end
 
-local function createNode(spec, reason)
+local function createNode(spec, reason, generationOwnerUserId)
 	local existing = nodesByKey[spec.Key]
 	if existing then
 		return existing, false
@@ -423,8 +423,10 @@ local function createNode(spec, reason)
 		DeferRuntimeContent = true,
 		DeferVisualContent = true,
 		RecycledModel = recycledModel,
+		GenerationOwnerUserId = generationOwnerUserId,
 	})
 	model:SetAttribute("GenerationReason", reason or "Unknown")
+	model:SetAttribute("GenerationOwnerUserId", generationOwnerUserId)
 	model:SetAttribute("NodeSerial", nodeSerial)
 	CollectionService:AddTag(model, "BlockParkourChunk")
 	CollectionService:AddTag(model, "SkyDungeonIslandNode")
@@ -700,10 +702,13 @@ local function startDetailWorker()
 	end)
 end
 
-local function enqueueExpansion(record, reason, priority)
+local function enqueueExpansion(record, reason, priority, generationOwnerUserId)
 	local existingJob = queuedForExpansion[record.Key]
 	if existingJob then
 		existingJob.Priority = math.max(existingJob.Priority, priority or 0)
+		if not existingJob.GenerationOwnerUserId and generationOwnerUserId then
+			existingJob.GenerationOwnerUserId = generationOwnerUserId
+		end
 		return false
 	end
 	if record.Expanded or record.Expanding or record.ScheduledExpansionRoundId then
@@ -720,6 +725,7 @@ local function enqueueExpansion(record, reason, priority)
 		Id = roundId,
 		RootKey = record.Key,
 		Reason = reason or "Unknown",
+		GenerationOwnerUserId = generationOwnerUserId,
 		Priority = priority or 0,
 		TargetDepth = Config.FRONTIER_ROUND_DEPTH_LEVELS,
 		CurrentDepth = 1,
@@ -809,7 +815,7 @@ end
 
 -- Executa somente uma operacao pesada: criar uma ilha OU criar sua conexao.
 -- O estado fica no record para continuar no Heartbeat seguinte.
-local function stepNodeExpansion(record)
+local function stepNodeExpansion(record, generationOwnerUserId)
 	if not record or not record.Model or not record.Model.Parent then
 		return "Failed", {}, false
 	end
@@ -851,7 +857,11 @@ local function stepNodeExpansion(record)
 	local direction = work.Directions[work.DirectionIndex]
 	work.DirectionIndex += 1
 	local childSpec = IslandGraphPlanner.GetChildSpec(baseSeed, record.Spec, direction.Id)
-	local child, created, creationError = createNode(childSpec, "DiscoveredFrom:" .. record.Key)
+	local child, created, creationError = createNode(
+		childSpec,
+		"DiscoveredFrom:" .. record.Key,
+		generationOwnerUserId
+	)
 	if not child then
 		table.insert(work.Errors, direction.Id .. ": " .. tostring(creationError))
 		return "Working", {}, true
@@ -944,7 +954,10 @@ local function processExpansionQueue()
 		if key then
 			local record = nodesByKey[key]
 			if record then
-				local state, children, performedOperation = stepNodeExpansion(record)
+				local state, children, performedOperation = stepNodeExpansion(
+					record,
+					job.GenerationOwnerUserId
+				)
 				if performedOperation then
 					processed += 1
 				end
@@ -1093,7 +1106,12 @@ local function visitNode(player, record)
 		-- A intencao de movimento e o gatilho normal. Este fallback cobre teleporte, lag ou
 	-- spawn direto sobre uma ilha de fronteira sem deixar o mundo terminar nela.
 	if not record.Expanded then
-		enqueueExpansion(record, "TouchFallback:" .. tostring(player.UserId), 50000)
+		enqueueExpansion(
+			record,
+			"TouchFallback:" .. tostring(player.UserId),
+			50000,
+			player.UserId
+		)
 	end
 	enqueueDetail(record, true, 50000)
 
@@ -1225,7 +1243,8 @@ local function prepareApproachedFrontiers(playerRoots)
 			if enqueueExpansion(
 				best,
 				"PlayerIntent:" .. tostring(entry.Player.UserId),
-				math.max(1000, 20000 - bestScore * 10)
+				math.max(1000, 20000 - bestScore * 10),
+				entry.Player.UserId
 			) then
 				intent.CooldownUntil = now + Config.FRONTIER_INTENT_TRIGGER_COOLDOWN_SECONDS
 			end

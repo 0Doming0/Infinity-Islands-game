@@ -280,7 +280,11 @@ function MarketingOfferService.Record(player, signalName, amount)
 end
 
 function MarketingOfferService.RecordStoreOpened(player)
-	if not player or player.Parent ~= Players or player:GetAttribute("ShopOpen") ~= true then
+	if not player
+		or player.Parent ~= Players
+		or player:GetAttribute("ShopOpen") ~= true
+		or player:GetAttribute("ActiveShopId") ~= "SkyMerchant"
+	then
 		return
 	end
 	setup(player)

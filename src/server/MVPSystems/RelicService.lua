@@ -53,19 +53,56 @@ local function replicateEquippedRelic(player, relicId)
 	player:SetAttribute("EquippedRelicColor", definition and definition.Color or nil)
 end
 
-local function markRelicProc(player, definition, targetModel)
+local function indicatorDuration(definition)
+	if definition.Effect == "Fire" then
+		return math.max(0.1, tonumber(definition.Duration) or 0)
+	elseif definition.Effect == "Ice" then
+		return math.max(0.1, tonumber(definition.FreezeDuration) or 0)
+	end
+	return math.max(0.1, tonumber(definition.IndicatorDuration) or 1.25)
+end
+
+local function markTargetRelicEffect(targetModel, definition, expiresAt, userId)
+	if not targetModel or not targetModel.Parent then
+		return
+	end
+	local attributeName = "RelicEffect" .. definition.Effect .. "Until"
+	local currentExpiration = tonumber(targetModel:GetAttribute(attributeName)) or 0
+	local expiration = math.max(currentExpiration, expiresAt)
+	targetModel:SetAttribute(attributeName, expiration)
+	targetModel:SetAttribute("RelicEffect" .. definition.Effect .. "ByUserId", userId)
+
+	task.delay(math.max(0.1, expiration - workspace:GetServerTimeNow()) + 0.05, function()
+		if
+			targetModel.Parent
+			and (tonumber(targetModel:GetAttribute(attributeName)) or 0) <= workspace:GetServerTimeNow()
+		then
+			targetModel:SetAttribute(attributeName, nil)
+			targetModel:SetAttribute("RelicEffect" .. definition.Effect .. "ByUserId", nil)
+		end
+	end)
+end
+
+local function markRelicProc(player, definition, targetModels, expiresAt)
 	if not definition or not player or player.Parent ~= Players then
 		return
 	end
+	local now = workspace:GetServerTimeNow()
 	local serial = (tonumber(player:GetAttribute("LastRelicProcSerial")) or 0) + 1
 	player:SetAttribute("LastRelicProcSerial", serial)
 	player:SetAttribute("LastRelicProcId", definition.RelicId)
 	player:SetAttribute("LastRelicProcName", definition.DisplayName)
-	player:SetAttribute("LastRelicProcAt", workspace:GetServerTimeNow())
-	if targetModel and targetModel.Parent then
-		targetModel:SetAttribute("LastRelicEffect", definition.Effect)
-		targetModel:SetAttribute("LastRelicEffectByUserId", player.UserId)
-		targetModel:SetAttribute("LastRelicEffectAt", workspace:GetServerTimeNow())
+	player:SetAttribute("LastRelicProcAt", now)
+
+	local targets = typeof(targetModels) == "table" and targetModels or { targetModels }
+	local expiration = expiresAt or (now + indicatorDuration(definition))
+	for _, targetModel in ipairs(targets) do
+		if targetModel and targetModel.Parent then
+			targetModel:SetAttribute("LastRelicEffect", definition.Effect)
+			targetModel:SetAttribute("LastRelicEffectByUserId", player.UserId)
+			targetModel:SetAttribute("LastRelicEffectAt", now)
+			markTargetRelicEffect(targetModel, definition, expiration, player.UserId)
+		end
 	end
 end
 
@@ -213,6 +250,8 @@ local function applyFire(player, target, attack, definition)
 	state.Player = player
 	state.Damage = math.max(state.Damage or 0, attack.Damage * definition.DamagePerSecondRatio)
 	model:SetAttribute("RelicBurning", true)
+	local expiresAt = workspace:GetServerTimeNow() + definition.Duration
+	model:SetAttribute("RelicBurningUntil", expiresAt)
 	task.spawn(function()
 		for _ = 1, definition.Duration do
 			task.wait(1)
@@ -228,10 +267,11 @@ local function applyFire(player, target, attack, definition)
 		end
 		if state.Serial == serial and model.Parent then
 			model:SetAttribute("RelicBurning", nil)
+			model:SetAttribute("RelicBurningUntil", nil)
 			state.Damage = nil
 		end
 	end)
-	return true
+	return true, expiresAt
 end
 
 local function applyFreeze(target, definition)
@@ -286,7 +326,7 @@ local function applyFreeze(target, definition)
 		model:SetAttribute("CombatOriginalWalkSpeed", nil)
 		model:SetAttribute("CombatOriginalAutoRotate", nil)
 	end)
-	return true
+	return true, untilTime
 end
 
 function RelicService.ApplyAfterHit(player, attackerRoot, target, attack)
@@ -299,12 +339,13 @@ function RelicService.ApplyAfterHit(player, attackerRoot, target, attack)
 		if chained then
 			local applied = DamageService.ApplyEffectDamage(player, chained, attack.Damage, "LightningRelic")
 			if applied then
-				markRelicProc(player, definition, chained.Model)
+				markRelicProc(player, definition, { target.Model, chained.Model })
 			end
 		end
 	elseif definition.Effect == "Fire" then
-		if applyFire(player, target, attack, definition) then
-			markRelicProc(player, definition, target.Model)
+		local applied, expiresAt = applyFire(player, target, attack, definition)
+		if applied then
+			markRelicProc(player, definition, target.Model, expiresAt)
 		end
 	elseif definition.Effect == "Ice" then
 		local state = getTargetState(player, target.Model)
@@ -313,8 +354,9 @@ function RelicService.ApplyAfterHit(player, attackerRoot, target, attack)
 		state.IceLastHitAt = now
 		if state.IceHits >= definition.HitsRequired and target.Model:GetAttribute("RelicFrozen") ~= true then
 			state.IceHits = 0
-			if applyFreeze(target, definition) then
-				markRelicProc(player, definition, target.Model)
+			local applied, expiresAt = applyFreeze(target, definition)
+			if applied then
+				markRelicProc(player, definition, target.Model, expiresAt)
 			end
 		end
 	elseif definition.Effect == "Stone" and attack.StoneChargedAttack then

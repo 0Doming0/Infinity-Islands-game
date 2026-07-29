@@ -112,11 +112,21 @@ local function countOwned(dictionary)
 	return count
 end
 
+local function reduceWheelCoins(amount)
+	local multiplier = math.clamp(
+		tonumber(RewardWheelCatalog.CoinPayoutMultiplier) or 1,
+		0,
+		1
+	)
+	return math.max(1, math.floor(math.max(0, tonumber(amount) or 0) * multiplier))
+end
+
 local function duplicateCoins(price)
-	return math.max(
+	local originalCompensation = math.max(
 		RewardWheelCatalog.MinimumDuplicateCompensation,
 		math.floor(math.max(0, tonumber(price) or 0) * RewardWheelCatalog.DuplicateCompensationRatio)
 	)
+	return reduceWheelCoins(originalCompensation)
 end
 
 local function awardCoins(player, amount, sourceId, isCompensation)
@@ -132,7 +142,7 @@ local function grantCoins(player, sourceId, source, context)
 	local level = math.max(1, math.floor(tonumber(context and context.Level) or 1))
 	local minimum = source.CoinMinimum + math.max(0, level - 1) * source.CoinPerLevel
 	local maximum = source.CoinMaximum + math.max(0, level - 1) * source.CoinPerLevel
-	local amount = awardCoins(player, random:NextInteger(minimum, maximum), sourceId, false)
+	local amount = awardCoins(player, reduceWheelCoins(random:NextInteger(minimum, maximum)), sourceId, false)
 	if amount <= 0 then
 		return nil
 	end
@@ -394,10 +404,29 @@ function RewardWheelService.Spin(player, sourceId, context)
 	player:SetAttribute("LastRewardWheelOriginalRewardId", result.OriginalRewardId)
 	player:SetAttribute("LastRewardWheelReward", result.DisplayName)
 	player:SetAttribute("LastRewardWheelSerial", spinSerial)
+	local spinAgainAvailable = RewardWheelCatalog.IsSpinAgainSource(sourceId)
+	if spinAgainAvailable then
+		player:SetAttribute("SpinAgainOfferSource", sourceId)
+		player:SetAttribute("SpinAgainOfferLevel", math.max(
+			1,
+			math.floor(tonumber(context and context.Level) or 1)
+		))
+		player:SetAttribute("SpinAgainOfferSerial", spinSerial)
+		player:SetAttribute(
+			"SpinAgainOfferUntil",
+			workspace:GetServerTimeNow() + RewardWheelCatalog.AnimationDuration + 15
+		)
+	else
+		player:SetAttribute("SpinAgainOfferSource", nil)
+		player:SetAttribute("SpinAgainOfferLevel", nil)
+		player:SetAttribute("SpinAgainOfferSerial", nil)
+		player:SetAttribute("SpinAgainOfferUntil", nil)
+	end
 	event:FireClient(player, {
 		Action = "Spin",
 		Duration = RewardWheelCatalog.AnimationDuration,
 		Result = result,
+		SpinAgainAvailable = spinAgainAvailable,
 		WheelEntries = wheelEntries,
 		WinningSlot = winningSlot,
 		FullRotations = random:NextInteger(minimumRotations, maximumRotations),
@@ -405,7 +434,9 @@ function RewardWheelService.Spin(player, sourceId, context)
 	if sourceId ~= "PaidSpin" and sourceId ~= "RewardedAd" then
 		MarketingOfferService.Record(player, "WheelSpin", 1)
 	end
-	task.spawn(PlayerDataService.Save, player, false)
+	if not (context and context.DeferSave == true) then
+		task.spawn(PlayerDataService.Save, player, false)
+	end
 	return true, result
 end
 

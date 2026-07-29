@@ -50,6 +50,147 @@ local function hasSafeFloor(character, root)
 		and result.Normal.Y >= 0.55
 end
 
+local function isRootMotor(motor, root)
+	return motor.Part0 == root or motor.Part1 == root
+end
+
+local function trackRagdollInstance(state, instance)
+	table.insert(state.RagdollInstances, instance)
+	return instance
+end
+
+local function createRagdollJoint(state, folder, motor)
+	local part0 = motor.Part0
+	local part1 = motor.Part1
+	if not part0 or not part1 then
+		return
+	end
+
+	local attachment0 = trackRagdollInstance(state, Instance.new("Attachment"))
+	attachment0.Name = "DownedRagdoll_" .. motor.Name .. "_A0"
+	attachment0.CFrame = motor.C0
+	attachment0.Parent = part0
+
+	local attachment1 = trackRagdollInstance(state, Instance.new("Attachment"))
+	attachment1.Name = "DownedRagdoll_" .. motor.Name .. "_A1"
+	attachment1.CFrame = motor.C1
+	attachment1.Parent = part1
+
+	local socket = trackRagdollInstance(state, Instance.new("BallSocketConstraint"))
+	socket.Name = "DownedRagdoll_" .. motor.Name
+	socket.Attachment0 = attachment0
+	socket.Attachment1 = attachment1
+	socket.LimitsEnabled = true
+	socket.UpperAngle = 55
+	socket.TwistLimitsEnabled = true
+	socket.TwistLowerAngle = -45
+	socket.TwistUpperAngle = 45
+	socket.Restitution = 0
+	socket.Parent = folder
+
+	local noCollision = trackRagdollInstance(state, Instance.new("NoCollisionConstraint"))
+	noCollision.Name = "DownedRagdoll_NoCollision_" .. motor.Name
+	noCollision.Part0 = part0
+	noCollision.Part1 = part1
+	noCollision.Parent = folder
+
+	motor.Enabled = false
+end
+
+local function activateRagdoll(state)
+	local character = state.Character
+	local humanoid = state.Humanoid
+	local root = state.Root
+	if
+		not character
+		or not character.Parent
+		or not humanoid
+		or not humanoid.Parent
+		or character:GetAttribute("IsDownedRagdoll") == true
+	then
+		return false
+	end
+
+	character:SetAttribute("IsDownedRagdoll", true)
+	humanoid.BreakJointsOnDeath = false
+	humanoid.RequiresNeck = false
+
+	local folder = Instance.new("Folder")
+	folder.Name = "DownedRagdoll"
+	folder.Parent = character
+	state.RagdollFolder = folder
+	state.RagdollInstances = {}
+	state.MotorStates = {}
+	state.PartStates = {}
+
+	for _, descendant in ipairs(character:GetDescendants()) do
+		if descendant:IsA("BasePart") then
+			table.insert(state.PartStates, {
+				Part = descendant,
+				Anchored = descendant.Anchored,
+				CanCollide = descendant.CanCollide,
+			})
+			descendant.Anchored = false
+			descendant.CanCollide = descendant ~= root
+				and descendant:FindFirstAncestorOfClass("Accessory") == nil
+		elseif
+			descendant:IsA("Motor6D")
+			and descendant.Part0
+			and descendant.Part1
+			and descendant.Part0:IsDescendantOf(character)
+			and descendant.Part1:IsDescendantOf(character)
+			and not isRootMotor(descendant, root)
+		then
+			table.insert(state.MotorStates, {
+				Motor = descendant,
+				Enabled = descendant.Enabled,
+			})
+			createRagdollJoint(state, folder, descendant)
+		end
+	end
+
+	humanoid.AutoRotate = false
+	humanoid.PlatformStand = true
+	pcall(function()
+		humanoid:ChangeState(Enum.HumanoidStateType.Physics)
+	end)
+	return true
+end
+
+local function deactivateRagdoll(state)
+	local character = state.Character
+	if character then
+		character:SetAttribute("IsDownedRagdoll", nil)
+	end
+
+	for _, motorState in ipairs(state.MotorStates or {}) do
+		local motor = motorState.Motor
+		if motor and motor.Parent then
+			motor.Enabled = motorState.Enabled
+		end
+	end
+	if state.RagdollFolder and state.RagdollFolder.Parent then
+		state.RagdollFolder:Destroy()
+	end
+	for _, instance in ipairs(state.RagdollInstances or {}) do
+		if instance.Parent then
+			instance:Destroy()
+		end
+	end
+	for _, partState in ipairs(state.PartStates or {}) do
+		local part = partState.Part
+		if part and part.Parent then
+			part.Anchored = partState.Anchored
+			part.CanCollide = partState.CanCollide
+		end
+	end
+
+	state.RagdollFolder = nil
+	state.RagdollInstances = nil
+	state.MotorStates = nil
+	state.PartStates = nil
+end
+
 local function restoreMovement(player, state)
 	local character = state.Character
 	local humanoid = state.Humanoid
@@ -91,7 +232,6 @@ local function finishDowned(player, state, cause)
 		if state.Root and state.Root.Parent then
 			state.Root.Anchored = state.RootAnchored
 		end
-		humanoid.PlatformStand = false
 		humanoid.Health = 0
 	end
 	if event and player.Parent == Players then
@@ -129,8 +269,12 @@ local function revive(rescuer, target, state)
 	end
 
 	clearState(target, state)
+	deactivateRagdoll(state)
 	restoreMovement(target, state)
 	state.Humanoid.Health = math.max(1, state.Humanoid.MaxHealth * REVIVE_HEALTH_RATIO)
+	pcall(function()
+		state.Humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+	end)
 	target:SetAttribute("RescueWeakUntil", serverTime() + RESCUE_WEAKNESS_SECONDS)
 	local forceField = Instance.new("ForceField")
 	forceField.Name = "RescueProtection"
@@ -199,8 +343,9 @@ function DownedService.TryInterceptFatal(player, humanoid, damage, source)
 	humanoid.JumpHeight = 0
 	humanoid.AutoRotate = false
 	humanoid.PlatformStand = true
-	root.Anchored = true
+	root.Anchored = false
 	humanoid:Move(Vector3.zero)
+	activateRagdoll(state)
 
 	local prompt = Instance.new("ProximityPrompt")
 	prompt.Name = "ReviveAllyPrompt"

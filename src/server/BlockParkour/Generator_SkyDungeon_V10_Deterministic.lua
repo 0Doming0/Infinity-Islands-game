@@ -1518,6 +1518,9 @@ function Generator.Generate(parent, options)
 		end
 		local islandModel = createIsland(terrainFolder, island, roundIndex, previousCenter, grassTemplates)
 		applyWorldContextAttributes(islandModel, options, roundIndex)
+		if options.GenerationOwnerUserId then
+			islandModel:SetAttribute("GenerationOwnerUserId", options.GenerationOwnerUserId)
+		end
 		logicalTerrainCells += #island.Cells
 	end
 	model:SetAttribute("RouteBlockCount", routeBlockCount)
@@ -1539,6 +1542,7 @@ function Generator.Generate(parent, options)
 			ChunkIndex = chunkIndex,
 			RoundIndex = roundIndex,
 			RoundSeed = actualSeed,
+			GenerationOwnerUserId = options.GenerationOwnerUserId,
 		})
 	end
 	model:SetAttribute("IslandsClassified", true)
@@ -1760,6 +1764,7 @@ function Generator.CreateFrontierNode(parent, spec, options)
 	model:SetAttribute("VisualContentDeferred", options.DeferVisualContent == true)
 	model:SetAttribute("VisualContentPopulated", options.DeferVisualContent ~= true)
 	model:SetAttribute("GeometryReused", options.RecycledModel ~= nil)
+	model:SetAttribute("GenerationOwnerUserId", options.GenerationOwnerUserId)
 
 	terrainFolder.Name = "TerrainAreas"
 	local islandModel = createIsland(terrainFolder, island, roundIndex, spec.Center, getGrassTemplates(), {
@@ -1773,10 +1778,12 @@ function Generator.CreateFrontierNode(parent, spec, options)
 	islandModel:SetAttribute("IsSanctuary", spec.IsSanctuary == true)
 	islandModel:SetAttribute("IsSocialSanctuary", spec.IsSanctuary == true)
 	islandModel:SetAttribute("SimulationActive", false)
+	islandModel:SetAttribute("GenerationOwnerUserId", options.GenerationOwnerUserId)
 	IslandTypeService.Classify(islandModel, {
 		ChunkIndex = options.NodeSerial or roundIndex,
 		RoundIndex = roundIndex,
 		RoundSeed = spec.Seed,
+		GenerationOwnerUserId = options.GenerationOwnerUserId,
 	})
 	if spec.IsSanctuary then
 		styleFrontierSanctuary(islandModel)

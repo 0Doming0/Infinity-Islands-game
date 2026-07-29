@@ -361,30 +361,42 @@ end
 
 local function grantPurchase(player)
 	local state = pending[player]
-	if not state or state.Refunded then
+	if state and state.Refunded then
 		return true
 	end
-	state.Refunded = true
-	if state.LostCoins > 0 then
-		ScoreService.RefundCoins(player, state.LostCoins, "RobuxReviveRefund")
-		task.spawn(PlayerDataService.Save, player, false)
+	local persistedLostCoins, persistedSerial =
+		PlayerDataService.GetPendingRevivePurchase(player)
+	local lostCoins = state and state.LostCoins or persistedLostCoins
+	local serial = state and state.Serial or persistedSerial
+	if lostCoins > 0 then
+		local refunded = ScoreService.RefundCoins(
+			player,
+			lostCoins,
+			"RobuxReviveRefund"
+		)
+		if not refunded then
+			return false
+		end
+	end
+	PlayerDataService.ClearPendingRevivePurchase(player)
+	if state then
+		state.Refunded = true
 	end
 	player:SetAttribute("PendingReviveCoinRefund", 0)
 	player:SetAttribute("ReviveGrantedSerial", (player:GetAttribute("ReviveGrantedSerial") or 0) + 1)
 	deathEvent:FireClient(player, {
 		Action = "Granted",
-		CoinsRefunded = state.LostCoins,
+		Serial = serial,
+		CoinsRefunded = lostCoins,
 	})
-	loadCharacterIfDead(player, state)
+	if state then
+		loadCharacterIfDead(player, state)
+	end
 	return true
 end
 
 local function processRevivePurchase(player)
-	if not pending[player] then
-		return false
-	end
-	grantPurchase(player)
-	return true
+	return grantPurchase(player)
 end
 
 function DeathReviveService.Start()
@@ -548,6 +560,18 @@ function DeathReviveService.Start()
 				deathEvent:FireClient(player, {
 					Action = "Error",
 					Message = "Configure o Developer Product de renascimento.",
+				})
+				return
+			end
+			PlayerDataService.Load(player)
+			if not PlayerDataService.SetPendingRevivePurchase(
+				player,
+				state.LostCoins,
+				state.Serial
+			) or not PlayerDataService.Save(player, true) then
+				deathEvent:FireClient(player, {
+					Action = "Error",
+					Message = "Não foi possível preparar a compra com segurança. Tente novamente.",
 				})
 				return
 			end

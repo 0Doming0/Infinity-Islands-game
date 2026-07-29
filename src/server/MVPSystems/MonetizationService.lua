@@ -10,6 +10,8 @@ local RunService = game:GetService("RunService")
 
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 local MonetizationCatalog = require(ReplicatedStorage:WaitForChild("MonetizationCatalog"))
+local RewardWheelCatalog = require(ReplicatedStorage:WaitForChild("RewardWheelCatalog"))
+local CompanionCatalog = require(ReplicatedStorage:WaitForChild("CompanionCatalog"))
 local PlayerDataService = require(
 	script.Parent.Parent.BlockParkour:WaitForChild("PlayerDataService_SkyDungeon_V10")
 )
@@ -17,12 +19,12 @@ local ScoreService = require(script.Parent.Parent.BlockParkour:WaitForChild("Sco
 local RewardWheelService = require(script.Parent:WaitForChild("RewardWheelService"))
 local DeveloperProductService = require(script.Parent:WaitForChild("DeveloperProductService"))
 local MarketingOfferService = require(script.Parent:WaitForChild("MarketingOfferService"))
+local MonetizationAssetService = require(script.Parent:WaitForChild("MonetizationAssetService"))
 
 local MonetizationService = {}
 local started = false
 local event
 local request
-local random = Random.new()
 local policies = setmetatable({}, { __mode = "k" })
 local passOwnership = setmetatable({}, { __mode = "k" })
 local flightStates = setmetatable({}, { __mode = "k" })
@@ -32,6 +34,11 @@ local WING_PRIORITY = table.freeze({
 	"CelestialWings",
 	"RoyalWings",
 	"AzureWings",
+})
+local WING_RANK = table.freeze({
+	AzureWings = 1,
+	RoyalWings = 2,
+	CelestialWings = 3,
 })
 
 local function ensureRemote(className, name)
@@ -49,7 +56,9 @@ local function ensureRemote(className, name)
 end
 
 local function configured(definition)
-	return definition and MonetizationCatalog.GetConfiguredAssetId(definition) > 0
+	return definition
+		and definition.Enabled ~= false
+		and MonetizationCatalog.GetConfiguredAssetId(definition) > 0
 end
 
 local function policyFor(player)
@@ -93,8 +102,16 @@ local function ownsPass(player, definition)
 		player.UserId,
 		definition.PassId
 	)
-	cache[definition.Id] = success and owns == true
-	return cache[definition.Id]
+	if success then
+		cache[definition.Id] = owns == true
+		return cache[definition.Id]
+	end
+	warn(string.format(
+		"[MonetizationService] Nao foi possivel consultar o passe %s de %s.",
+		tostring(definition.Id),
+		player.Name
+	))
+	return false
 end
 
 local function bestWing(player)
@@ -110,24 +127,81 @@ local function bestWing(player)
 	return nil
 end
 
-local function clearWingVisual(character)
-	local existing = character and character:FindFirstChild("MonetizationWings")
-	if existing then
-		existing:Destroy()
+local function bestPermanentWingRank(player)
+	for _, productId in ipairs(WING_PRIORITY) do
+		local definition = MonetizationCatalog.Get(productId)
+		if ownsPass(player, definition) then
+			return WING_RANK[productId] or 0
+		end
 	end
+	return 0
+end
+
+local function purchaseBlockReason(player, definition)
+	if not definition then
+		return "Oferta invalida."
+	end
+	if definition.Id == "CompanionSlot" then
+		PlayerDataService.Load(player)
+		if player:GetAttribute("CompanionSlotPurchasePending") == true then
+			return "A compra deste slot ja esta aberta."
+		end
+		if
+			PlayerDataService.GetCompanionEquipSlots(player)
+			>= CompanionCatalog.MaxEquipped
+		then
+			return "Todos os slots de companheiro ja estao desbloqueados."
+		end
+	elseif definition.Id == "TemporaryWings" then
+		if bestPermanentWingRank(player) > 0 then
+			return "Voce ja possui asas permanentes."
+		end
+	elseif WING_RANK[definition.Id] then
+		local ownedRank = bestPermanentWingRank(player)
+		if ownedRank >= WING_RANK[definition.Id] then
+			return ownedRank == WING_RANK[definition.Id]
+				and "Voce ja possui estas asas."
+				or "Voce ja possui asas de nivel superior."
+		end
+	elseif definition.ProductType == "GamePass" and ownsPass(player, definition) then
+		return "Voce ja possui este beneficio."
+	end
+	return nil
+end
+
+local function clearWingVisual(character)
+	MonetizationAssetService.ClearSlot(character, "Wings")
 end
 
 local function addWingVisual(character, definition)
-	clearWingVisual(character)
 	local torso = character and (
 		character:FindFirstChild("UpperTorso")
 		or character:FindFirstChild("Torso")
 	)
 	if not torso or not torso:IsA("BasePart") or not definition or not definition.Wing then
-		return
+		return false
 	end
+	local customEquipped = definition.Asset
+		and MonetizationAssetService.Equip(
+			character,
+			definition,
+			"Wings"
+		)
+	if customEquipped then
+		character:SetAttribute("EquippedWingAssetName", definition.Asset.ModelName)
+		character:SetAttribute("WingVisualUsesFallback", false)
+		return true
+	end
+	local existing = MonetizationAssetService.GetEquipped(character, definition, "Wings")
+	if existing and existing:GetAttribute("MonetizationAssetFallback") == true then
+		character:SetAttribute("EquippedWingAssetName", definition.DisplayName)
+		character:SetAttribute("WingVisualUsesFallback", true)
+		return true
+	end
+	clearWingVisual(character)
 	local folder = Instance.new("Folder")
 	folder.Name = "MonetizationWings"
+	MonetizationAssetService.MarkFallback(folder, definition, "Wings")
 	folder.Parent = character
 	for side = -1, 1, 2 do
 		for feather = 1, 3 do
@@ -151,18 +225,113 @@ local function addWingVisual(character, definition)
 			weld.Parent = part
 		end
 	end
+	character:SetAttribute("EquippedWingAssetName", definition.DisplayName)
+	character:SetAttribute("WingVisualUsesFallback", true)
+	return true
+end
+
+local function clearCapeVisual(character)
+	MonetizationAssetService.ClearSlot(character, "Cape")
+	if character then
+		character:SetAttribute("EquippedCapeAssetName", nil)
+		character:SetAttribute("CapeVisualUsesFallback", nil)
+	end
+end
+
+local function addCapeVisual(character, definition)
+	if not character or not definition then
+		return false
+	end
+	local customEquipped = MonetizationAssetService.Equip(
+		character,
+		definition,
+		"Cape"
+	)
+	if customEquipped then
+		character:SetAttribute("EquippedCapeAssetName", definition.Asset.ModelName)
+		character:SetAttribute("CapeVisualUsesFallback", false)
+		return true
+	end
+	local existing = MonetizationAssetService.GetEquipped(character, definition, "Cape")
+	if existing and existing:GetAttribute("MonetizationAssetFallback") == true then
+		character:SetAttribute("EquippedCapeAssetName", definition.DisplayName)
+		character:SetAttribute("CapeVisualUsesFallback", true)
+		return true
+	end
+	local torso = character:FindFirstChild("UpperTorso")
+		or character:FindFirstChild("Torso")
+	if not torso or not torso:IsA("BasePart") then
+		return false
+	end
+	clearCapeVisual(character)
+	local cape = Instance.new("Part")
+	cape.Name = "MonetizationCape"
+	cape.Size = Vector3.new(2.4, 3.4, 0.12)
+	cape.Color = Color3.fromRGB(31, 27, 48)
+	cape.Material = Enum.Material.Fabric
+	cape.CanCollide = false
+	cape.CanTouch = false
+	cape.CanQuery = false
+	cape.Massless = true
+	cape.CFrame = torso.CFrame
+		* CFrame.new(0, -0.55, 0.72)
+		* CFrame.Angles(math.rad(8), 0, 0)
+	MonetizationAssetService.MarkFallback(cape, definition, "Cape")
+	cape.Parent = character
+	local weld = Instance.new("WeldConstraint")
+	weld.Name = "MonetizationAutoWeld"
+	weld.Part0 = torso
+	weld.Part1 = cape
+	weld.Parent = cape
+	character:SetAttribute("EquippedCapeAssetName", definition.DisplayName)
+	character:SetAttribute("CapeVisualUsesFallback", true)
+	return true
+end
+
+local function syncEquipment(player, visualWing)
+	local character = player.Character
+	if not character then
+		return
+	end
+	if visualWing then
+		addWingVisual(character, visualWing)
+	else
+		clearWingVisual(character)
+		character:SetAttribute("EquippedWingAssetName", nil)
+		character:SetAttribute("WingVisualUsesFallback", nil)
+	end
+	local cape = MonetizationCatalog.Get("InvisibilityCape")
+	if player:GetAttribute("OwnsInvisibilityCape") == true then
+		addCapeVisual(character, cape)
+	else
+		clearCapeVisual(character)
+	end
+	-- Se um entitlement for atualizado durante a invisibilidade, qualquer
+	-- equipamento recem-criado tambem entra no snapshot que sera restaurado.
+	if player:GetAttribute("InvisibleToEnemies") == true then
+		local original = capeOriginalTransparency[player] or {}
+		capeOriginalTransparency[player] = original
+		for _, descendant in ipairs(character:GetDescendants()) do
+			if (descendant:IsA("BasePart") or descendant:IsA("Decal"))
+				and original[descendant] == nil
+			then
+				original[descendant] = descendant.Transparency
+				descendant.Transparency = math.max(descendant.Transparency, 0.65)
+			end
+		end
+	end
 end
 
 local function publishEntitlements(player, message)
 	local wing = bestWing(player)
+	local activeFlight = flightStates[player]
+	local visualWing = activeFlight and activeFlight.Definition or wing
 	local cape = MonetizationCatalog.Get("InvisibilityCape")
 	local potion = MonetizationCatalog.Get("PermanentPotion")
 	player:SetAttribute("OwnedWingProductId", wing and wing.Id or nil)
 	player:SetAttribute("OwnsInvisibilityCape", ownsPass(player, cape))
 	player:SetAttribute("OwnsPermanentPotion", ownsPass(player, potion))
-	if player.Character and wing then
-		addWingVisual(player.Character, wing)
-	end
+	syncEquipment(player, visualWing)
 	if event then
 		event:FireClient(player, {
 			Action = "Entitlements",
@@ -191,15 +360,16 @@ local function applyPermanentPotion(player, character)
 end
 
 local function setupCharacter(player, character)
+	capeOriginalTransparency[player] = nil
 	player:SetAttribute("InvisibleToEnemies", false)
+	player:SetAttribute("CapeActiveUntil", nil)
+	player:SetAttribute("WingActive", false)
+	player:SetAttribute("WingActiveUntil", nil)
 	character:SetAttribute("InvisibleToEnemies", false)
 	task.defer(applyPermanentPotion, player, character)
 	task.delay(1, function()
 		if character.Parent and player.Parent == Players then
-			local wing = bestWing(player)
-			if wing then
-				addWingVisual(character, wing)
-			end
+			publishEntitlements(player)
 		end
 	end)
 end
@@ -223,16 +393,20 @@ local function storeEntry(player, definition, recommendation)
 		RecommendationReason = recommendation and recommendation.ProductId == definition.Id
 			and recommendation.Reason or nil,
 	}
+	local blockedReason = purchaseBlockReason(player, definition)
 	if definition.PaidRandomItem and not policyFor(player).PaidRandomItemsAllowed then
 		entry.Available = false
 		entry.UnavailableReason = "Indisponivel para esta conta ou regiao."
 	elseif definition.ProductType == "RewardedAd" and definition.Enabled ~= true then
 		entry.Available = false
 		entry.UnavailableReason = "Sera ativado quando a experiencia cumprir a elegibilidade de anuncios."
+	elseif blockedReason then
+		entry.Available = false
+		entry.UnavailableReason = blockedReason
 	else
 		entry.Available = entry.Configured
 	end
-	if definition.ProductType == "Coins" then
+	if definition.ProductType == "Coins" and not blockedReason then
 		entry.Available = true
 	end
 	return entry
@@ -244,7 +418,9 @@ function MonetizationService.GetStore(player)
 	for _, definition in ipairs(MonetizationCatalog.GetAll()) do
 		-- Renascimento possui seu proprio momento e nunca aparece como oferta
 		-- generica dentro da loja.
-		if definition.Id ~= "ReviveNoCoinLoss" then
+		if definition.Id ~= "ReviveNoCoinLoss"
+			and definition.Enabled ~= false
+		then
 			table.insert(entries, storeEntry(player, definition, recommendation))
 		end
 	end
@@ -287,7 +463,6 @@ local function grantBoost(player, productId, boostName)
 	end
 	setBoostAttribute(player, boostName, expiration)
 	MarketingOfferService.MarkPurchased(player, productId)
-	task.spawn(PlayerDataService.Save, player, false)
 	if event then
 		event:FireClient(player, {
 			Action = "PurchaseGranted",
@@ -298,31 +473,112 @@ local function grantBoost(player, productId, boostName)
 	return true
 end
 
-local function grantPaidSpin(player)
-	if not policyFor(player).PaidRandomItemsAllowed then
-		return false
-	end
+local function grantPaidSpin(player, purchaseSourceId)
+	-- A politica bloqueia o prompt antes da compra. Um recibo ja pago nunca
+	-- pode ficar preso caso a politica falhe ao carregar ou mude depois.
 	local success = RewardWheelService.Spin(player, "PaidSpin", {
 		Level = tonumber(player:GetAttribute("RunLevel")) or 1,
 		Paid = true,
+		DeferSave = true,
 	})
 	if success then
-		MarketingOfferService.MarkPurchased(player, "PaidWheelSpin")
+		MarketingOfferService.MarkPurchased(player, purchaseSourceId or "PaidWheelSpin")
 	end
 	return success == true
+end
+
+local function clearSpinAgainPurchase(player)
+	PlayerDataService.ClearPendingSpinAgainPurchase(player)
+	player:SetAttribute("SpinAgainPurchasePending", false)
+	player:SetAttribute("PendingSpinAgainSource", nil)
+end
+
+local function grantSpinAgain(player)
+	-- Assim como o giro pago comum, um recibo existente precisa ser entregue.
+	-- A restricao regional continua aplicada antes de abrir o Marketplace.
+	local sourceId, level = PlayerDataService.GetPendingSpinAgainPurchase(player)
+	if not RewardWheelCatalog.IsSpinAgainSource(sourceId) then
+		return false
+	end
+	local success = RewardWheelService.Spin(player, sourceId, {
+		Level = level,
+		Paid = true,
+		DeferSave = true,
+		SpinAgain = true,
+	})
+	if not success then
+		return false
+	end
+	clearSpinAgainPurchase(player)
+	MarketingOfferService.MarkPurchased(player, "SpinAgain")
+	return true
 end
 
 local function registerDeveloperProducts()
 	local treasure = MonetizationCatalog.Get("TreasureExpedition")
 	local elite = MonetizationCatalog.Get("EliteExpedition")
 	local spin = MonetizationCatalog.Get("PaidWheelSpin")
+	local spinAgain = MonetizationCatalog.Get("SpinAgain")
 	DeveloperProductService.Register(treasure.ProductId, treasure.Id, function(player)
 		return grantBoost(player, treasure.Id, "Treasure")
 	end)
 	DeveloperProductService.Register(elite.ProductId, elite.Id, function(player)
 		return grantBoost(player, elite.Id, "Elite")
 	end)
-	DeveloperProductService.Register(spin.ProductId, spin.Id, grantPaidSpin)
+	DeveloperProductService.Register(spin.ProductId, spin.Id, function(player)
+		return grantPaidSpin(player, spin.Id)
+	end)
+	DeveloperProductService.Register(spinAgain.ProductId, spinAgain.Id, grantSpinAgain)
+end
+
+local function validateConfiguration()
+	local seen = {}
+	local configuredPaidProducts = 0
+	local errors = 0
+	for key, definition in pairs(MonetizationCatalog.Products) do
+		if definition.Enabled == false then
+			continue
+		end
+		if definition.ProductType == "DeveloperProduct"
+			or definition.ProductType == "GamePass"
+		then
+			local assetId = MonetizationCatalog.GetConfiguredAssetId(definition)
+			local identity = definition.ProductType .. ":" .. tostring(assetId)
+			if assetId <= 0 then
+				errors += 1
+				warn(string.format(
+					"[MonetizationService] %s esta ativo, mas nao possui ID.",
+					tostring(key)
+				))
+			elseif seen[identity] then
+				errors += 1
+				warn(string.format(
+					"[MonetizationService] ID duplicado entre %s e %s: %d.",
+					tostring(seen[identity]),
+					tostring(key),
+					assetId
+				))
+			else
+				seen[identity] = key
+				configuredPaidProducts += 1
+			end
+		end
+		if definition.Asset
+			and (
+				type(definition.Asset.ModelName) ~= "string"
+				or definition.Asset.ModelName == ""
+			)
+		then
+			errors += 1
+			warn(string.format(
+				"[MonetizationService] %s possui Asset sem ModelName.",
+				tostring(key)
+			))
+		end
+	end
+	workspace:SetAttribute("ConfiguredPaidProductCount", configuredPaidProducts)
+	workspace:SetAttribute("MonetizationConfigurationReady", errors == 0)
+	return errors == 0
 end
 
 local function isSkyMerchantOpen(player)
@@ -333,7 +589,10 @@ end
 
 local function promptPurchase(player, productId)
 	local definition = MonetizationCatalog.Get(productId)
-	if not definition or productId == "ReviveNoCoinLoss" then
+	if not definition
+		or definition.Enabled == false
+		or productId == "ReviveNoCoinLoss"
+	then
 		return false, "Oferta invalida."
 	end
 	if not isSkyMerchantOpen(player) then
@@ -342,6 +601,10 @@ local function promptPurchase(player, productId)
 	if definition.PaidRandomItem and not policyFor(player).PaidRandomItemsAllowed then
 		return false, "Esta roleta nao esta disponivel para sua conta ou regiao."
 	end
+	local blockedReason = purchaseBlockReason(player, definition)
+	if blockedReason then
+		return false, blockedReason
+	end
 	if definition.ProductType == "Coins" then
 		MarketingOfferService.RecordProductPrompt(player, productId)
 		return purchaseTemporaryWings(player)
@@ -349,17 +612,104 @@ local function promptPurchase(player, productId)
 		return false, "Configure o ID deste produto no MonetizationCatalog."
 	elseif definition.ProductType == "DeveloperProduct" then
 		MarketingOfferService.RecordProductPrompt(player, productId)
-		MarketplaceService:PromptProductPurchase(player, definition.ProductId)
+		if definition.Id == "CompanionSlot" then
+			player:SetAttribute("CompanionSlotPurchasePending", true)
+			player:SetAttribute(
+				"CompanionSlotPurchaseTarget",
+				PlayerDataService.GetCompanionEquipSlots(player) + 1
+			)
+		end
+		local prompted = pcall(
+			MarketplaceService.PromptProductPurchase,
+			MarketplaceService,
+			player,
+			definition.ProductId
+		)
+		if not prompted then
+			if definition.Id == "CompanionSlot" then
+				player:SetAttribute("CompanionSlotPurchasePending", false)
+				player:SetAttribute("CompanionSlotPurchaseTarget", nil)
+			end
+			return false, "Nao foi possivel abrir a compra."
+		end
 		return true, "Compra aberta."
 	elseif definition.ProductType == "GamePass" then
-		if ownsPass(player, definition) then
-			return false, "Voce ja possui este beneficio."
-		end
 		MarketingOfferService.RecordProductPrompt(player, productId)
-		MarketplaceService:PromptGamePassPurchase(player, definition.PassId)
+		local prompted = pcall(
+			MarketplaceService.PromptGamePassPurchase,
+			MarketplaceService,
+			player,
+			definition.PassId
+		)
+		if not prompted then
+			return false, "Nao foi possivel abrir a compra."
+		end
 		return true, "Compra aberta."
 	end
 	return false, "Oferta indisponivel."
+end
+
+local function promptSpinAgain(player)
+	local definition = MonetizationCatalog.Get("SpinAgain")
+	if not definition or not configured(definition) then
+		return false, "Configure o produto Spin Again."
+	end
+	if not policyFor(player).PaidRandomItemsAllowed then
+		return false, "Esta roleta nao esta disponivel para sua conta ou regiao."
+	end
+	if player:GetAttribute("SpinAgainPurchasePending") == true then
+		return false, "A compra para girar novamente ja esta aberta."
+	end
+	local offerUntil = tonumber(player:GetAttribute("SpinAgainOfferUntil")) or 0
+	if workspace:GetServerTimeNow() > offerUntil then
+		return false, "A oferta para girar novamente expirou."
+	end
+	local sourceId = player:GetAttribute("SpinAgainOfferSource")
+	local offerSerial = tonumber(player:GetAttribute("SpinAgainOfferSerial")) or 0
+	local lastSpinSerial = tonumber(player:GetAttribute("LastRewardWheelSerial")) or 0
+	if
+		not RewardWheelCatalog.IsSpinAgainSource(sourceId)
+		or offerSerial <= 0
+		or offerSerial ~= lastSpinSerial
+	then
+		return false, "Girar novamente esta disponivel apenas para roletas de Elite e Bau Raro."
+	end
+	PlayerDataService.Load(player)
+	local level = math.max(
+		1,
+		math.floor(tonumber(player:GetAttribute("SpinAgainOfferLevel")) or 1)
+	)
+	player:SetAttribute("SpinAgainPurchasePending", true)
+	player:SetAttribute("PendingSpinAgainSource", sourceId)
+	if
+		not PlayerDataService.SetPendingSpinAgainPurchase(player, sourceId, level)
+		or not PlayerDataService.Save(player, true)
+	then
+		clearSpinAgainPurchase(player)
+		return false, "Nao foi possivel preparar esta compra. Tente novamente."
+	end
+	player:SetAttribute("SpinAgainOfferSource", nil)
+	player:SetAttribute("SpinAgainOfferLevel", nil)
+	player:SetAttribute("SpinAgainOfferSerial", nil)
+	player:SetAttribute("SpinAgainOfferUntil", nil)
+	local prompted = pcall(
+		MarketplaceService.PromptProductPurchase,
+		MarketplaceService,
+		player,
+		definition.ProductId
+	)
+	if not prompted then
+		clearSpinAgainPurchase(player)
+		task.spawn(PlayerDataService.Save, player, true)
+		if workspace:GetServerTimeNow() <= offerUntil then
+			player:SetAttribute("SpinAgainOfferSource", sourceId)
+			player:SetAttribute("SpinAgainOfferLevel", level)
+			player:SetAttribute("SpinAgainOfferSerial", offerSerial)
+			player:SetAttribute("SpinAgainOfferUntil", offerUntil)
+		end
+		return false, "Nao foi possivel abrir a compra."
+	end
+	return true, "Compra aberta."
 end
 
 local function restoreCape(player)
@@ -374,9 +724,23 @@ local function restoreCape(player)
 		end
 	end
 	player:SetAttribute("InvisibleToEnemies", false)
+	player:SetAttribute("CapeActiveUntil", nil)
 	if character then
 		character:SetAttribute("InvisibleToEnemies", false)
 	end
+end
+
+function MonetizationService.CancelCape(player, reason)
+	if not player or player:GetAttribute("InvisibleToEnemies") ~= true then
+		return false
+	end
+	restoreCape(player)
+	player:SetAttribute("LastCapeCancelReason", tostring(reason or "Cancelled"))
+	player:SetAttribute(
+		"LastCapeCancelSerial",
+		(tonumber(player:GetAttribute("LastCapeCancelSerial")) or 0) + 1
+	)
+	return true
 end
 
 local function activateCape(player)
@@ -390,7 +754,13 @@ local function activateCape(player)
 	end
 	local character = player.Character
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-	if not character or not humanoid or humanoid.Health <= 0 or player:GetAttribute("IsDowned") == true then
+	if not character
+		or not humanoid
+		or humanoid.Health <= 0
+		or player:GetAttribute("IsDowned") == true
+		or player:GetAttribute("WaterContacting") == true
+		or player:GetAttribute("ShopOpen") == true
+	then
 		return false, "A capa nao pode ser usada agora."
 	end
 	local original = {}
@@ -402,6 +772,7 @@ local function activateCape(player)
 	end
 	capeOriginalTransparency[player] = original
 	player:SetAttribute("InvisibleToEnemies", true)
+	player:SetAttribute("CapeActiveUntil", timestamp + definition.DurationSeconds)
 	character:SetAttribute("InvisibleToEnemies", true)
 	player:SetAttribute("CapeReadyAt", timestamp + definition.CooldownSeconds)
 	task.delay(definition.DurationSeconds, function()
@@ -424,7 +795,12 @@ local function activateWing(player)
 	local character = player.Character
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 	local root = character and character:FindFirstChild("HumanoidRootPart")
-	if not humanoid or humanoid.Health <= 0 or not root or player:GetAttribute("IsDowned") == true then
+	if not humanoid
+		or humanoid.Health <= 0
+		or not root
+		or player:GetAttribute("IsDowned") == true
+		or player:GetAttribute("WaterContacting") == true
+	then
 		return false, "As asas nao podem ser usadas agora."
 	end
 	if definition.Id == "TemporaryWings" then
@@ -440,16 +816,16 @@ local function activateWing(player)
 		Speed = definition.Wing.HorizontalSpeed,
 		Root = root,
 		Humanoid = humanoid,
+		Definition = definition,
 	}
 	player:SetAttribute("WingActive", true)
+	player:SetAttribute("WingActiveUntil", flightStates[player].EndsAt)
 	player:SetAttribute("WingReadyAt", timestamp + definition.Wing.CooldownSeconds)
 	publishEntitlements(player)
 	return true, "Voo ativado."
 end
 
-local function updateWorldBoosts()
-	local treasureMultiplier = 1
-	local eliteMultiplier = 1
+local function updateBoostStates()
 	local unixNow = os.time()
 	for _, player in ipairs(Players:GetPlayers()) do
 		local treasureUntil = tonumber(player:GetAttribute("TreasureBoostUntil")) or 0
@@ -458,21 +834,7 @@ local function updateWorldBoosts()
 		local eliteActive = eliteUntil > unixNow
 		player:SetAttribute("TreasureBoostActive", treasureActive)
 		player:SetAttribute("EliteBoostActive", eliteActive)
-		if treasureActive then
-			treasureMultiplier = math.max(
-				treasureMultiplier,
-				MonetizationCatalog.Get("TreasureExpedition").ChanceMultiplier
-			)
-		end
-		if eliteActive then
-			eliteMultiplier = math.max(
-				eliteMultiplier,
-				MonetizationCatalog.Get("EliteExpedition").ChanceMultiplier
-			)
-		end
 	end
-	workspace:SetAttribute("TreasureMonetizationChanceMultiplier", treasureMultiplier)
-	workspace:SetAttribute("EliteMonetizationChanceMultiplier", eliteMultiplier)
 end
 
 function MonetizationService.RecordSignal(player, signalName, amount)
@@ -481,17 +843,7 @@ end
 
 function MonetizationService.RecordEliteDefeat(player)
 	MarketingOfferService.Record(player, "EliteDefeated", 1)
-	if player:GetAttribute("EliteBoostActive") ~= true then
-		return false
-	end
-	local chance = MonetizationCatalog.Get("EliteExpedition").BonusRewardChance
-	if random:NextNumber() > chance then
-		return false
-	end
-	return RewardWheelService.Spin(player, "RareChest", {
-		Level = tonumber(player:GetAttribute("RunLevel")) or 1,
-		EliteBonus = true,
-	})
+	return player:GetAttribute("EliteBoostActive") == true
 end
 
 function MonetizationService.Start()
@@ -506,6 +858,8 @@ function MonetizationService.Start()
 	DeveloperProductService.Start()
 	RewardWheelService.Start()
 	ScoreService.Start()
+	MonetizationAssetService.EnsureAssetFolder()
+	validateConfiguration()
 	registerDeveloperProducts()
 
 	request.OnServerInvoke = function(player, action, productId)
@@ -518,14 +872,19 @@ function MonetizationService.Start()
 			MarketingOfferService.RecordStoreOpened(player)
 			return MonetizationService.GetStore(player)
 		elseif action == "GetEntitlements" then
+			local wing = bestWing(player)
 			return {
-				WingProductId = (bestWing(player) and bestWing(player).Id) or nil,
+				WingProductId = wing and wing.Id or nil,
 				TemporaryWingUses = tonumber(player:GetAttribute("TemporaryWingUses")) or 0,
 				OwnsCape = ownsPass(player, MonetizationCatalog.Get("InvisibilityCape")),
+				OwnsPermanentPotion = ownsPass(player, MonetizationCatalog.Get("PermanentPotion")),
 			}
 		elseif action == "Prompt" and type(productId) == "string" then
 			local success, message = promptPurchase(player, productId)
 			return { Success = success, Message = message, Store = MonetizationService.GetStore(player) }
+		elseif action == "PromptSpinAgain" then
+			local success, message = promptSpinAgain(player)
+			return { Success = success, Message = message }
 		elseif action == "DismissOffer" and type(productId) == "string" then
 			local success = MarketingOfferService.Dismiss(player, productId)
 			return { Success = success, Store = MonetizationService.GetStore(player) }
@@ -557,9 +916,36 @@ function MonetizationService.Start()
 		end
 	end)
 
+	MarketplaceService.PromptProductPurchaseFinished:Connect(function(
+		userId,
+		productId,
+		purchased
+	)
+		local spinAgain = MonetizationCatalog.Get("SpinAgain")
+		if not spinAgain or productId ~= spinAgain.ProductId or purchased then
+			return
+		end
+		local player = Players:GetPlayerByUserId(userId)
+		if player then
+			clearSpinAgainPurchase(player)
+			task.spawn(PlayerDataService.Save, player, true)
+		end
+	end)
+
 	local function setup(player)
 		task.spawn(function()
 			PlayerDataService.Load(player)
+			local pendingSpinSource =
+				PlayerDataService.GetPendingSpinAgainPurchase(player)
+			-- Uma janela do Marketplace nao sobrevive a desconexao. O contexto
+			-- persistente continua reservado para um recibo tardio, mas a nova
+			-- sessao nunca fica bloqueada como se o prompt ainda estivesse aberto.
+			player:SetAttribute("SpinAgainPurchasePending", false)
+			player:SetAttribute(
+				"PendingSpinAgainSource",
+				RewardWheelCatalog.IsSpinAgainSource(pendingSpinSource)
+					and pendingSpinSource or nil
+			)
 			loadPolicy(player)
 			local boosts = PlayerDataService.GetMonetizationState(player)
 			setBoostAttribute(player, "Treasure", boosts.TreasureBoostUntil)
@@ -582,11 +968,26 @@ function MonetizationService.Start()
 		capeOriginalTransparency[player] = nil
 		passOwnership[player] = nil
 		policies[player] = nil
+		player:SetAttribute("SpinAgainPurchasePending", nil)
+		player:SetAttribute("PendingSpinAgainSource", nil)
 	end)
 
 	local boostElapsed = 0
 	RunService.Heartbeat:Connect(function(dt)
 		local timestamp = workspace:GetServerTimeNow()
+		for _, player in ipairs(Players:GetPlayers()) do
+			if player:GetAttribute("InvisibleToEnemies") == true
+				and (
+					player:GetAttribute("IsDowned") == true
+					or player:GetAttribute("WaterDamageActive") == true
+				)
+			then
+				MonetizationService.CancelCape(
+					player,
+					player:GetAttribute("IsDowned") == true and "Downed" or "Water"
+				)
+			end
+		end
 		for player, state in pairs(flightStates) do
 			if
 				player.Parent ~= Players
@@ -594,10 +995,14 @@ function MonetizationService.Start()
 				or not state.Root.Parent
 				or not state.Humanoid.Parent
 				or state.Humanoid.Health <= 0
+				or player:GetAttribute("IsDowned") == true
+				or player:GetAttribute("WaterContacting") == true
 			then
 				flightStates[player] = nil
 				if player.Parent == Players then
 					player:SetAttribute("WingActive", false)
+					player:SetAttribute("WingActiveUntil", nil)
+					publishEntitlements(player)
 				end
 			else
 				local direction = state.Humanoid.MoveDirection
@@ -614,10 +1019,10 @@ function MonetizationService.Start()
 		boostElapsed += dt
 		if boostElapsed >= 1 then
 			boostElapsed = 0
-			updateWorldBoosts()
+			updateBoostStates()
 		end
 	end)
-	updateWorldBoosts()
+	updateBoostStates()
 end
 
 return MonetizationService

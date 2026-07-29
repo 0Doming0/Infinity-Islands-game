@@ -13,6 +13,7 @@ local combatFolder = ReplicatedStorage:WaitForChild("SwordCombat")
 local Config = require(combatFolder:WaitForChild("CombatConfig"))
 local DamageService = require(script.Parent:WaitForChild("CombatDamageService"))
 local RelicService = require(script.Parent:WaitForChild("RelicService"))
+local MonetizationService = require(script.Parent:WaitForChild("MonetizationService"))
 RelicService.Start()
 
 -- Remove o canal da arquitetura antiga para impedir dois sistemas concorrentes.
@@ -579,6 +580,9 @@ local function attack(player, tool)
 	if now < state.NextAttackAt then
 		return
 	end
+	-- Atacar encerra a Shadow Cloak antes do golpe. A capa serve para
+	-- reposicionamento e fuga, nunca para acertar inimigos permanecendo oculto.
+	MonetizationService.CancelCape(player, "Attack")
 	if now - state.LastAttackAt > Config.ComboResetTime then
 		state.Combo = 1
 	else

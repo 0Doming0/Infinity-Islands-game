@@ -15,7 +15,9 @@ local AnimeOutline = require(ServerScriptService.MVPSystems:WaitForChild("AnimeO
 local ChestService = {}
 local RewardWheelService = require(script.Parent.Parent.MVPSystems:WaitForChild("RewardWheelService"))
 local MarketingOfferService = require(script.Parent.Parent.MVPSystems:WaitForChild("MarketingOfferService"))
+local MonetizationService = require(script.Parent.Parent.MVPSystems:WaitForChild("MonetizationService"))
 local active = setmetatable({}, { __mode = "k" })
+local warnedMissingRareChest = false
 
 local function ensureFolder(parent, name)
 	local folder = parent:FindFirstChild(name)
@@ -96,18 +98,39 @@ local function createMimicPrototype(folder)
 	return model
 end
 
+local function findChestModel(folder, modelName)
+	local direct = folder:FindFirstChild(modelName)
+	if direct and direct:IsA("Model") then
+		return direct
+	end
+	for _, descendant in ipairs(folder:GetDescendants()) do
+		if descendant:IsA("Model") and descendant.Name == modelName then
+			return descendant
+		end
+	end
+	return nil
+end
+
 local function getTemplates()
 	local assets = ensureFolder(ServerStorage, "MVPAssets")
 	local folder = ensureFolder(assets, "Chests")
-	local normal = folder:FindFirstChild("NormalChest")
-	local mimic = folder:FindFirstChild("MimicChest")
-	if not normal or not normal:IsA("Model") then
+	local normal = findChestModel(folder, "NormalChest")
+	local rare = findChestModel(folder, "RareChest")
+	local mimic = findChestModel(folder, "MimicChest")
+	if not normal then
 		normal = createNormalPrototype(folder)
 	end
-	if not mimic or not mimic:IsA("Model") then
+	if not rare and not warnedMissingRareChest then
+		warnedMissingRareChest = true
+		warn(
+			"[ChestService] Modelo RareChest nao encontrado entre os modelos em "
+				.. "ServerStorage/MVPAssets/Chests; usando NormalChest como fallback."
+		)
+	end
+	if not mimic then
 		mimic = createMimicPrototype(folder)
 	end
-	return normal, mimic
+	return normal, rare or normal, mimic
 end
 
 local function getRoot(model, mimic)
@@ -284,6 +307,9 @@ local function activateChest(chest, player)
 	end
 	local position = chestRoot.Position
 	active[chest] = nil
+	-- Abrir um bau e uma interacao de recompensa e encerra a invisibilidade,
+	-- evitando saquear areas perigosas sem se expor novamente aos inimigos.
+	MonetizationService.CancelCape(player, "Chest")
 
 	if not state.IsMimic then
 		MarketingOfferService.Record(player, "ChestOpened", 1)
@@ -359,10 +385,12 @@ local function spawnChest(
 	coinReward,
 	random,
 	normalTemplate,
+	rareTemplate,
 	mimicTemplate,
 	tier
 )
-	local chest = normalTemplate:Clone()
+	local chestTemplate = isRare and rareTemplate or normalTemplate
+	local chest = chestTemplate:Clone()
 
 	local root = getRoot(chest, false)
 	if not root then
@@ -374,6 +402,7 @@ local function spawnChest(
 	chest.Name = string.format("Chest_%02d", index)
 	chest:SetAttribute("IsTreasureChest", true)
 	chest:SetAttribute("IsRareChest", isRare)
+	chest:SetAttribute("SourceChestTemplate", chestTemplate.Name)
 	chest:SetAttribute("Opened", false)
 	chest.Parent = parent
 	AnimeOutline.Apply(chest)
@@ -448,7 +477,7 @@ function ChestService.PopulateIsland(island, freeCells, context)
 	if #selected == 0 then
 		return 0
 	end
-	local normalTemplate, mimicTemplate = getTemplates()
+	local normalTemplate, rareTemplate, mimicTemplate = getTemplates()
 	local points = Instance.new("Folder")
 	points.Name = "ChestSpawnPoints"
 	points.Parent = island
@@ -494,6 +523,7 @@ function ChestService.PopulateIsland(island, freeCells, context)
 			reward,
 			random,
 			normalTemplate,
+			rareTemplate,
 			mimicTemplate,
 			tier
 		) then

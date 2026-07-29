@@ -24,6 +24,7 @@ local DEFINITIONS = {
 		ImageId = "rbxassetid://103906439983985",
 		Effect = "Lightning",
 		ChainRadius = 18,
+		IndicatorDuration = 1.25,
 	},
 	FireRelic = {
 		RelicId = "FireRelic",
@@ -63,6 +64,7 @@ local DEFINITIONS = {
 		HitsToCharge = 3,
 		KnockbackMultiplier = 3,
 		ComboWindowSeconds = 4,
+		IndicatorDuration = 1.25,
 	},
 }
 

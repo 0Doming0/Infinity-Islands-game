@@ -7,8 +7,14 @@ Catalog.AnimationDuration = 3.6
 Catalog.WheelSlotCount = 10
 Catalog.MinimumFullRotations = 5
 Catalog.MaximumFullRotations = 7
+-- Todas as moedas concedidas pela roleta, inclusive compensacoes por repetidos.
+Catalog.CoinPayoutMultiplier = 0.40
 Catalog.DuplicateCompensationRatio = 0.10
 Catalog.MinimumDuplicateCompensation = 20
+Catalog.SpinAgainSources = table.freeze({
+	Boss = true,
+	RareChest = true,
+})
 
 Catalog.CategoryInfo = table.freeze({
 	Coins = table.freeze({
@@ -128,6 +134,10 @@ end
 
 function Catalog.GetCategoryInfo(category)
 	return Catalog.CategoryInfo[category]
+end
+
+function Catalog.IsSpinAgainSource(sourceId)
+	return Catalog.SpinAgainSources[sourceId] == true
 end
 
 return table.freeze(Catalog)

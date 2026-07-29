@@ -40,6 +40,10 @@ local function bindCharacter(player, character)
 	if not humanoid then
 		return
 	end
+	-- O estado inconsciente usa ragdoll antes da morte real. As juntas precisam
+	-- sobreviver caso o tempo de resgate termine e a vida finalmente chegue a zero.
+	humanoid.BreakJointsOnDeath = false
+	humanoid.RequiresNeck = false
 	local processed = false
 	humanoid.Died:Connect(function()
 		if processed then

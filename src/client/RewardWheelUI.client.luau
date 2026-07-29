@@ -2,11 +2,14 @@
 -- O servidor decide, concede e informa o slot vencedor. O cliente apenas anima.
 
 local Players = game:GetService("Players")
+local MarketplaceService = game:GetService("MarketplaceService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 
 local player = Players.LocalPlayer
 local event = ReplicatedStorage:WaitForChild("RewardWheelEvent")
+local monetizationRequest = ReplicatedStorage:WaitForChild("MonetizationRequest")
+local monetizationCatalog = require(ReplicatedStorage:WaitForChild("MonetizationCatalog"))
 local catalog = require(ReplicatedStorage:WaitForChild("RewardWheelCatalog"))
 
 local GOLD = Color3.fromRGB(255, 203, 67)
@@ -247,7 +250,7 @@ local resultStroke = addStroke(resultCard, GOLD, 1.5, 0.48)
 local resultLabel = Instance.new("TextLabel")
 resultLabel.Name = "Result"
 resultLabel.Position = UDim2.fromOffset(14, 13)
-resultLabel.Size = UDim2.new(1, -28, 0, 65)
+resultLabel.Size = UDim2.new(1, -28, 0, 53)
 resultLabel.BackgroundTransparency = 1
 resultLabel.Text = "Sorteando..."
 resultLabel.TextColor3 = TEXT
@@ -259,8 +262,8 @@ resultLabel.Parent = resultCard
 
 local detailLabel = Instance.new("TextLabel")
 detailLabel.Name = "Detail"
-detailLabel.Position = UDim2.fromOffset(16, 82)
-detailLabel.Size = UDim2.new(1, -32, 0, 54)
+detailLabel.Position = UDim2.fromOffset(16, 63)
+detailLabel.Size = UDim2.new(1, -32, 0, 35)
 detailLabel.BackgroundTransparency = 1
 detailLabel.Text = "O servidor está confirmando sua recompensa."
 detailLabel.TextColor3 = MUTED
@@ -270,6 +273,37 @@ detailLabel.TextWrapped = true
 detailLabel.ZIndex = 21
 detailLabel.Parent = resultCard
 
+local spinAgainButton = Instance.new("TextButton")
+spinAgainButton.Name = "SpinAgain"
+spinAgainButton.Position = UDim2.fromOffset(14, 105)
+spinAgainButton.Size = UDim2.new(0.58, -18, 0, 35)
+spinAgainButton.BackgroundColor3 = GOLD
+spinAgainButton.BorderSizePixel = 0
+spinAgainButton.Text = "GIRAR NOVAMENTE"
+spinAgainButton.TextColor3 = Color3.fromRGB(22, 16, 5)
+spinAgainButton.Font = Enum.Font.GothamBlack
+spinAgainButton.TextSize = 13
+spinAgainButton.Visible = false
+spinAgainButton.ZIndex = 22
+spinAgainButton.Parent = resultCard
+addCorner(spinAgainButton, 10)
+
+local continueButton = Instance.new("TextButton")
+continueButton.Name = "Continue"
+continueButton.AnchorPoint = Vector2.new(1, 0)
+continueButton.Position = UDim2.new(1, -14, 0, 105)
+continueButton.Size = UDim2.new(0.42, -10, 0, 35)
+continueButton.BackgroundColor3 = Color3.fromRGB(50, 61, 79)
+continueButton.BorderSizePixel = 0
+continueButton.Text = "CONTINUAR"
+continueButton.TextColor3 = TEXT
+continueButton.Font = Enum.Font.GothamBold
+continueButton.TextSize = 12
+continueButton.Visible = false
+continueButton.ZIndex = 22
+continueButton.Parent = resultCard
+addCorner(continueButton, 10)
+
 local rewardSound = Instance.new("Sound")
 rewardSound.Name = "RewardWheelWin"
 rewardSound.SoundId = "rbxasset://sounds/electronicpingshort.wav"
@@ -278,6 +312,34 @@ rewardSound.Parent = panel
 
 local queue = {}
 local processing = false
+local resultChoiceSerial = 0
+local purchasePending = false
+
+continueButton.Activated:Connect(function()
+	resultChoiceSerial += 1
+	gui.Enabled = false
+end)
+
+spinAgainButton.Activated:Connect(function()
+	if purchasePending then
+		return
+	end
+	purchasePending = true
+	spinAgainButton.Active = false
+	spinAgainButton.AutoButtonColor = false
+	local ok, response = pcall(monetizationRequest.InvokeServer, monetizationRequest, "PromptSpinAgain")
+	if not ok or type(response) ~= "table" or response.Success ~= true then
+		detailLabel.Text = type(response) == "table" and tostring(response.Message)
+			or "Nao foi possivel abrir a compra."
+		purchasePending = false
+		spinAgainButton.Active = true
+		spinAgainButton.AutoButtonColor = true
+		return
+	end
+	resultChoiceSerial += 1
+	gui.Enabled = false
+	purchasePending = false
+end)
 
 local function updateScale()
 	local camera = workspace.CurrentCamera
@@ -457,6 +519,8 @@ local function animateSpin(payload)
 	detailLabel.Text = "O prêmio já foi definido com segurança pelo servidor."
 	resultStroke.Transparency = 0.48
 	selectorGlow.BackgroundTransparency = 0.9
+	spinAgainButton.Visible = false
+	continueButton.Visible = false
 
 	local duration = math.clamp(tonumber(payload.Duration) or 3.6, 2.2, 6)
 	local fullRotations = math.clamp(math.floor(tonumber(payload.FullRotations) or 6), 3, 9)
@@ -501,8 +565,32 @@ local function animateSpin(payload)
 		{ Size = UDim2.fromOffset(SLOT_WIDTH + 10, SLOT_HEIGHT + 10), BackgroundTransparency = 0.82 }
 	):Play()
 
-	task.wait(2.7)
-	gui.Enabled = false
+	local spinAgain = monetizationCatalog.Get("SpinAgain")
+	local spinAgainId = spinAgain and math.max(0, math.floor(tonumber(spinAgain.ProductId) or 0)) or 0
+	local eligibleSource = catalog.IsSpinAgainSource(result.SourceId)
+	if payload.SpinAgainAvailable == true and eligibleSource and spinAgainId > 0 then
+		local priceText = ""
+		local infoSuccess, info = pcall(
+			MarketplaceService.GetProductInfo,
+			MarketplaceService,
+			spinAgainId,
+			Enum.InfoType.Product
+		)
+		if infoSuccess and type(info) == "table" and tonumber(info.PriceInRobux) then
+			priceText = string.format(" · %d ROBUX", info.PriceInRobux)
+		end
+		spinAgainButton.Text = "GIRAR NOVAMENTE" .. priceText
+		spinAgainButton.Visible = true
+	end
+	continueButton.Visible = true
+	local choiceSerial = resultChoiceSerial
+	local deadline = os.clock() + 15
+	while gui.Enabled and resultChoiceSerial == choiceSerial and os.clock() < deadline do
+		task.wait(0.1)
+	end
+	if resultChoiceSerial == choiceSerial then
+		gui.Enabled = false
+	end
 end
 
 local function processQueue()

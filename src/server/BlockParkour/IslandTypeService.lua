@@ -1,8 +1,10 @@
 -- Classifica apenas ilhas laterais ja geradas. Nao troca geometria e nunca
 -- transforma a rota principal, a vila ou os santuarios em desafios obrigatorios.
 
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
+local MonetizationCatalog = require(ReplicatedStorage:WaitForChild("MonetizationCatalog"))
 
 local IslandTypeService = {}
 local GRASS_FACE_NAME = "NormalBiomeGrassTopFace"
@@ -58,6 +60,23 @@ local function addLabel(island, floor, text, color)
 	stroke.Parent = label
 end
 
+local function personalMonetizationMultiplier(userId, boostName, productId)
+	local cleanUserId = math.floor(tonumber(userId) or 0)
+	if cleanUserId <= 0 then
+		return 1
+	end
+	local player = Players:GetPlayerByUserId(cleanUserId)
+	if not player then
+		return 1
+	end
+	local expiration = tonumber(player:GetAttribute(boostName .. "BoostUntil")) or 0
+	if expiration <= os.time() then
+		return 1
+	end
+	local definition = MonetizationCatalog.Get(productId)
+	return math.max(1, tonumber(definition and definition.ChanceMultiplier) or 1)
+end
+
 local function styleIsland(island, islandType, tier)
 	local floor = island:FindFirstChild("IslandFloor")
 	if not floor or not floor:IsA("BasePart") then
@@ -86,14 +105,23 @@ function IslandTypeService.Classify(island, context)
 	)
 	local baseRewardMultiplier = math.max(0.1, tonumber(island:GetAttribute("RouteRewardMultiplier")) or 1)
 	local specialChanceMultiplier = math.max(0, tonumber(island:GetAttribute("SpecialIslandChanceMultiplier")) or 1)
-	local treasureMonetizationMultiplier = math.max(
-		1,
-		tonumber(workspace:GetAttribute("TreasureMonetizationChanceMultiplier")) or 1
+	local generationOwnerUserId = tonumber(
+		context.GenerationOwnerUserId
+			or island:GetAttribute("GenerationOwnerUserId")
+	) or 0
+	local treasureMonetizationMultiplier = personalMonetizationMultiplier(
+		generationOwnerUserId,
+		"Treasure",
+		"TreasureExpedition"
 	)
-	local eliteMonetizationMultiplier = math.max(
-		1,
-		tonumber(workspace:GetAttribute("EliteMonetizationChanceMultiplier")) or 1
+	local eliteMonetizationMultiplier = personalMonetizationMultiplier(
+		generationOwnerUserId,
+		"Elite",
+		"EliteExpedition"
 	)
+	island:SetAttribute("GenerationOwnerUserId", generationOwnerUserId > 0 and generationOwnerUserId or nil)
+	island:SetAttribute("TreasureMonetizationChanceMultiplier", treasureMonetizationMultiplier)
+	island:SetAttribute("EliteMonetizationChanceMultiplier", eliteMonetizationMultiplier)
 	island:SetAttribute("IslandType", "Normal")
 	island:SetAttribute("DangerLevel", tier)
 	island:SetAttribute("RewardMultiplier", baseRewardMultiplier)

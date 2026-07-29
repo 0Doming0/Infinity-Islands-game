@@ -62,6 +62,31 @@ local spawnedByMarker = setmetatable({}, { __mode = "k" })
 
 local activePickups = {}
 
+local RUN_EFFECT_ATTRIBUTES = {
+	"RunSpeedBuffStacks",
+	"RunJumpBuffStacks",
+	"RunVitalityBuffStacks",
+	"ShieldBuffUntil",
+}
+
+local function clearRunEffects(player)
+	for _, attributeName in ipairs(RUN_EFFECT_ATTRIBUTES) do
+		player:SetAttribute(attributeName, nil)
+	end
+end
+
+local function setupPlayer(player)
+	clearRunEffects(player)
+	player.CharacterAdded:Connect(function()
+		clearRunEffects(player)
+	end)
+end
+
+Players.PlayerAdded:Connect(setupPlayer)
+for _, existingPlayer in ipairs(Players:GetPlayers()) do
+	setupPlayer(existingPlayer)
+end
+
 local function chooseItemType()
 	local totalWeight = 0
 	for _, itemType in ITEM_TYPES do
@@ -97,37 +122,73 @@ end
 
 local function applyItem(player, humanoid, character, itemType)
 	if itemType.Name == "Speed" then
+		local previousSpeed = humanoid.WalkSpeed
 		humanoid.WalkSpeed = math.min(
 			humanoid.WalkSpeed + CONFIG.SPEED_INCREASE,
 			CONFIG.MAX_WALK_SPEED
 		)
+		if humanoid.WalkSpeed > previousSpeed then
+			player:SetAttribute(
+				"RunSpeedBuffStacks",
+				(tonumber(player:GetAttribute("RunSpeedBuffStacks")) or 0) + 1
+			)
+		end
 	elseif itemType.Name == "Jump" then
 		if humanoid.UseJumpPower then
+			local previousJumpPower = humanoid.JumpPower
 			humanoid.JumpPower = math.min(
 				humanoid.JumpPower + CONFIG.JUMP_POWER_INCREASE,
 				CONFIG.MAX_JUMP_POWER
 			)
+			if humanoid.JumpPower > previousJumpPower then
+				player:SetAttribute(
+					"RunJumpBuffStacks",
+					(tonumber(player:GetAttribute("RunJumpBuffStacks")) or 0) + 1
+				)
+			end
 		else
+			local previousJumpHeight = humanoid.JumpHeight
 			humanoid.JumpHeight = math.min(
 				humanoid.JumpHeight + CONFIG.JUMP_HEIGHT_INCREASE,
 				CONFIG.MAX_JUMP_HEIGHT
 			)
+			if humanoid.JumpHeight > previousJumpHeight then
+				player:SetAttribute(
+					"RunJumpBuffStacks",
+					(tonumber(player:GetAttribute("RunJumpBuffStacks")) or 0) + 1
+				)
+			end
 		end
 	elseif itemType.Name == "Vitality" then
+		local previousMaxHealth = humanoid.MaxHealth
 		humanoid.MaxHealth = math.min(
 			humanoid.MaxHealth + CONFIG.MAX_HEALTH_INCREASE,
 			CONFIG.MAX_HEALTH_LIMIT
 		)
 		humanoid.Health = math.min(humanoid.MaxHealth, humanoid.Health + CONFIG.HEAL_AMOUNT)
+		if humanoid.MaxHealth > previousMaxHealth then
+			player:SetAttribute(
+				"RunVitalityBuffStacks",
+				(tonumber(player:GetAttribute("RunVitalityBuffStacks")) or 0) + 1
+			)
+		end
 	elseif itemType.Name == "Shield" then
+		local shieldUntil = workspace:GetServerTimeNow() + CONFIG.SHIELD_DURATION
 		local forceField = Instance.new("ForceField")
 		forceField.Name = "ProceduralItemShield"
 		forceField.Visible = true
 		forceField.Parent = character
+		player:SetAttribute("ShieldBuffUntil", shieldUntil)
 
 		task.delay(CONFIG.SHIELD_DURATION, function()
 			if forceField.Parent then
 				forceField:Destroy()
+			end
+			if
+				player.Parent == Players
+				and (tonumber(player:GetAttribute("ShieldBuffUntil")) or 0) <= workspace:GetServerTimeNow()
+			then
+				player:SetAttribute("ShieldBuffUntil", nil)
 			end
 		end)
 	end
