@@ -425,6 +425,7 @@ function RewardWheelService.Spin(player, sourceId, context)
 	event:FireClient(player, {
 		Action = "Spin",
 		Duration = RewardWheelCatalog.AnimationDuration,
+		UiMode = source.UiMode or "Modal",
 		Result = result,
 		SpinAgainAvailable = spinAgainAvailable,
 		WheelEntries = wheelEntries,

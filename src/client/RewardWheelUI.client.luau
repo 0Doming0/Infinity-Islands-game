@@ -5,6 +5,7 @@ local Players = game:GetService("Players")
 local MarketplaceService = game:GetService("MarketplaceService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
 local event = ReplicatedStorage:WaitForChild("RewardWheelEvent")
@@ -26,7 +27,32 @@ local VIEWPORT_HEIGHT = 430
 local SLOT_WIDTH = 382
 local SLOT_HEIGHT = 142
 local SLOT_GAP = 12
-local SLOT_STRIDE = SLOT_HEIGHT + SLOT_GAP
+local COMPACT_UI_MODE = "CompactCorner"
+local COMPACT_SOURCE_IDS = table.freeze({
+	HeightLevel = true,
+	Height = true,
+	LevelUp = true,
+	RunLevel = true,
+})
+local COMPACT_PANEL_WIDTH = 246
+local COMPACT_PANEL_HEIGHT = 316
+local COMPACT_VIEWPORT_WIDTH = 216
+local COMPACT_VIEWPORT_HEIGHT = 160
+local COMPACT_SLOT_WIDTH = 196
+local COMPACT_SLOT_HEIGHT = 52
+local COMPACT_SLOT_GAP = 6
+local COMPACT_MARGIN = 16
+local COMPACT_TOUCH_RIGHT_MARGIN = 88
+local COMPACT_TOUCH_BOTTOM_MARGIN = 92
+local COMPACT_RESULT_HOLD_SECONDS = 2
+
+local layoutPanelWidth = PANEL_WIDTH
+local layoutPanelHeight = PANEL_HEIGHT
+local layoutViewportWidth = VIEWPORT_WIDTH
+local layoutViewportHeight = VIEWPORT_HEIGHT
+local layoutSlotWidth = SLOT_WIDTH
+local layoutSlotHeight = SLOT_HEIGHT
+local layoutSlotGap = SLOT_GAP
 
 local function addCorner(parent, radius)
 	local corner = Instance.new("UICorner")
@@ -65,6 +91,9 @@ shade.Size = UDim2.fromScale(1, 1)
 shade.BackgroundColor3 = Color3.fromRGB(2, 5, 10)
 shade.BackgroundTransparency = 0.3
 shade.BorderSizePixel = 0
+shade.Active = false
+shade.Selectable = false
+shade.ZIndex = 1
 shade.Parent = gui
 
 local panel = Instance.new("Frame")
@@ -75,7 +104,10 @@ panel.Size = UDim2.fromOffset(PANEL_WIDTH, PANEL_HEIGHT)
 panel.BackgroundColor3 = PANEL
 panel.BackgroundTransparency = 0.01
 panel.BorderSizePixel = 0
-panel.Parent = shade
+panel.Active = false
+panel.Selectable = false
+panel.ZIndex = 2
+panel.Parent = gui
 addCorner(panel, 25)
 addStroke(panel, GOLD, 2.5, 0.05)
 
@@ -314,6 +346,7 @@ local queue = {}
 local processing = false
 local resultChoiceSerial = 0
 local purchasePending = false
+local compactLayout = false
 
 continueButton.Activated:Connect(function()
 	resultChoiceSerial += 1
@@ -344,7 +377,119 @@ end)
 local function updateScale()
 	local camera = workspace.CurrentCamera
 	local viewport = camera and camera.ViewportSize or Vector2.new(1280, 720)
-	panelScale.Scale = math.min(1, (viewport.X - 20) / PANEL_WIDTH, (viewport.Y - 20) / PANEL_HEIGHT)
+	if compactLayout then
+		local rightMargin = if UserInputService.TouchEnabled then COMPACT_TOUCH_RIGHT_MARGIN else COMPACT_MARGIN
+		local bottomMargin = if UserInputService.TouchEnabled then COMPACT_TOUCH_BOTTOM_MARGIN else COMPACT_MARGIN
+		panel.Position = UDim2.new(1, -rightMargin, 1, -bottomMargin)
+		panelScale.Scale = math.min(
+			1,
+			(viewport.X - rightMargin - COMPACT_MARGIN) / layoutPanelWidth,
+			(viewport.Y - bottomMargin - COMPACT_MARGIN) / layoutPanelHeight
+		)
+	else
+		panelScale.Scale =
+			math.min(1, (viewport.X - 20) / layoutPanelWidth, (viewport.Y - 20) / layoutPanelHeight)
+	end
+end
+
+local function setLayout(isCompact)
+	compactLayout = isCompact
+	if compactLayout then
+		layoutPanelWidth = COMPACT_PANEL_WIDTH
+		layoutPanelHeight = COMPACT_PANEL_HEIGHT
+		layoutViewportWidth = COMPACT_VIEWPORT_WIDTH
+		layoutViewportHeight = COMPACT_VIEWPORT_HEIGHT
+		layoutSlotWidth = COMPACT_SLOT_WIDTH
+		layoutSlotHeight = COMPACT_SLOT_HEIGHT
+		layoutSlotGap = COMPACT_SLOT_GAP
+
+		shade.Visible = false
+		panel.AnchorPoint = Vector2.new(1, 1)
+		panel.Size = UDim2.fromOffset(layoutPanelWidth, layoutPanelHeight)
+		title.Text = "RECOMPENSA DE NÍVEL"
+		title.Position = UDim2.fromOffset(12, 5)
+		title.Size = UDim2.new(1, -24, 0, 21)
+		title.TextSize = 14
+		sourceLabel.Position = UDim2.fromOffset(12, 25)
+		sourceLabel.Size = UDim2.new(1, -24, 0, 15)
+		sourceLabel.TextSize = 10
+
+		reelShadow.Position = UDim2.new(0.5, 3, 0, 47)
+		reelShadow.Size = UDim2.fromOffset(layoutViewportWidth + 6, layoutViewportHeight + 6)
+		reelViewport.Position = UDim2.new(0.5, 0, 0, 44)
+		reelViewport.Size = UDim2.fromOffset(layoutViewportWidth, layoutViewportHeight)
+		selectorGlow.Size = UDim2.fromOffset(layoutSlotWidth + 8, layoutSlotHeight + 8)
+		leftPointer.Position = UDim2.new(0, 6, 0.5, 0)
+		leftPointer.Size = UDim2.fromOffset(20, 34)
+		leftPointer.TextSize = 17
+		rightPointer.Position = UDim2.new(1, -6, 0.5, 0)
+		rightPointer.Size = UDim2.fromOffset(20, 34)
+		rightPointer.TextSize = 17
+		topFade.Size = UDim2.new(1, 0, 0, 34)
+		bottomFade.Size = UDim2.new(1, 0, 0, 34)
+
+		resultCard.Position = UDim2.fromOffset(12, 214)
+		resultCard.Size = UDim2.new(1, -24, 0, 88)
+		resultLabel.Position = UDim2.fromOffset(9, 6)
+		resultLabel.Size = UDim2.new(1, -18, 0, 42)
+		resultLabel.TextSize = 13
+		detailLabel.Position = UDim2.fromOffset(9, 49)
+		detailLabel.Size = UDim2.new(1, -18, 0, 30)
+		detailLabel.TextSize = 10
+	else
+		layoutPanelWidth = PANEL_WIDTH
+		layoutPanelHeight = PANEL_HEIGHT
+		layoutViewportWidth = VIEWPORT_WIDTH
+		layoutViewportHeight = VIEWPORT_HEIGHT
+		layoutSlotWidth = SLOT_WIDTH
+		layoutSlotHeight = SLOT_HEIGHT
+		layoutSlotGap = SLOT_GAP
+
+		shade.Visible = true
+		shade.BackgroundTransparency = 0.3
+		panel.AnchorPoint = Vector2.new(0.5, 0.5)
+		panel.Position = UDim2.fromScale(0.5, 0.5)
+		panel.Size = UDim2.fromOffset(layoutPanelWidth, layoutPanelHeight)
+		title.Text = "ROLETA DE RECOMPENSAS"
+		title.Position = UDim2.fromOffset(20, 12)
+		title.Size = UDim2.new(1, -40, 0, 31)
+		title.TextSize = 22
+		sourceLabel.Position = UDim2.fromOffset(20, 43)
+		sourceLabel.Size = UDim2.new(1, -40, 0, 20)
+		sourceLabel.TextSize = 13
+
+		reelShadow.Position = UDim2.new(0.5, 4, 0, 78)
+		reelShadow.Size = UDim2.fromOffset(layoutViewportWidth + 8, layoutViewportHeight + 8)
+		reelViewport.Position = UDim2.new(0.5, 0, 0, 74)
+		reelViewport.Size = UDim2.fromOffset(layoutViewportWidth, layoutViewportHeight)
+		selectorGlow.Size = UDim2.fromOffset(layoutSlotWidth + 10, layoutSlotHeight + 10)
+		leftPointer.Position = UDim2.new(0, 9, 0.5, 0)
+		leftPointer.Size = UDim2.fromOffset(32, 52)
+		leftPointer.TextSize = 28
+		rightPointer.Position = UDim2.new(1, -9, 0.5, 0)
+		rightPointer.Size = UDim2.fromOffset(32, 52)
+		rightPointer.TextSize = 28
+		topFade.Size = UDim2.new(1, 0, 0, 86)
+		bottomFade.Size = UDim2.new(1, 0, 0, 86)
+
+		resultCard.Position = UDim2.fromOffset(20, 524)
+		resultCard.Size = UDim2.new(1, -40, 0, 153)
+		resultLabel.Position = UDim2.fromOffset(14, 13)
+		resultLabel.Size = UDim2.new(1, -28, 0, 53)
+		resultLabel.TextSize = 20
+		detailLabel.Position = UDim2.fromOffset(16, 63)
+		detailLabel.Size = UDim2.new(1, -32, 0, 35)
+		detailLabel.TextSize = 13
+	end
+	updateScale()
+end
+
+local function isCompactSpin(payload, result)
+	if payload.UiMode == COMPACT_UI_MODE then
+		return true
+	end
+	local sourceId = type(result) == "table" and tostring(result.SourceId or "") or ""
+	return COMPACT_SOURCE_IDS[sourceId] == true
 end
 
 local viewportConnection
@@ -390,11 +535,12 @@ local function fallbackEntries(result)
 end
 
 local function createSlot(globalIndex, entry)
+	local slotStride = layoutSlotHeight + layoutSlotGap
 	local slot = Instance.new("Frame")
 	slot.Name = string.format("Slot_%03d", globalIndex)
 	slot.AnchorPoint = Vector2.new(0.5, 0)
-	slot.Position = UDim2.fromOffset(VIEWPORT_WIDTH * 0.5, (globalIndex - 1) * SLOT_STRIDE)
-	slot.Size = UDim2.fromOffset(SLOT_WIDTH, SLOT_HEIGHT)
+	slot.Position = UDim2.fromOffset(layoutViewportWidth * 0.5, (globalIndex - 1) * slotStride)
+	slot.Size = UDim2.fromOffset(layoutSlotWidth, layoutSlotHeight)
 	slot.BackgroundColor3 = entry.Color or Color3.fromRGB(82, 91, 111)
 	slot.BackgroundTransparency = 0.05
 	slot.BorderSizePixel = 0
@@ -433,7 +579,7 @@ local function createSlot(globalIndex, entry)
 		icon.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
 		icon.TextStrokeTransparency = 0.55
 		icon.Font = Enum.Font.GothamBold
-		icon.TextSize = 72
+		icon.TextSize = if compactLayout then 38 else 72
 		icon.ZIndex = 5
 		icon.Parent = slot
 	end
@@ -442,7 +588,7 @@ local function createSlot(globalIndex, entry)
 	nameBand.Name = "NameBand"
 	nameBand.AnchorPoint = Vector2.new(0, 1)
 	nameBand.Position = UDim2.fromScale(0, 1)
-	nameBand.Size = UDim2.new(1, 0, 0, 43)
+	nameBand.Size = UDim2.new(1, 0, 0, if compactLayout then 25 else 43)
 	nameBand.BackgroundColor3 = Color3.fromRGB(4, 7, 12)
 	nameBand.BackgroundTransparency = 0.14
 	nameBand.BorderSizePixel = 0
@@ -451,15 +597,15 @@ local function createSlot(globalIndex, entry)
 
 	local name = Instance.new("TextLabel")
 	name.Name = "ItemName"
-	name.Position = UDim2.fromOffset(12, 0)
-	name.Size = UDim2.new(1, -24, 1, 0)
+	name.Position = UDim2.fromOffset(if compactLayout then 8 else 12, 0)
+	name.Size = UDim2.new(1, if compactLayout then -16 else -24, 1, 0)
 	name.BackgroundTransparency = 1
 	name.Text = tostring(entry.DisplayName or "Recompensa")
 	name.TextColor3 = TEXT
 	name.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
 	name.TextStrokeTransparency = 0.35
 	name.Font = Enum.Font.GothamBlack
-	name.TextSize = 17
+	name.TextSize = if compactLayout then 12 else 17
 	name.TextTruncate = Enum.TextTruncate.AtEnd
 	name.ZIndex = 8
 	name.Parent = nameBand
@@ -468,8 +614,9 @@ local function createSlot(globalIndex, entry)
 end
 
 local function centeredContentY(globalIndex)
-	local slotCenter = (globalIndex - 1) * SLOT_STRIDE + SLOT_HEIGHT * 0.5
-	return VIEWPORT_HEIGHT * 0.5 - slotCenter
+	local slotStride = layoutSlotHeight + layoutSlotGap
+	local slotCenter = (globalIndex - 1) * slotStride + layoutSlotHeight * 0.5
+	return layoutViewportHeight * 0.5 - slotCenter
 end
 
 local function populateReel(entries, winningSlot, fullRotations)
@@ -480,6 +627,7 @@ local function populateReel(entries, winningSlot, fullRotations)
 	local totalCycles = targetCycle + 2
 	local startIndex = startCycle * slotCount + winningSlot
 	local targetIndex = targetCycle * slotCount + winningSlot
+	local slotStride = layoutSlotHeight + layoutSlotGap
 	local targetCard
 	local targetStroke
 
@@ -494,7 +642,8 @@ local function populateReel(entries, winningSlot, fullRotations)
 		end
 	end
 
-	reelContent.Size = UDim2.fromOffset(VIEWPORT_WIDTH, (totalCycles + 1) * slotCount * SLOT_STRIDE)
+	reelContent.Size =
+		UDim2.fromOffset(layoutViewportWidth, (totalCycles + 1) * slotCount * slotStride)
 	reelContent.Position = UDim2.fromOffset(0, centeredContentY(startIndex))
 	return targetIndex, targetCard, targetStroke
 end
@@ -504,6 +653,7 @@ local function animateSpin(payload)
 	if type(result) ~= "table" then
 		return
 	end
+	setLayout(isCompactSpin(payload, result))
 
 	local entries = payload.WheelEntries
 	local winningSlot = math.floor(tonumber(payload.WinningSlot) or 0)
@@ -512,17 +662,23 @@ local function animateSpin(payload)
 	end
 
 	gui.Enabled = true
-	updateScale()
 	sourceLabel.Text = tostring(result.SourceName or "")
 	resultLabel.Text = "SORTEANDO..."
 	resultLabel.TextColor3 = TEXT
-	detailLabel.Text = "O prêmio já foi definido com segurança pelo servidor."
+	detailLabel.Text = if compactLayout
+		then "Prêmio definido pelo servidor."
+		else "O prêmio já foi definido com segurança pelo servidor."
 	resultStroke.Transparency = 0.48
 	selectorGlow.BackgroundTransparency = 0.9
 	spinAgainButton.Visible = false
+	spinAgainButton.Active = true
+	spinAgainButton.AutoButtonColor = true
 	continueButton.Visible = false
 
 	local duration = math.clamp(tonumber(payload.Duration) or 3.6, 2.2, 6)
+	if compactLayout then
+		duration = math.clamp(duration * 0.72, 1.8, 3)
+	end
 	local fullRotations = math.clamp(math.floor(tonumber(payload.FullRotations) or 6), 3, 9)
 	local targetIndex, winnerCard, winnerStroke = populateReel(entries, winningSlot, fullRotations)
 	local tween = TweenService:Create(
@@ -543,26 +699,43 @@ local function animateSpin(payload)
 	resultStroke.Color = result.Color or GOLD
 	resultStroke.Transparency = 0.08
 	if result.IsDuplicate then
-		detailLabel.Text = string.format(
-			"%s já estava na coleção e foi convertido em moedas.",
-			tostring(result.OriginalDisplayName or "O item")
-		)
+		detailLabel.Text = if compactLayout
+			then "Item repetido convertido em moedas."
+			else string.format(
+				"%s já estava na coleção e foi convertido em moedas.",
+				tostring(result.OriginalDisplayName or "O item")
+			)
 	else
-		detailLabel.Text = "Recompensa recebida e adicionada à sua conta."
+		detailLabel.Text = if compactLayout
+			then "Recebida e adicionada à sua conta."
+			else "Recompensa recebida e adicionada à sua conta."
 	end
 	rewardSound:Play()
 
+	local selectorPadding = if compactLayout then 8 else 10
 	local pulseOut = TweenService:Create(
 		selectorGlow,
 		TweenInfo.new(0.14, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
-		{ Size = UDim2.fromOffset(SLOT_WIDTH + 20, SLOT_HEIGHT + 20), BackgroundTransparency = 0.74 }
+		{
+			Size = UDim2.fromOffset(
+				layoutSlotWidth + selectorPadding + 10,
+				layoutSlotHeight + selectorPadding + 10
+			),
+			BackgroundTransparency = 0.74,
+		}
 	)
 	pulseOut:Play()
 	pulseOut.Completed:Wait()
 	TweenService:Create(
 		selectorGlow,
 		TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-		{ Size = UDim2.fromOffset(SLOT_WIDTH + 10, SLOT_HEIGHT + 10), BackgroundTransparency = 0.82 }
+		{
+			Size = UDim2.fromOffset(
+				layoutSlotWidth + selectorPadding,
+				layoutSlotHeight + selectorPadding
+			),
+			BackgroundTransparency = 0.82,
+		}
 	):Play()
 
 	local spinAgain = monetizationCatalog.Get("SpinAgain")
@@ -582,6 +755,12 @@ local function animateSpin(payload)
 		spinAgainButton.Text = "GIRAR NOVAMENTE" .. priceText
 		spinAgainButton.Visible = true
 	end
+	if compactLayout then
+		task.wait(COMPACT_RESULT_HOLD_SECONDS)
+		gui.Enabled = false
+		return
+	end
+
 	continueButton.Visible = true
 	local choiceSerial = resultChoiceSerial
 	local deadline = os.clock() + 15

@@ -42,6 +42,7 @@ Catalog.CategoryInfo = table.freeze({
 Catalog.Sources = table.freeze({
 	HeightLevel = table.freeze({
 		DisplayName = "Nível de altura",
+		UiMode = "CompactCorner",
 		CategoryWeights = table.freeze({
 			Coins = 84,
 			Relic = 7,
