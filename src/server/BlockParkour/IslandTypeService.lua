@@ -1,5 +1,6 @@
--- Classifica apenas ilhas laterais ja geradas. Nao troca geometria e nunca
--- transforma a rota principal, a vila ou os santuarios em desafios obrigatorios.
+-- Classifica ilhas ja geradas e reserva conteudo especial antes de o modelo ser
+-- publicado no Workspace. Nao troca geometria e nunca transforma santuarios
+-- em desafios obrigatorios.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -8,6 +9,7 @@ local MonetizationCatalog = require(ReplicatedStorage:WaitForChild("Monetization
 
 local IslandTypeService = {}
 local GRASS_FACE_NAME = "NormalBiomeGrassTopFace"
+local SOLO_MERCHANT_DECISION_VERSION = 1
 
 local function setGrassColor(floor, grass, color)
 	floor:SetAttribute("DistantGrassColor", color)
@@ -31,6 +33,44 @@ end
 local function normalizedSeed(value)
 	local seed = math.floor(math.abs(tonumber(value) or 1)) % 2147483647
 	return seed == 0 and 1 or seed
+end
+
+local function isSoloMerchantRole(role)
+	return role == "FrontierIsland"
+		or string.find(role, "SideRoom", 1, true) ~= nil
+end
+
+local function reserveSoloMerchant(island, context, roundIndex, role)
+	local minimumRound = math.max(
+		1,
+		math.floor(tonumber(MVPConfig.Village.SoloMerchantMinimumRound) or 2)
+	)
+	if roundIndex < minimumRound
+		or island:GetAttribute("IslandType") ~= "Normal"
+		or island:GetAttribute("IsSanctuary") == true
+		or island:GetAttribute("IsSocialSanctuary") == true
+		or not isSoloMerchantRole(role)
+	then
+		return false
+	end
+
+	local chance = math.clamp(tonumber(MVPConfig.Village.SoloMerchantChance) or 0, 0, 1)
+	local seed = normalizedSeed(
+		(island:GetAttribute("IslandSeed") or context.RoundSeed or 1)
+			+ MVPConfig.Village.RandomSalt
+	)
+	local roll = Random.new(seed):NextNumber()
+	local reserved = roll <= chance
+	island:SetAttribute("SoloMerchantRoll", roll)
+	island:SetAttribute("SoloMerchantChance", chance)
+	island:SetAttribute("SoloMerchantReserved", reserved)
+	if reserved then
+		-- A reserva acontece antes de baus, monstros e coletaveis serem adiados.
+		-- Assim a ordem dos workers nunca muda o resultado da ilha.
+		island:SetAttribute("CanSpawnMonster", false)
+		island:SetAttribute("CanSpawnItem", false)
+	end
+	return reserved
 end
 
 local function addLabel(island, floor, text, color)
@@ -123,6 +163,10 @@ function IslandTypeService.Classify(island, context)
 	island:SetAttribute("TreasureMonetizationChanceMultiplier", treasureMonetizationMultiplier)
 	island:SetAttribute("EliteMonetizationChanceMultiplier", eliteMonetizationMultiplier)
 	island:SetAttribute("IslandType", "Normal")
+	island:SetAttribute("SoloMerchantDecisionVersion", SOLO_MERCHANT_DECISION_VERSION)
+	island:SetAttribute("SoloMerchantReserved", false)
+	island:SetAttribute("SoloMerchantRoll", nil)
+	island:SetAttribute("SoloMerchantChance", nil)
 	island:SetAttribute("DangerLevel", tier)
 	island:SetAttribute("RewardMultiplier", baseRewardMultiplier)
 	if string.find(role, "Sanctuary", 1, true) then
@@ -168,6 +212,7 @@ function IslandTypeService.Classify(island, context)
 		styleIsland(island, "Elite", tier)
 		return "Elite"
 	end
+	reserveSoloMerchant(island, context, roundIndex, role)
 	return "Normal"
 end
 

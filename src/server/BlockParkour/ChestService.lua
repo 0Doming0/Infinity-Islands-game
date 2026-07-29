@@ -450,6 +450,10 @@ end
 function ChestService.PopulateIsland(island, freeCells, context)
 	context = context or {}
 	local yieldCallback = context.YieldCallback
+	if island:GetAttribute("SoloMerchantReserved") == true then
+		island:SetAttribute("ChestCount", 0)
+		return 0
+	end
 	if island:FindFirstChild("ChestSpawnPoints") then
 		return 0
 	end

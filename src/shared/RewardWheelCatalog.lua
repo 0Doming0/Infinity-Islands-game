@@ -3,6 +3,8 @@
 
 local Catalog = {}
 
+Catalog.UiProtocolVersion = 3
+Catalog.CompactUiMode = "CompactCorner"
 Catalog.AnimationDuration = 3.6
 Catalog.WheelSlotCount = 10
 Catalog.MinimumFullRotations = 5
@@ -42,7 +44,7 @@ Catalog.CategoryInfo = table.freeze({
 Catalog.Sources = table.freeze({
 	HeightLevel = table.freeze({
 		DisplayName = "Nível de altura",
-		UiMode = "CompactCorner",
+		UiMode = Catalog.CompactUiMode,
 		CategoryWeights = table.freeze({
 			Coins = 84,
 			Relic = 7,

@@ -286,14 +286,50 @@ local function shouldSpawnVillage(island, random)
 	return random:NextNumber() <= chance
 end
 
-local function shouldSpawnSoloMerchant(island, random)
+local function isSoloMerchantRole(role)
+	return role == "FrontierIsland"
+		or string.find(role, "SideRoom", 1, true) ~= nil
+end
+
+local function shouldSpawnSoloMerchant(island)
+	local reserved = island:GetAttribute("SoloMerchantReserved")
+	if reserved ~= nil then
+		return reserved == true
+	end
+
+	-- Compatibilidade para ilhas criadas por uma versao anterior do
+	-- IslandTypeService durante uma sessao de desenvolvimento no Studio.
 	local roundIndex = tonumber(island:GetAttribute("RoundIndex")) or 0
 	local role = tostring(island:GetAttribute("IslandRole") or "")
-	return island:GetAttribute("IslandType") == "Normal"
+	local minimumRound = math.max(
+		1,
+		math.floor(tonumber(VILLAGE_CONFIG.SoloMerchantMinimumRound) or 2)
+	)
+	local eligible = island:GetAttribute("IslandType") == "Normal"
 		and (tonumber(island:GetAttribute("ChestCount")) or 0) == 0
-		and roundIndex >= 2
-		and string.find(role, "SideRoom", 1, true) ~= nil
-		and random:NextNumber() <= VILLAGE_CONFIG.SoloMerchantChance
+		and island:GetAttribute("IsSanctuary") ~= true
+		and island:GetAttribute("IsSocialSanctuary") ~= true
+		and roundIndex >= minimumRound
+		and isSoloMerchantRole(role)
+	if not eligible then
+		island:SetAttribute("SoloMerchantReserved", false)
+		return false
+	end
+
+	local seed = (tonumber(island:GetAttribute("IslandSeed")) or 1) + VILLAGE_CONFIG.RandomSalt
+	seed = math.floor(math.abs(seed)) % 2147483647
+	local roll = Random.new(seed == 0 and 1 or seed):NextNumber()
+	local chance = math.clamp(tonumber(VILLAGE_CONFIG.SoloMerchantChance) or 0, 0, 1)
+	reserved = roll <= chance
+	island:SetAttribute("SoloMerchantDecisionVersion", 1)
+	island:SetAttribute("SoloMerchantRoll", roll)
+	island:SetAttribute("SoloMerchantChance", chance)
+	island:SetAttribute("SoloMerchantReserved", reserved)
+	if reserved then
+		island:SetAttribute("CanSpawnMonster", false)
+		island:SetAttribute("CanSpawnItem", false)
+	end
+	return reserved
 end
 
 local function removeRuntimeMonsters(island)
@@ -329,7 +365,7 @@ local function populateIsland(island)
 	-- os visuais mudam entre novas geracoes/sessoes.
 	local visualRandom = Random.new()
 	local createVillage = shouldSpawnVillage(island, random)
-	local createSoloMerchant = not createVillage and shouldSpawnSoloMerchant(island, random)
+	local createSoloMerchant = not createVillage and shouldSpawnSoloMerchant(island)
 	if not createVillage and not createSoloMerchant then
 		return
 	end
@@ -345,6 +381,7 @@ local function populateIsland(island)
 	local center = Vector3.new(floor.Position.X, surfaceY, floor.Position.Z)
 	local angle = random:NextNumber(0, math.pi * 2)
 	if createSoloMerchant then
+		clearVillageArea(island, { center })
 		local folder = Instance.new("Folder")
 		folder.Name = "MVPSoloMerchant"
 		folder:SetAttribute("ProceduralSoloMerchant", true)

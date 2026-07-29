@@ -947,6 +947,7 @@ function MonsterSpawner.PopulateIsland(island, freeCells, context)
 	end
 	if
 		island:GetAttribute("CanSpawnMonster") ~= true
+		or island:GetAttribute("SoloMerchantReserved") == true
 		or island:GetAttribute("HasBoss") == true
 		or island:FindFirstChild("MonsterSpawnPoints")
 		or monsterCount >= getSpawnLimit(eliteIsland)

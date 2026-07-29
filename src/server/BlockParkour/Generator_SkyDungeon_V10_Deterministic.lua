@@ -1058,7 +1058,10 @@ end
 
 local function populateIslandGrass(model, island, content, grassTemplates, yieldCallback)
 	model:SetAttribute("GrassSpawnCount", 0)
-	if not Config.ENABLE_GRASS_MODELS or #grassTemplates == 0 then
+	if model:GetAttribute("SoloMerchantReserved") == true
+		or not Config.ENABLE_GRASS_MODELS
+		or #grassTemplates == 0
+	then
 		return
 	end
 
@@ -1098,7 +1101,9 @@ local function decorateIsland(model, island, content, roundIndex, yieldCallback)
 	points.Name = "DecorationPoints"
 	points.Parent = model
 
-	if not Config.ENABLE_DECORATIONS then
+	if model:GetAttribute("SoloMerchantReserved") == true
+		or not Config.ENABLE_DECORATIONS
+	then
 		model:SetAttribute("DecorationSpawnCount", 0)
 		return
 	end

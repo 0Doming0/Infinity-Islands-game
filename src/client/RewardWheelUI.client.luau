@@ -8,10 +8,47 @@ local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
 local event = ReplicatedStorage:WaitForChild("RewardWheelEvent")
 local monetizationRequest = ReplicatedStorage:WaitForChild("MonetizationRequest")
 local monetizationCatalog = require(ReplicatedStorage:WaitForChild("MonetizationCatalog"))
 local catalog = require(ReplicatedStorage:WaitForChild("RewardWheelCatalog"))
+
+local UI_PROTOCOL_VERSION = math.max(1, math.floor(tonumber(catalog.UiProtocolVersion) or 3))
+local RUNTIME_MARKER_NAME = string.format("_RewardWheelRuntimeV%d", UI_PROTOCOL_VERSION)
+local GUI_NAME_PREFIX = "RewardWheelUI"
+
+-- Apenas um controlador atual pode permanecer ativo. Isto também permite
+-- substituir o LocalScript via Rojo durante um teste sem preservar uma GUI
+-- desconectada da versão nova.
+local existingMarker = playerGui:FindFirstChild(RUNTIME_MARKER_NAME)
+if existingMarker and existingMarker:IsA("ObjectValue") then
+	local owner = existingMarker.Value
+	if owner and owner.Parent then
+		return
+	end
+	existingMarker:Destroy()
+elseif existingMarker then
+	existingMarker:Destroy()
+end
+
+local runtimeMarker = Instance.new("ObjectValue")
+runtimeMarker.Name = RUNTIME_MARKER_NAME
+runtimeMarker.Value = script
+runtimeMarker.Parent = playerGui
+
+local function isRewardWheelGui(instance)
+	return instance:IsA("ScreenGui")
+		and string.sub(instance.Name, 1, #GUI_NAME_PREFIX) == GUI_NAME_PREFIX
+end
+
+-- Pacotes antigos entregavam um segundo LocalScript renomeado. Caso ele ainda
+-- exista no Studio, sua interface modal não pode competir com a versão atual.
+for _, child in ipairs(playerGui:GetChildren()) do
+	if isRewardWheelGui(child) then
+		child:Destroy()
+	end
+end
 
 local GOLD = Color3.fromRGB(255, 203, 67)
 local GOLD_LIGHT = Color3.fromRGB(255, 239, 167)
@@ -27,7 +64,7 @@ local VIEWPORT_HEIGHT = 430
 local SLOT_WIDTH = 382
 local SLOT_HEIGHT = 142
 local SLOT_GAP = 12
-local COMPACT_UI_MODE = "CompactCorner"
+local COMPACT_UI_MODE = catalog.CompactUiMode or "CompactCorner"
 local COMPACT_SOURCE_IDS = table.freeze({
 	HeightLevel = true,
 	Height = true,
@@ -83,7 +120,19 @@ gui.IgnoreGuiInset = true
 gui.DisplayOrder = 80
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Enabled = false
-gui.Parent = player:WaitForChild("PlayerGui")
+gui:SetAttribute("UiProtocolVersion", UI_PROTOCOL_VERSION)
+gui:SetAttribute("SupportsCompactCorner", true)
+gui.Parent = playerGui
+
+playerGui.ChildAdded:Connect(function(child)
+	if child == gui or not isRewardWheelGui(child) then
+		return
+	end
+	local childVersion = math.floor(tonumber(child:GetAttribute("UiProtocolVersion")) or 0)
+	if childVersion < UI_PROTOCOL_VERSION then
+		child:Destroy()
+	end
+end)
 
 local shade = Instance.new("Frame")
 shade.Name = "Shade"
@@ -403,7 +452,11 @@ local function setLayout(isCompact)
 		layoutSlotHeight = COMPACT_SLOT_HEIGHT
 		layoutSlotGap = COMPACT_SLOT_GAP
 
+		-- No layout de nível a camada modal deixa de ocupar a tela por
+		-- completo. Size zero funciona como segunda proteção além de Visible.
 		shade.Visible = false
+		shade.Size = UDim2.fromOffset(0, 0)
+		shade.BackgroundTransparency = 1
 		panel.AnchorPoint = Vector2.new(1, 1)
 		panel.Size = UDim2.fromOffset(layoutPanelWidth, layoutPanelHeight)
 		title.Text = "RECOMPENSA DE NÍVEL"
@@ -446,6 +499,7 @@ local function setLayout(isCompact)
 		layoutSlotGap = SLOT_GAP
 
 		shade.Visible = true
+		shade.Size = UDim2.fromScale(1, 1)
 		shade.BackgroundTransparency = 0.3
 		panel.AnchorPoint = Vector2.new(0.5, 0.5)
 		panel.Position = UDim2.fromScale(0.5, 0.5)

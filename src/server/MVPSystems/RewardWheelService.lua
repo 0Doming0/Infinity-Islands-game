@@ -422,10 +422,14 @@ function RewardWheelService.Spin(player, sourceId, context)
 		player:SetAttribute("SpinAgainOfferSerial", nil)
 		player:SetAttribute("SpinAgainOfferUntil", nil)
 	end
+	local uiMode = source.UiMode or "Modal"
+	player:SetAttribute("LastRewardWheelUiMode", uiMode)
+	player:SetAttribute("LastRewardWheelUiProtocolVersion", RewardWheelCatalog.UiProtocolVersion)
 	event:FireClient(player, {
 		Action = "Spin",
 		Duration = RewardWheelCatalog.AnimationDuration,
-		UiMode = source.UiMode or "Modal",
+		UiMode = uiMode,
+		UiProtocolVersion = RewardWheelCatalog.UiProtocolVersion,
 		Result = result,
 		SpinAgainAvailable = spinAgainAvailable,
 		WheelEntries = wheelEntries,
