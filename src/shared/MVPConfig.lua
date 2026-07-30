@@ -98,7 +98,14 @@ local Config = {
 		MediumChance = 0.08,
 		LargeChance = 0.16,
 		SoloMerchantMinimumRound = 2,
-		SoloMerchantChance = 0.7,
+		SoloMerchantChance = 0.07,
+		RandomMerchantRespawnCheckSeconds = 2,
+		RandomMerchantEdgePadding = 5,
+		-- O mercador errante prefere uma ilha ativa/proxima para nao nascer
+		-- invisivel no fim da malha procedural. Ele e reposicionado quando fica
+		-- muito longe ou quando a agua alcanca sua ilha.
+		RandomMerchantPlayerRadius = 320,
+		RandomMerchantRelocateDistance = 650,
 		MinimumBuildingCount = 2,
 		MaximumBuildingCount = 3,
 		MinimumVillagerCount = 2,

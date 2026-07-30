@@ -7,29 +7,88 @@
 ]]
 
 local CollectionService = game:GetService("CollectionService")
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 local ServerStorage = game:GetService("ServerStorage")
 
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
+local MonetizationCatalog = require(ReplicatedStorage:WaitForChild("MonetizationCatalog"))
 local VillageShopCatalog = require(ReplicatedStorage:WaitForChild("VillageShopCatalog"))
 local VILLAGE_CONFIG = MVPConfig.Village
 local processedIslands = setmetatable({}, { __mode = "k" })
 local warnedMissingVillagerTemplates = {}
 local loggedVillagerTemplateResolution = {}
+local activeRandomMerchantFolder
+local warnedNoRandomRobuxOffers = false
+local warnedInvalidVillagerTemplates = {}
+local randomMerchantState
+local randomMerchantRandom = Random.new()
+local SKY_MERCHANT_SPAWNER_VERSION = "RandomVillagerVisibleTestV3"
+
+workspace:SetAttribute("SkyMerchantSpawnerVersion", SKY_MERCHANT_SPAWNER_VERSION)
+workspace:SetAttribute("SkyMerchantSpawnerScriptName", script.Name)
+local spawnerScriptCount = 0
+for _, descendant in ipairs(ServerScriptService:GetDescendants()) do
+	if descendant:IsA("BaseScript")
+		and string.find(string.lower(descendant.Name), "mvphouses", 1, true)
+	then
+		spawnerScriptCount += 1
+	end
+end
+workspace:SetAttribute("SkyMerchantSpawnerScriptCount", spawnerScriptCount)
+if spawnerScriptCount > 1 then
+	warn(string.format(
+		"[MVP Village][SkyMerchant] Existem %d scripts MVPHouses ativos. Mantenha somente MVPHouses.server.luau.",
+		spawnerScriptCount
+	))
+end
+if script.Name ~= "MVPHouses" then
+	warn(string.format(
+		"[MVP Village][SkyMerchant] Script carregado como '%s'. No projeto ele deve se chamar MVPHouses.server.luau.",
+		script.Name
+	))
+end
 
 local function isTerrainIsland(instance)
 	return instance:IsA("Model")
 		and instance:GetAttribute("IsSkyIsland") == true
 end
 
+local function getIslandGenerationKey(island)
+	return string.format(
+		"%s:%s:%s",
+		tostring(island:GetAttribute("IslandNodeKey") or ""),
+		tostring(island:GetAttribute("IslandSeed") or ""),
+		tostring(island:GetAttribute("RoundIndex") or "")
+	)
+end
+
 local function getTemplateFolders(category)
 	local folders = {}
+	local seen = {}
+	local function append(folder)
+		if folder
+			and not seen[folder]
+			and #folder:GetChildren() > 0
+		then
+			seen[folder] = true
+			table.insert(folders, folder)
+		end
+	end
+
 	local assets = ServerStorage:FindFirstChild("MVPAssets")
 	local village = assets and assets:FindFirstChild("Village")
 	local preferred = village and village:FindFirstChild(category)
 	local preferredHasChildren = preferred and #preferred:GetChildren() > 0
 	if preferredHasChildren then
-		table.insert(folders, preferred)
+		append(preferred)
+	end
+	-- ContentRegistry e o README usam MVPAssets/<Categoria>. A versao anterior
+	-- do gerador ignorava especificamente MVPAssets/Villagers, mesmo sendo o
+	-- local oficial dos modelos validados do projeto.
+	if assets then
+		append(assets:FindFirstChild(category))
 	end
 	local legacyName = category == "Buildings" and "MVPBuildings" or "MVPVillagers"
 	local legacy = ServerStorage:FindFirstChild(legacyName)
@@ -37,22 +96,60 @@ local function getTemplateFolders(category)
 		and legacy ~= preferred
 		and (category == "Villagers" or not preferredHasChildren)
 	then
-		table.insert(folders, legacy)
+		append(legacy)
 	end
 	return folders
+end
+
+local function isUsableVisualTemplate(instance)
+	if not instance.Archivable then
+		return false
+	end
+	if instance:IsA("BasePart") then
+		return instance.Transparency < 1 and instance.Size.Magnitude > 0.1
+	end
+	if not instance:IsA("Model") then
+		return false
+	end
+	for _, descendant in ipairs(instance:GetDescendants()) do
+		if descendant:IsA("BasePart")
+			and descendant.Transparency < 1
+			and descendant.Size.Magnitude > 0.1
+		then
+			return true
+		end
+	end
+	return false
 end
 
 local function getTemplates(category)
 	local result = {}
 	for _, folder in ipairs(getTemplateFolders(category)) do
 		for _, child in ipairs(folder:GetChildren()) do
-			if child:IsA("Model") or child:IsA("BasePart") then
+			if isUsableVisualTemplate(child) then
 				table.insert(result, child)
 			end
 		end
 	end
 	table.sort(result, function(a, b)
 		return a.Name < b.Name
+	end)
+	return result
+end
+
+local function getRuntimeVillagerTemplates()
+	local result = {}
+	for _, descendant in ipairs(workspace:GetDescendants()) do
+		if descendant:IsA("Model")
+			and descendant:GetAttribute("IsVillager") == true
+			and descendant:GetAttribute("ShopId") ~= VillageShopCatalog.GetSkyMerchantShopId()
+			and isUsableVisualTemplate(descendant)
+		then
+			table.insert(result, descendant)
+		end
+	end
+	table.sort(result, function(a, b)
+		return a:GetFullName() < b:GetFullName()
 	end)
 	return result
 end
@@ -89,8 +186,26 @@ local function alignToSurface(instance, position, yaw)
 	end
 	prepareStatic(model)
 	model:PivotTo(CFrame.new(position) * CFrame.Angles(0, yaw, 0))
-	local boxCFrame, boxSize = model:GetBoundingBox()
-	local bottom = boxCFrame.Position.Y - boxSize.Y / 2
+	local bottom = math.huge
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant:IsA("BasePart")
+			and descendant.Transparency < 1
+			and descendant.Size.Magnitude > 0.1
+		then
+			local cframe = descendant.CFrame
+			local size = descendant.Size
+			local halfHeight = (
+				math.abs(cframe.XVector.Y) * size.X
+				+ math.abs(cframe.YVector.Y) * size.Y
+				+ math.abs(cframe.ZVector.Y) * size.Z
+			) / 2
+			bottom = math.min(bottom, descendant.Position.Y - halfHeight)
+		end
+	end
+	if bottom == math.huge then
+		local boxCFrame, boxSize = model:GetBoundingBox()
+		bottom = boxCFrame.Position.Y - boxSize.Y / 2
+	end
 	model:PivotTo(model:GetPivot() + Vector3.new(0, position.Y - bottom, 0))
 	return model
 end
@@ -216,18 +331,53 @@ local function spawnBuilding(parent, templates, index, position, yaw, random)
 end
 
 local function spawnVillager(parent, templates, position, yaw, random, shop, index, usedTemplates)
-	local template = chooseVillagerTemplate(templates, random, usedTemplates)
+	local availableTemplates = table.clone(templates)
+	local template
 	local model
-	if template then
-		model = alignToSurface(template:Clone(), position, yaw)
+
+	while #availableTemplates > 0 and not model do
+		template = chooseVillagerTemplate(availableTemplates, random, usedTemplates)
+		local templateIndex = template and table.find(availableTemplates, template)
+		if not templateIndex then
+			break
+		end
+		table.remove(availableTemplates, templateIndex)
+		local clone
+		local success, cloneOrError = pcall(function()
+			clone = template:Clone()
+			assert(clone, "Clone retornou nil; confira Archivable")
+			return alignToSurface(clone, position, yaw)
+		end)
+		if success then
+			model = cloneOrError
+		else
+			if clone then
+				clone:Destroy()
+			end
+			if not warnedInvalidVillagerTemplates[template] then
+				warn(string.format(
+					"[MVP Village] Modelo de villager '%s' foi ignorado: %s",
+					template:GetFullName(),
+					tostring(cloneOrError)
+				))
+				warnedInvalidVillagerTemplates[template] = true
+			end
+		end
+	end
+
+	if model and template then
 		CollectionService:RemoveTag(model, VILLAGE_CONFIG.ShopTag)
 		model:SetAttribute("SourceVillagerTemplate", template.Name)
-		model:SetAttribute("TemplateResolution", "RandomNPCAsset")
-		local resolutionKey = shop.ShopId .. ":" .. template.Name
+		model:SetAttribute("SourceVillagerTemplatePath", template:GetFullName())
+		model:SetAttribute(
+			"TemplateResolution",
+			template:IsDescendantOf(ServerStorage) and "RandomStoredVillager" or "RandomRuntimeVillager"
+		)
+		local resolutionKey = shop.ShopId .. ":" .. template:GetFullName()
 		if not loggedVillagerTemplateResolution[resolutionKey] then
 			print(string.format(
 				"[MVP Village] Modelo aleatorio '%s' aplicado a %s (ShopId=%s).",
-				template.Name,
+				template:GetFullName(),
 				shop.DisplayName,
 				shop.ShopId
 			))
@@ -243,6 +393,7 @@ local function spawnVillager(parent, templates, position, yaw, random, shop, ind
 			warnedMissingVillagerTemplates[shop.ShopId] = true
 		end
 		model = createExampleVillager(position, yaw, shop)
+		model:SetAttribute("TemplateResolution", "GeneratedFallback")
 	end
 	model.Name = string.format("Villager_%02d_%s", index, shop.ShopId)
 	model:SetAttribute("IsVillager", true)
@@ -343,20 +494,415 @@ local function removeRuntimeMonsters(island)
 	end
 end
 
+local function setRandomMerchantDiagnostic(state, detail)
+	workspace:SetAttribute("SkyMerchantSpawnState", state)
+	workspace:SetAttribute("SkyMerchantSpawnDetail", detail or "")
+	if randomMerchantState ~= state then
+		print(string.format("[MVP Village][SkyMerchant] Estado: %s - %s", state, detail or ""))
+		randomMerchantState = state
+	end
+end
+
+local function getRandomRobuxOfferIds()
+	local productIds = {}
+	for _, definition in ipairs(MonetizationCatalog.GetAll()) do
+		local productType = definition.ProductType
+		if definition.Id ~= "ReviveNoCoinLoss"
+			and definition.Enabled ~= false
+			and (productType == "DeveloperProduct" or productType == "GamePass")
+			and MonetizationCatalog.GetConfiguredAssetId(definition) > 0
+		then
+			table.insert(productIds, definition.Id)
+		end
+	end
+	workspace:SetAttribute("SkyMerchantRobuxOfferCount", #productIds)
+	if #productIds == 0 then
+		if not warnedNoRandomRobuxOffers then
+			warn("[MVP Village] Nenhum produto em Robux configurado para o mercador aleatorio.")
+			warnedNoRandomRobuxOffers = true
+		end
+	end
+	return productIds
+end
+
+local function getRandomSurfacePosition(floor, random)
+	local padding = math.max(0, tonumber(VILLAGE_CONFIG.RandomMerchantEdgePadding) or 5)
+	local halfX = math.max(0, floor.Size.X / 2 - padding)
+	local halfZ = math.max(0, floor.Size.Z / 2 - padding)
+	local function randomOffset(halfExtent)
+		if halfExtent <= 0 then
+			return 0
+		end
+		return random:NextNumber(-halfExtent, halfExtent)
+	end
+	local localPosition = Vector3.new(
+		randomOffset(halfX),
+		floor.Size.Y / 2 + 0.05,
+		randomOffset(halfZ)
+	)
+	return floor.CFrame:PointToWorldSpace(localPosition)
+end
+
+local function getSkyIsland(instance)
+	local current = instance
+	while current do
+		if isTerrainIsland(current) then
+			return current
+		end
+		current = current.Parent
+	end
+	return nil
+end
+
+local function hasSkyMerchant(island)
+	for _, descendant in ipairs(island:GetDescendants()) do
+		if descendant:IsA("Model")
+			and descendant:GetAttribute("ShopId") == VillageShopCatalog.GetSkyMerchantShopId()
+		then
+			return true
+		end
+	end
+	return false
+end
+
+local function getPlayerPositions()
+	local positions = {}
+	for _, player in ipairs(Players:GetPlayers()) do
+		local character = player.Character
+		local root = character and character:FindFirstChild("HumanoidRootPart")
+		local humanoid = character and character:FindFirstChildWhichIsA("Humanoid")
+		if root
+			and root:IsA("BasePart")
+			and (not humanoid or humanoid.Health > 0)
+		then
+			table.insert(positions, root.Position)
+		end
+	end
+	return positions
+end
+
+local function getNearestPlayerDistance(position, playerPositions)
+	local nearest = math.huge
+	for _, playerPosition in ipairs(playerPositions) do
+		nearest = math.min(nearest, (position - playerPosition).Magnitude)
+	end
+	return nearest
+end
+
+local function getRandomMerchantIslands()
+	local islands = {}
+	local skyIslandCount = 0
+	local missingFloorCount = 0
+	local playerPositions = getPlayerPositions()
+	for _, descendant in ipairs(workspace:GetDescendants()) do
+		if isTerrainIsland(descendant)
+			and descendant:IsDescendantOf(workspace)
+		then
+			skyIslandCount += 1
+			local floor = descendant:FindFirstChild("IslandFloor")
+				or descendant:FindFirstChild("IslandFloor", true)
+			if floor and floor:IsA("BasePart") then
+				table.insert(islands, {
+					Island = descendant,
+					Floor = floor,
+					HasSkyMerchant = hasSkyMerchant(descendant),
+					NearestPlayerDistance = getNearestPlayerDistance(floor.Position, playerPositions),
+					SimulationActive = descendant:GetAttribute("SimulationActive") == true,
+					LogicalLevel = tonumber(descendant:GetAttribute("LogicalLevel"))
+						or tonumber(descendant:GetAttribute("RoundIndex"))
+						or math.huge,
+				})
+			else
+				missingFloorCount += 1
+			end
+		end
+	end
+	workspace:SetAttribute("SkyMerchantSkyIslandCount", skyIslandCount)
+	workspace:SetAttribute("SkyMerchantCandidateIslandCount", #islands)
+	workspace:SetAttribute("SkyMerchantMissingFloorCount", missingFloorCount)
+	return islands, playerPositions
+end
+
+local function chooseRandomMerchantIsland(candidates, playerPositions, random)
+	if #candidates == 0 then
+		return nil, 0
+	end
+
+	local preferred = {}
+	if #playerPositions > 0 then
+		local radius = math.max(
+			32,
+			tonumber(VILLAGE_CONFIG.RandomMerchantPlayerRadius) or 320
+		)
+		for _, candidate in ipairs(candidates) do
+			if candidate.SimulationActive
+				or candidate.NearestPlayerDistance <= radius
+			then
+				table.insert(preferred, candidate)
+			end
+		end
+		if #preferred == 0 then
+			local nearest = math.huge
+			for _, candidate in ipairs(candidates) do
+				nearest = math.min(nearest, candidate.NearestPlayerDistance)
+			end
+			for _, candidate in ipairs(candidates) do
+				if candidate.NearestPlayerDistance <= nearest + 24 then
+					table.insert(preferred, candidate)
+				end
+			end
+		end
+	else
+		-- Em Studio > Run nao existe Player. Nesse caso o teste usa uma das
+		-- ilhas iniciais/mais baixas, em vez de esconder o NPC no fim do mapa.
+		local lowestLevel = math.huge
+		for _, candidate in ipairs(candidates) do
+			lowestLevel = math.min(lowestLevel, candidate.LogicalLevel)
+		end
+		for _, candidate in ipairs(candidates) do
+			if candidate.LogicalLevel == lowestLevel then
+				table.insert(preferred, candidate)
+			end
+		end
+	end
+
+	local withoutMerchant = {}
+	for _, candidate in ipairs(preferred) do
+		if not candidate.HasSkyMerchant then
+			table.insert(withoutMerchant, candidate)
+		end
+	end
+	local pool = #withoutMerchant > 0 and withoutMerchant or preferred
+	return pool[random:NextInteger(1, #pool)], #preferred
+end
+
+local function getRandomMerchantFolders()
+	local folders = {}
+	for _, descendant in ipairs(workspace:GetDescendants()) do
+		if descendant:IsA("Folder")
+			and (
+				descendant.Name == "MVPRandomSkyMerchant"
+				or descendant:GetAttribute("RandomMapMerchant") == true
+			)
+		then
+			table.insert(folders, descendant)
+		end
+	end
+	return folders
+end
+
+local function randomMerchantFolderIsUsable(folder, playerPositions)
+	if not folder or not folder:IsDescendantOf(workspace) then
+		return false, "fora do Workspace"
+	end
+	local merchant
+	for _, child in ipairs(folder:GetChildren()) do
+		if child:IsA("Model")
+			and child:GetAttribute("ShopId") == VillageShopCatalog.GetSkyMerchantShopId()
+		then
+			merchant = child
+			break
+		end
+	end
+	if not merchant or not merchant:FindFirstChildWhichIsA("BasePart", true) then
+		return false, "pasta sem modelo visivel"
+	end
+	local island = getSkyIsland(folder)
+	local floor = island and (
+		island:FindFirstChild("IslandFloor")
+		or island:FindFirstChild("IslandFloor", true)
+	)
+	if not floor or not floor:IsA("BasePart") then
+		return false, "ilha/piso removido"
+	end
+	local water = workspace:FindFirstChild("Water")
+	local waterSurfaceY = water and tonumber(water:GetAttribute("SurfaceY"))
+	local islandSurfaceY = floor.Position.Y + floor.Size.Y / 2
+	if waterSurfaceY and waterSurfaceY >= islandSurfaceY then
+		return false, "ilha alcancada pela agua"
+	end
+	if #playerPositions > 0 then
+		local relocateDistance = math.max(
+			64,
+			tonumber(VILLAGE_CONFIG.RandomMerchantRelocateDistance) or 650
+		)
+		if getNearestPlayerDistance(floor.Position, playerPositions) > relocateDistance
+			and island:GetAttribute("SimulationActive") ~= true
+		then
+			return false, "longe dos jogadores"
+		end
+	end
+	return true, merchant
+end
+
+local function spawnRandomSkyMerchantUnlocked()
+	local candidates, playerPositions = getRandomMerchantIslands()
+	local existingFolders = getRandomMerchantFolders()
+	if activeRandomMerchantFolder
+		and not table.find(existingFolders, activeRandomMerchantFolder)
+	then
+		table.insert(existingFolders, activeRandomMerchantFolder)
+	end
+	for _, folder in ipairs(existingFolders) do
+		local usable, merchantOrReason = randomMerchantFolderIsUsable(folder, playerPositions)
+		if usable and not activeRandomMerchantFolder then
+			activeRandomMerchantFolder = folder
+			setRandomMerchantDiagnostic("Active", "mercador existente localizado")
+		else
+			if not usable then
+				folder:Destroy()
+				print("[MVP Village][SkyMerchant] Mercador antigo removido: " .. tostring(merchantOrReason))
+			elseif folder ~= activeRandomMerchantFolder then
+				folder:Destroy()
+				print("[MVP Village][SkyMerchant] Mercador duplicado removido.")
+			end
+		end
+	end
+	if activeRandomMerchantFolder then
+		local usable, merchantOrReason = randomMerchantFolderIsUsable(
+			activeRandomMerchantFolder,
+			playerPositions
+		)
+		if usable then
+			local merchant = merchantOrReason
+			workspace:SetAttribute(
+				"SkyMerchantLastTemplate",
+				tostring(merchant:GetAttribute("SourceVillagerTemplate") or "GeneratedFallback")
+			)
+			setRandomMerchantDiagnostic("Active", activeRandomMerchantFolder:GetFullName())
+			return true
+		end
+		activeRandomMerchantFolder:Destroy()
+		activeRandomMerchantFolder = nil
+		setRandomMerchantDiagnostic("Relocating", tostring(merchantOrReason))
+	end
+
+	if #candidates == 0 then
+		setRandomMerchantDiagnostic(
+			"WaitingForIsland",
+			string.format(
+				"IsSkyIsland=%d, sem IslandFloor=%d",
+				workspace:GetAttribute("SkyMerchantSkyIslandCount") or 0,
+				workspace:GetAttribute("SkyMerchantMissingFloorCount") or 0
+			)
+		)
+		return false
+	end
+
+	local offerIds = getRandomRobuxOfferIds()
+	if #offerIds == 0 then
+		setRandomMerchantDiagnostic("WaitingForRobuxOffer", "nenhum ProductId/PassId valido")
+		return false
+	end
+
+	local candidate, nearbyCount = chooseRandomMerchantIsland(
+		candidates,
+		playerPositions,
+		randomMerchantRandom
+	)
+	workspace:SetAttribute("SkyMerchantNearbyCandidateCount", nearbyCount)
+	if not candidate then
+		setRandomMerchantDiagnostic("WaitingForVisibleIsland", "nenhuma ilha acessivel")
+		return false
+	end
+
+	local templates = getTemplates("Villagers")
+	local templateSource = "ServerStorage"
+	if #templates == 0 then
+		templates = getRuntimeVillagerTemplates()
+		templateSource = "Workspace"
+	end
+	workspace:SetAttribute("SkyMerchantVillagerTemplateCount", #templates)
+	workspace:SetAttribute("SkyMerchantVillagerTemplateSource", templateSource)
+
+	local offerId = offerIds[randomMerchantRandom:NextInteger(1, #offerIds)]
+	local position = getRandomSurfacePosition(candidate.Floor, randomMerchantRandom)
+	local folder = Instance.new("Folder")
+	folder.Name = "MVPRandomSkyMerchant"
+	folder:SetAttribute("RandomMapMerchant", true)
+	folder:SetAttribute("ProceduralSoloMerchant", true)
+	folder:SetAttribute("RobuxOfferProductId", offerId)
+
+	local shop = VillageShopCatalog.GetShop(VillageShopCatalog.GetSkyMerchantShopId())
+	assert(shop, "VillageShopCatalog nao possui a loja SkyMerchant")
+	local merchant = spawnVillager(
+		folder,
+		templates,
+		position,
+		randomMerchantRandom:NextNumber(0, math.pi * 2),
+		randomMerchantRandom,
+		shop,
+		1,
+		nil
+	)
+	merchant:SetAttribute("RandomMapMerchant", true)
+	merchant:SetAttribute("RobuxOfferProductId", offerId)
+	folder.Parent = candidate.Island
+	activeRandomMerchantFolder = folder
+
+	workspace:SetAttribute("SkyMerchantLastIsland", candidate.Island:GetFullName())
+	workspace:SetAttribute("SkyMerchantLastOfferId", offerId)
+	workspace:SetAttribute(
+		"SkyMerchantLastTemplate",
+		tostring(merchant:GetAttribute("SourceVillagerTemplate") or "GeneratedFallback")
+	)
+	setRandomMerchantDiagnostic(
+		"Spawned",
+		string.format(
+			"%s | modelo=%s | oferta=%s",
+			candidate.Island:GetFullName(),
+			tostring(merchant:GetAttribute("SourceVillagerTemplate") or "GeneratedFallback"),
+			offerId
+		)
+	)
+	print(string.format(
+		"[MVP Village] Mercador aleatorio criado em %s com modelo %s e oferta %s.",
+		candidate.Island:GetFullName(),
+		tostring(merchant:GetAttribute("SourceVillagerTemplate") or "GeneratedFallback"),
+		offerId
+	))
+	return true
+end
+
+local function spawnRandomSkyMerchant()
+	if workspace:GetAttribute("SkyMerchantSpawnLock") == true then
+		return false
+	end
+	workspace:SetAttribute("SkyMerchantSpawnLock", true)
+	local success, resultOrError = pcall(spawnRandomSkyMerchantUnlocked)
+	workspace:SetAttribute("SkyMerchantSpawnLock", nil)
+	if not success then
+		workspace:SetAttribute("SkyMerchantLastError", tostring(resultOrError))
+		setRandomMerchantDiagnostic("Error", tostring(resultOrError))
+		warn("[MVP Village][SkyMerchant] Falha recuperavel no spawn: " .. tostring(resultOrError))
+		return false
+	end
+	workspace:SetAttribute("SkyMerchantLastError", nil)
+	return resultOrError
+end
+
 local function populateIsland(island)
-	if processedIslands[island] or not island.Parent then
+	if not island:IsDescendantOf(workspace) then
+		return
+	end
+	local generationKey = getIslandGenerationKey(island)
+	if processedIslands[island] == generationKey then
 		return
 	end
 	local floor = island:FindFirstChild("IslandFloor")
 	local deadline = os.clock() + 2
-	while not floor and island.Parent and os.clock() < deadline do
+	while not floor and island:IsDescendantOf(workspace) and os.clock() < deadline do
 		task.wait()
 		floor = island:FindFirstChild("IslandFloor")
 	end
-	if not floor or not floor:IsA("BasePart") then
+	if not island:IsDescendantOf(workspace) or not floor or not floor:IsA("BasePart") then
 		return
 	end
-	processedIslands[island] = true
+	generationKey = getIslandGenerationKey(island)
+	if processedIslands[island] == generationKey then
+		return
+	end
+	processedIslands[island] = generationKey
 
 	local seed = (tonumber(island:GetAttribute("IslandSeed")) or 1) + VILLAGE_CONFIG.RandomSalt
 	seed = math.floor(math.abs(seed)) % 2147483647
@@ -466,10 +1012,28 @@ workspace.DescendantAdded:Connect(function(instance)
 	end
 end)
 
+workspace.DescendantRemoving:Connect(function(instance)
+	if processedIslands[instance] ~= nil then
+		-- O pool de geometria preserva a mesma instancia Terrain_* e remove todo
+		-- o conteudo dinamico. Liberar o estado permite popular a proxima vida.
+		processedIslands[instance] = nil
+	end
+end)
+
 for _, descendant in ipairs(workspace:GetDescendants()) do
 	if isTerrainIsland(descendant) then
 		task.spawn(populateIsland, descendant)
 	end
 end
+
+task.spawn(function()
+	while true do
+		spawnRandomSkyMerchant()
+		task.wait(math.max(
+			0.5,
+			tonumber(VILLAGE_CONFIG.RandomMerchantRespawnCheckSeconds) or 2
+		))
+	end
+end)
 
 print("[MVP Village] Gerador procedural iniciado; modelos de exemplo habilitados.")

@@ -412,14 +412,45 @@ local function storeEntry(player, definition, recommendation)
 	return entry
 end
 
+local function isGlobalStoreProduct(definition)
+	return definition ~= nil
+		and definition.Enabled ~= false
+		and definition.Id ~= "ReviveNoCoinLoss"
+		and (
+			definition.ProductType == "DeveloperProduct"
+			or definition.ProductType == "GamePass"
+		)
+end
+
+function MonetizationService.GetGlobalStore(player)
+	local recommendation = MarketingOfferService.GetRecommendation(player)
+	local entries = {}
+	for _, definition in ipairs(MonetizationCatalog.GetAll()) do
+		if isGlobalStoreProduct(definition) then
+			table.insert(entries, storeEntry(player, definition, recommendation))
+		end
+	end
+	return {
+		Entries = entries,
+		Recommendation = recommendation,
+		PaidRandomItemsAllowed = policyFor(player).PaidRandomItemsAllowed,
+	}
+end
+
 function MonetizationService.GetStore(player)
 	local recommendation = MarketingOfferService.GetRecommendation(player)
 	local entries = {}
+	local randomMerchantOfferId = player:GetAttribute("SkyMerchantRobuxOfferId")
 	for _, definition in ipairs(MonetizationCatalog.GetAll()) do
 		-- Renascimento possui seu proprio momento e nunca aparece como oferta
 		-- generica dentro da loja.
 		if definition.Id ~= "ReviveNoCoinLoss"
 			and definition.Enabled ~= false
+			and (
+				type(randomMerchantOfferId) ~= "string"
+				or randomMerchantOfferId == ""
+				or definition.Id == randomMerchantOfferId
+			)
 		then
 			table.insert(entries, storeEntry(player, definition, recommendation))
 		end
@@ -587,7 +618,7 @@ local function isSkyMerchantOpen(player)
 		and player:GetAttribute("SkyMerchantOfferValid") == true
 end
 
-local function promptPurchase(player, productId)
+local function promptPurchase(player, productId, purchaseSource)
 	local definition = MonetizationCatalog.Get(productId)
 	if not definition
 		or definition.Enabled == false
@@ -595,8 +626,20 @@ local function promptPurchase(player, productId)
 	then
 		return false, "Oferta invalida."
 	end
-	if not isSkyMerchantOpen(player) then
+	local globalStorePurchase = purchaseSource == "GlobalStore"
+	if globalStorePurchase and not isGlobalStoreProduct(definition) then
+		return false, "Este produto so pode ser comprado no momento correto do jogo."
+	end
+	if not globalStorePurchase and not isSkyMerchantOpen(player) then
 		return false, "Fale com o Mercador do Ceu para comprar."
+	end
+	local randomMerchantOfferId = player:GetAttribute("SkyMerchantRobuxOfferId")
+	if not globalStorePurchase
+		and type(randomMerchantOfferId) == "string"
+		and randomMerchantOfferId ~= ""
+		and productId ~= randomMerchantOfferId
+	then
+		return false, "Este mercador esta vendendo outra oferta."
 	end
 	if definition.PaidRandomItem and not policyFor(player).PaidRandomItemsAllowed then
 		return false, "Esta roleta nao esta disponivel para sua conta ou regiao."
@@ -853,6 +896,7 @@ function MonetizationService.Start()
 	started = true
 	event = ensureRemote("RemoteEvent", "MonetizationEvent")
 	request = ensureRemote("RemoteFunction", "MonetizationRequest")
+	workspace:SetAttribute("GlobalStoreServerVersion", "GlobalStoreV1")
 	MarketingOfferService.SetEvent(event)
 	MarketingOfferService.Start()
 	DeveloperProductService.Start()
@@ -865,6 +909,9 @@ function MonetizationService.Start()
 	request.OnServerInvoke = function(player, action, productId)
 		if action == "GetStore" then
 			return MonetizationService.GetStore(player)
+		elseif action == "OpenGlobalStore" then
+			MarketingOfferService.RecordStoreOpened(player)
+			return MonetizationService.GetGlobalStore(player)
 		elseif action == "OpenStore" then
 			if not isSkyMerchantOpen(player) then
 				return nil
@@ -882,6 +929,13 @@ function MonetizationService.Start()
 		elseif action == "Prompt" and type(productId) == "string" then
 			local success, message = promptPurchase(player, productId)
 			return { Success = success, Message = message, Store = MonetizationService.GetStore(player) }
+		elseif action == "PromptGlobal" and type(productId) == "string" then
+			local success, message = promptPurchase(player, productId, "GlobalStore")
+			return {
+				Success = success,
+				Message = message,
+				Store = MonetizationService.GetGlobalStore(player),
+			}
 		elseif action == "PromptSpinAgain" then
 			local success, message = promptSpinAgain(player)
 			return { Success = success, Message = message }

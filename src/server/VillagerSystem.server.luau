@@ -86,6 +86,7 @@ local function clearShopSession(player)
 	player:SetAttribute("ShopOpen", false)
 	player:SetAttribute("ActiveShopId", nil)
 	player:SetAttribute("SkyMerchantOfferValid", nil)
+	player:SetAttribute("SkyMerchantRobuxOfferId", nil)
 end
 
 local function offerKey(itemType, itemId)
@@ -586,6 +587,10 @@ local function registerVillager(model)
 			player:SetAttribute("ShopOpen", true)
 			player:SetAttribute("ActiveShopId", shop.ShopId)
 			player:SetAttribute("SkyMerchantOfferValid", isSkyMerchant and true or nil)
+			player:SetAttribute(
+				"SkyMerchantRobuxOfferId",
+				isSkyMerchant and model:GetAttribute("RobuxOfferProductId") or nil
+			)
 			sendShop(player)
 		end
 	end)
