@@ -1,10 +1,18 @@
 -- Ponto único para dano causado por inimigos aos jogadores.
+-- Jogadores com tutorial incompleto continuam protegidos em qualquer spawn ou
+-- servidor. Perigos ambientais, como a agua, nao passam por este servico.
 
 local Players = game:GetService("Players")
 local DownedService = require(script.Parent:WaitForChild("DownedService"))
 DownedService.Start()
 
 local PlayerDamageService = {}
+
+local function hasTutorialEnemyProtection(player)
+	-- TutorialCompleted e a fonte autoritativa. O valor nil durante o load deve
+	-- ser tratado como incompleto para nao abrir uma janela de dano na entrada.
+	return player:GetAttribute("TutorialCompleted") ~= true
+end
 
 function PlayerDamageService.Apply(player, humanoid, baseDamage, source)
 	if not player or player.Parent ~= Players or not humanoid or humanoid.Health <= 0 then
@@ -14,6 +22,12 @@ function PlayerDamageService.Apply(player, humanoid, baseDamage, source)
 		return 0
 	end
 	if player:GetAttribute("InvisibleToEnemies") == true then
+		return 0
+	end
+	if hasTutorialEnemyProtection(player) then
+		player:SetAttribute("TutorialEnemyProtection", true)
+		player:SetAttribute("LastTutorialBlockedEnemySource", tostring(source or "Enemy"))
+		player:SetAttribute("LastTutorialBlockedEnemyAt", workspace:GetServerTimeNow())
 		return 0
 	end
 	local multiplier = math.max(1, tonumber(player:GetAttribute("RunDamageTakenMultiplier")) or 1)

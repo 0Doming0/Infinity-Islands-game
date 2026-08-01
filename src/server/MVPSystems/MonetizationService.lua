@@ -28,6 +28,7 @@ local request
 local policies = setmetatable({}, { __mode = "k" })
 local passOwnership = setmetatable({}, { __mode = "k" })
 local flightStates = setmetatable({}, { __mode = "k" })
+local wingEnergyStates = setmetatable({}, { __mode = "k" })
 local capeOriginalTransparency = setmetatable({}, { __mode = "k" })
 
 local WING_PRIORITY = table.freeze({
@@ -125,6 +126,100 @@ local function bestWing(player)
 		return MonetizationCatalog.Get("TemporaryWings")
 	end
 	return nil
+end
+
+local function wingEnergyConfig(definition)
+	local wing = definition and definition.Wing
+	if not wing then
+		return 0, 0
+	end
+	local maximum = math.max(
+		0.25,
+		tonumber(wing.StaminaSeconds) or tonumber(wing.FlightSeconds) or 1
+	)
+	local recharge = math.max(
+		0.1,
+		tonumber(wing.StaminaRechargePerSecond) or maximum / 4
+	)
+	return maximum, recharge
+end
+
+local function wingFlightConfig(definition)
+	local wing = definition and definition.Wing or {}
+	return {
+		RiseHeight = math.clamp(tonumber(wing.RiseHeight) or 10, 4, 30),
+		RiseVelocity = math.clamp(tonumber(wing.RiseVelocity) or 28, 18, 45),
+		RiseTimeout = math.clamp(tonumber(wing.RiseTimeout) or 1.2, 0.6, 2.5),
+		RiseHorizontalMultiplier = math.clamp(
+			tonumber(wing.RiseHorizontalMultiplier) or 0.7,
+			0.35,
+			1
+		),
+		GlideFallSpeed = -math.clamp(
+			math.abs(tonumber(wing.GlideFallSpeed) or 4.7),
+			2.5,
+			8
+		),
+		GlideSpeedMultiplier = math.clamp(
+			tonumber(wing.GlideSpeedMultiplier) or 0.84,
+			0.5,
+			1
+		),
+		ExhaustedGlideFallSpeed = -math.clamp(
+			math.abs(tonumber(wing.ExhaustedGlideFallSpeed) or 8.5),
+			6,
+			12
+		),
+		ExhaustedGlideSpeedMultiplier = math.clamp(
+			tonumber(wing.ExhaustedGlideSpeedMultiplier) or 0.34,
+			0.2,
+			0.5
+		),
+	}
+end
+
+local function publishWingEnergy(player, state, force)
+	if not state then
+		player:SetAttribute("WingStamina", nil)
+		player:SetAttribute("WingStaminaMax", nil)
+		player:SetAttribute("WingStaminaRechargePerSecond", nil)
+		return
+	end
+	local timestamp = workspace:GetServerTimeNow()
+	if not force and timestamp - (state.LastPublishedAt or 0) < 0.1 then
+		return
+	end
+	state.LastPublishedAt = timestamp
+	player:SetAttribute("WingStamina", math.max(0, state.Amount))
+	player:SetAttribute("WingStaminaMax", state.Maximum)
+	player:SetAttribute("WingStaminaRechargePerSecond", state.RechargePerSecond)
+end
+
+local function ensureWingEnergy(player, definition)
+	if not definition or not definition.Wing then
+		wingEnergyStates[player] = nil
+		publishWingEnergy(player, nil, true)
+		return nil
+	end
+	local maximum, recharge = wingEnergyConfig(definition)
+	local state = wingEnergyStates[player]
+	if not state
+		or state.DefinitionId ~= definition.Id
+		or math.abs(state.Maximum - maximum) > 0.001
+	then
+		state = {
+			DefinitionId = definition.Id,
+			Amount = maximum,
+			Maximum = maximum,
+			RechargePerSecond = recharge,
+			LastPublishedAt = 0,
+		}
+		wingEnergyStates[player] = state
+		publishWingEnergy(player, state, true)
+	else
+		state.RechargePerSecond = recharge
+	end
+	return state
 end
 
 local function bestPermanentWingRank(player)
@@ -316,7 +411,7 @@ local function syncEquipment(player, visualWing)
 				and original[descendant] == nil
 			then
 				original[descendant] = descendant.Transparency
-				descendant.Transparency = math.max(descendant.Transparency, 0.65)
+				descendant.Transparency = math.max(descendant.Transparency, 0.82)
 			end
 		end
 	end
@@ -325,19 +420,40 @@ end
 local function publishEntitlements(player, message)
 	local wing = bestWing(player)
 	local activeFlight = flightStates[player]
-	local visualWing = activeFlight and activeFlight.Definition or wing
+	local availableWing = activeFlight and activeFlight.Definition or wing
+	local visualWing = availableWing
 	local cape = MonetizationCatalog.Get("InvisibilityCape")
 	local potion = MonetizationCatalog.Get("PermanentPotion")
-	player:SetAttribute("OwnedWingProductId", wing and wing.Id or nil)
+	local staminaMaximum, staminaRecharge = wingEnergyConfig(availableWing)
+	ensureWingEnergy(player, availableWing)
+	player:SetAttribute("OwnedWingProductId", availableWing and availableWing.Id or nil)
+	player:SetAttribute("OwnedWingDisplayName", availableWing and availableWing.DisplayName or nil)
+	player:SetAttribute(
+		"WingDurationSeconds",
+		availableWing and staminaMaximum or nil
+	)
+	player:SetAttribute("WingCooldownSeconds", nil)
+	player:SetAttribute(
+		"WingStaminaRechargePerSecond",
+		availableWing and staminaRecharge or nil
+	)
 	player:SetAttribute("OwnsInvisibilityCape", ownsPass(player, cape))
+	player:SetAttribute("CapeDurationSeconds", cape.DurationSeconds)
+	player:SetAttribute("CapeCooldownSeconds", cape.CooldownSeconds)
 	player:SetAttribute("OwnsPermanentPotion", ownsPass(player, potion))
 	syncEquipment(player, visualWing)
 	if event then
 		event:FireClient(player, {
 			Action = "Entitlements",
-			WingProductId = wing and wing.Id or nil,
+			WingProductId = availableWing and availableWing.Id or nil,
+			WingDisplayName = availableWing and availableWing.DisplayName or nil,
+			WingDurationSeconds = availableWing and staminaMaximum or nil,
+			WingStaminaMax = availableWing and staminaMaximum or nil,
+			WingStaminaRechargePerSecond = availableWing and staminaRecharge or nil,
 			TemporaryWingUses = tonumber(player:GetAttribute("TemporaryWingUses")) or 0,
 			OwnsCape = player:GetAttribute("OwnsInvisibilityCape") == true,
+			CapeDurationSeconds = cape.DurationSeconds,
+			CapeCooldownSeconds = cape.CooldownSeconds,
 			OwnsPermanentPotion = player:GetAttribute("OwnsPermanentPotion") == true,
 			Message = message,
 		})
@@ -360,11 +476,19 @@ local function applyPermanentPotion(player, character)
 end
 
 local function setupCharacter(player, character)
+	MonetizationAssetService.StopWingAnimations(character, 0)
 	capeOriginalTransparency[player] = nil
+	flightStates[player] = nil
+	wingEnergyStates[player] = nil
 	player:SetAttribute("InvisibleToEnemies", false)
 	player:SetAttribute("CapeActiveUntil", nil)
+	player:SetAttribute("CapeActivatedAt", nil)
 	player:SetAttribute("WingActive", false)
 	player:SetAttribute("WingActiveUntil", nil)
+	player:SetAttribute("WingActivatedAt", nil)
+	player:SetAttribute("WingReadyAt", nil)
+	player:SetAttribute("WingFlightPhase", nil)
+	player:SetAttribute("WingFlightStyle", "FastRiseThenSlowGlide")
 	character:SetAttribute("InvisibleToEnemies", false)
 	task.defer(applyPermanentPotion, player, character)
 	task.delay(1, function()
@@ -389,9 +513,9 @@ local function storeEntry(player, definition, recommendation)
 		OddsText = definition.OddsText,
 		HeroImageId = definition.HeroImageId,
 		MerchantPitch = definition.MerchantPitch,
-		Recommended = recommendation ~= nil and recommendation.ProductId == definition.Id,
-		RecommendationReason = recommendation and recommendation.ProductId == definition.Id
-			and recommendation.Reason or nil,
+		Recommended = recommendation ~= nil,
+		RecommendationReason = recommendation and recommendation.Reason or nil,
+		RecommendationScore = recommendation and recommendation.Score or nil,
 	}
 	local blockedReason = purchaseBlockReason(player, definition)
 	if definition.PaidRandomItem and not policyFor(player).PaidRandomItemsAllowed then
@@ -423,41 +547,47 @@ local function isGlobalStoreProduct(definition)
 end
 
 function MonetizationService.GetGlobalStore(player)
-	local recommendation = MarketingOfferService.GetRecommendation(player)
+	local recommendations = MarketingOfferService.GetRecommendations(player)
+	local recommendationByProductId = {}
+	for _, recommendation in ipairs(recommendations) do
+		recommendationByProductId[recommendation.ProductId] = recommendation
+	end
 	local entries = {}
 	for _, definition in ipairs(MonetizationCatalog.GetAll()) do
 		if isGlobalStoreProduct(definition) then
-			table.insert(entries, storeEntry(player, definition, recommendation))
+			table.insert(
+				entries,
+				storeEntry(player, definition, recommendationByProductId[definition.Id])
+			)
 		end
 	end
 	return {
 		Entries = entries,
-		Recommendation = recommendation,
+		Recommendation = recommendations[1],
+		Recommendations = recommendations,
 		PaidRandomItemsAllowed = policyFor(player).PaidRandomItemsAllowed,
 	}
 end
 
 function MonetizationService.GetStore(player)
-	local recommendation = MarketingOfferService.GetRecommendation(player)
+	local recommendations = MarketingOfferService.GetRecommendations(player)
 	local entries = {}
-	local randomMerchantOfferId = player:GetAttribute("SkyMerchantRobuxOfferId")
-	for _, definition in ipairs(MonetizationCatalog.GetAll()) do
-		-- Renascimento possui seu proprio momento e nunca aparece como oferta
-		-- generica dentro da loja.
-		if definition.Id ~= "ReviveNoCoinLoss"
+	for _, recommendation in ipairs(recommendations) do
+		if #entries >= 2 then
+			break
+		end
+		local definition = MonetizationCatalog.Get(recommendation.ProductId)
+		if definition
+			and definition.Id ~= "ReviveNoCoinLoss"
 			and definition.Enabled ~= false
-			and (
-				type(randomMerchantOfferId) ~= "string"
-				or randomMerchantOfferId == ""
-				or definition.Id == randomMerchantOfferId
-			)
 		then
 			table.insert(entries, storeEntry(player, definition, recommendation))
 		end
 	end
 	return {
 		Entries = entries,
-		Recommendation = recommendation,
+		Recommendation = recommendations[1],
+		Recommendations = recommendations,
 		PaidRandomItemsAllowed = policyFor(player).PaidRandomItemsAllowed,
 		TemporaryWingUses = tonumber(player:GetAttribute("TemporaryWingUses")) or 0,
 	}
@@ -633,13 +763,10 @@ local function promptPurchase(player, productId, purchaseSource)
 	if not globalStorePurchase and not isSkyMerchantOpen(player) then
 		return false, "Fale com o Mercador do Ceu para comprar."
 	end
-	local randomMerchantOfferId = player:GetAttribute("SkyMerchantRobuxOfferId")
 	if not globalStorePurchase
-		and type(randomMerchantOfferId) == "string"
-		and randomMerchantOfferId ~= ""
-		and productId ~= randomMerchantOfferId
+		and not MarketingOfferService.IsRecommended(player, productId)
 	then
-		return false, "Este mercador esta vendendo outra oferta."
+		return false, "Este produto nao foi recomendado para sua jornada."
 	end
 	if definition.PaidRandomItem and not policyFor(player).PaidRandomItemsAllowed then
 		return false, "Esta roleta nao esta disponivel para sua conta ou regiao."
@@ -768,6 +895,7 @@ local function restoreCape(player)
 	end
 	player:SetAttribute("InvisibleToEnemies", false)
 	player:SetAttribute("CapeActiveUntil", nil)
+	player:SetAttribute("CapeActivatedAt", nil)
 	if character then
 		character:SetAttribute("InvisibleToEnemies", false)
 	end
@@ -810,11 +938,14 @@ local function activateCape(player)
 	for _, descendant in ipairs(character:GetDescendants()) do
 		if descendant:IsA("BasePart") or descendant:IsA("Decal") then
 			original[descendant] = descendant.Transparency
-			descendant.Transparency = math.max(descendant.Transparency, 0.65)
+			-- O jogador permanece como uma silhueta tenue para conseguir se
+			-- orientar, mas deixa de parecer apenas semitransparente.
+			descendant.Transparency = math.max(descendant.Transparency, 0.82)
 		end
 	end
 	capeOriginalTransparency[player] = original
 	player:SetAttribute("InvisibleToEnemies", true)
+	player:SetAttribute("CapeActivatedAt", timestamp)
 	player:SetAttribute("CapeActiveUntil", timestamp + definition.DurationSeconds)
 	character:SetAttribute("InvisibleToEnemies", true)
 	player:SetAttribute("CapeReadyAt", timestamp + definition.CooldownSeconds)
@@ -826,15 +957,31 @@ local function activateCape(player)
 	return true, "Invisibilidade ativada."
 end
 
+local function stopWingFlight(player)
+	-- Encerre a animacao mesmo se outra rota ja tiver limpado o estado. Uma
+	-- AnimationTrack em loop nao pode sobreviver ao pouso ou cancelamento.
+	MonetizationAssetService.StopWingAnimations(player.Character, 0.08)
+	flightStates[player] = nil
+	if player.Parent == Players then
+		player:SetAttribute("WingActive", false)
+		player:SetAttribute("WingActiveUntil", nil)
+		player:SetAttribute("WingActivatedAt", nil)
+		player:SetAttribute("WingReadyAt", nil)
+		player:SetAttribute("WingFlightPhase", nil)
+		player:SetAttribute("WingRiseTargetY", nil)
+		publishEntitlements(player)
+	end
+end
+
 local function activateWing(player)
 	local definition = bestWing(player)
 	if not definition then
 		return false, "Voce nao possui asas."
 	end
-	local timestamp = workspace:GetServerTimeNow()
-	if timestamp < (tonumber(player:GetAttribute("WingReadyAt")) or 0) then
-		return false, "As asas ainda estao recarregando."
+	if flightStates[player] then
+		return true, "Voce ja esta voando."
 	end
+	local timestamp = workspace:GetServerTimeNow()
 	local character = player.Character
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 	local root = character and character:FindFirstChild("HumanoidRootPart")
@@ -846,6 +993,10 @@ local function activateWing(player)
 	then
 		return false, "As asas nao podem ser usadas agora."
 	end
+	local energy = ensureWingEnergy(player, definition)
+	if not energy or energy.Amount <= 0.1 then
+		return false, "Pouse para recuperar a estamina das asas."
+	end
 	if definition.Id == "TemporaryWings" then
 		local uses = tonumber(player:GetAttribute("TemporaryWingUses")) or 0
 		if uses <= 0 then
@@ -854,18 +1005,42 @@ local function activateWing(player)
 		player:SetAttribute("TemporaryWingUses", uses - 1)
 	end
 	addWingVisual(character, definition)
+	local flightConfig = wingFlightConfig(definition)
+	local riseStartY = root.Position.Y
 	flightStates[player] = {
-		EndsAt = timestamp + definition.Wing.FlightSeconds,
 		Speed = definition.Wing.HorizontalSpeed,
+		StartedAt = timestamp,
+		RiseEndsAt = timestamp + flightConfig.RiseTimeout,
+		RiseStartY = riseStartY,
+		RiseTargetY = riseStartY + flightConfig.RiseHeight,
+		Phase = "Rising",
+		FlightConfig = flightConfig,
+		LastDirection = nil,
 		Root = root,
 		Humanoid = humanoid,
 		Definition = definition,
+		Energy = energy,
+		GroundGraceUntil = timestamp + 0.5,
 	}
+	local velocity = root.AssemblyLinearVelocity
+	root.AssemblyLinearVelocity = Vector3.new(
+		velocity.X,
+		flightConfig.RiseVelocity,
+		velocity.Z
+	)
 	player:SetAttribute("WingActive", true)
-	player:SetAttribute("WingActiveUntil", flightStates[player].EndsAt)
-	player:SetAttribute("WingReadyAt", timestamp + definition.Wing.CooldownSeconds)
+	player:SetAttribute("WingActivatedAt", timestamp)
+	player:SetAttribute("WingActiveUntil", nil)
+	player:SetAttribute("WingReadyAt", nil)
+	player:SetAttribute("WingFlightPhase", "Rising")
+	player:SetAttribute("WingFlightStyle", "FastRiseThenSlowGlide")
+	player:SetAttribute("WingRiseHeight", flightConfig.RiseHeight)
+	player:SetAttribute("WingRiseTargetY", riseStartY + flightConfig.RiseHeight)
+	player:SetAttribute("WingLastRiseHeight", nil)
+	MonetizationAssetService.SetWingAnimationPlaying(character, definition, true)
+	publishWingEnergy(player, energy, true)
 	publishEntitlements(player)
-	return true, "Voo ativado."
+	return true, "As asas ganharam altura e abriram para planar."
 end
 
 local function updateBoostStates()
@@ -896,7 +1071,9 @@ function MonetizationService.Start()
 	started = true
 	event = ensureRemote("RemoteEvent", "MonetizationEvent")
 	request = ensureRemote("RemoteFunction", "MonetizationRequest")
-	workspace:SetAttribute("GlobalStoreServerVersion", "GlobalStoreV1")
+	workspace:SetAttribute("GlobalStoreServerVersion", "GlobalStoreV2PersonalMerchant")
+	workspace:SetAttribute("PersonalSkyMerchantServerVersion", "EncounterMemoryV4")
+	workspace:SetAttribute("MobilityPerksServerVersion", "WingAnimatorLandingStopV7")
 	MarketingOfferService.SetEvent(event)
 	MarketingOfferService.Start()
 	DeveloperProductService.Start()
@@ -916,14 +1093,80 @@ function MonetizationService.Start()
 			if not isSkyMerchantOpen(player) then
 				return nil
 			end
+			MarketingOfferService.MarkOpened(player)
 			MarketingOfferService.RecordStoreOpened(player)
 			return MonetizationService.GetStore(player)
+		elseif action == "PersonalMerchantEncounter" and type(productId) == "table" then
+			local outcome = productId.Outcome
+			local offerSerial = productId.OfferSerial
+			local success, message, state = MarketingOfferService.RecordEncounter(
+				player,
+				outcome,
+				offerSerial
+			)
+			return {
+				Success = success,
+				Message = message,
+				State = state,
+			}
+		elseif action == "ActivatePersonalMerchant" then
+			if player:GetAttribute("MerchantOfferReady") ~= true
+				or #MarketingOfferService.GetRecommendations(player) == 0
+				or player:GetAttribute("IsDowned") == true
+			then
+				return {
+					Success = false,
+					Message = "O Mercador ainda nao possui uma recomendacao para voce.",
+				}
+			end
+			local character = player.Character
+			local humanoid = character and character:FindFirstChildWhichIsA("Humanoid")
+			local root = character and character:FindFirstChild("HumanoidRootPart")
+			if not humanoid or humanoid.Health <= 0 or not root then
+				return {
+					Success = false,
+					Message = "O Mercador aguarda voce retornar a expedicao.",
+				}
+			end
+			player:SetAttribute("ShopOpen", true)
+			player:SetAttribute("ActiveShopId", "SkyMerchant")
+			player:SetAttribute("SkyMerchantOfferValid", true)
+			player:SetAttribute("SkyMerchantRobuxOfferId", nil)
+			player:SetAttribute("PersonalSkyMerchantState", "Open")
+			local store = MonetizationService.GetStore(player)
+			if type(store.Entries) ~= "table" or #store.Entries == 0 then
+				player:SetAttribute("ShopOpen", false)
+				player:SetAttribute("ActiveShopId", nil)
+				player:SetAttribute("SkyMerchantOfferValid", nil)
+				return {
+					Success = false,
+					Message = "As recomendacoes mudaram. O Mercador esta preparando novas ofertas.",
+				}
+			end
+			MarketingOfferService.MarkOpened(player)
+			MarketingOfferService.RecordStoreOpened(player)
+			if event then
+				event:FireClient(player, {
+					Action = "OpenPersonalMerchant",
+					Store = store,
+				})
+			end
+			return { Success = true, Store = store }
 		elseif action == "GetEntitlements" then
 			local wing = bestWing(player)
+			local cape = MonetizationCatalog.Get("InvisibilityCape")
+			local staminaMaximum, staminaRecharge = wingEnergyConfig(wing)
+			ensureWingEnergy(player, wing)
 			return {
 				WingProductId = wing and wing.Id or nil,
+				WingDisplayName = wing and wing.DisplayName or nil,
+				WingDurationSeconds = wing and staminaMaximum or nil,
+				WingStaminaMax = wing and staminaMaximum or nil,
+				WingStaminaRechargePerSecond = wing and staminaRecharge or nil,
 				TemporaryWingUses = tonumber(player:GetAttribute("TemporaryWingUses")) or 0,
-				OwnsCape = ownsPass(player, MonetizationCatalog.Get("InvisibilityCape")),
+				OwnsCape = ownsPass(player, cape),
+				CapeDurationSeconds = cape.DurationSeconds,
+				CapeCooldownSeconds = cape.CooldownSeconds,
 				OwnsPermanentPotion = ownsPass(player, MonetizationCatalog.Get("PermanentPotion")),
 			}
 		elseif action == "Prompt" and type(productId) == "string" then
@@ -1009,6 +1252,15 @@ function MonetizationService.Start()
 		player.CharacterAdded:Connect(function(character)
 			setupCharacter(player, character)
 		end)
+		player.CharacterRemoving:Connect(function(character)
+			MonetizationAssetService.StopWingAnimations(character, 0)
+			flightStates[player] = nil
+		end)
+		player:GetAttributeChangedSignal("WingActive"):Connect(function()
+			if player:GetAttribute("WingActive") ~= true then
+				MonetizationAssetService.StopWingAnimations(player.Character, 0.08)
+			end
+		end)
 		if player.Character then
 			setupCharacter(player, player.Character)
 		end
@@ -1019,6 +1271,7 @@ function MonetizationService.Start()
 	Players.PlayerAdded:Connect(setup)
 	Players.PlayerRemoving:Connect(function(player)
 		flightStates[player] = nil
+		wingEnergyStates[player] = nil
 		capeOriginalTransparency[player] = nil
 		passOwnership[player] = nil
 		policies[player] = nil
@@ -1043,31 +1296,124 @@ function MonetizationService.Start()
 			end
 		end
 		for player, state in pairs(flightStates) do
+			state.Energy.Amount = math.max(0, state.Energy.Amount - dt)
+			publishWingEnergy(player, state.Energy, false)
+			local landed = timestamp >= state.GroundGraceUntil
+				and state.Humanoid.FloorMaterial ~= Enum.Material.Air
 			if
 				player.Parent ~= Players
-				or timestamp >= state.EndsAt
 				or not state.Root.Parent
 				or not state.Humanoid.Parent
 				or state.Humanoid.Health <= 0
 				or player:GetAttribute("IsDowned") == true
 				or player:GetAttribute("WaterContacting") == true
+				or landed
 			then
-				flightStates[player] = nil
-				if player.Parent == Players then
-					player:SetAttribute("WingActive", false)
-					player:SetAttribute("WingActiveUntil", nil)
-					publishEntitlements(player)
-				end
+				stopWingFlight(player)
 			else
-				local direction = state.Humanoid.MoveDirection
-				local horizontal = Vector3.new(direction.X, 0, direction.Z)
-				if horizontal.Magnitude < 0.05 then
-					local look = state.Root.CFrame.LookVector
-					horizontal = Vector3.new(look.X, 0, look.Z)
+				local flightConfig = state.FlightConfig
+				local powered = state.Energy.Amount > 0
+				local remainingRise = state.RiseTargetY - state.Root.Position.Y
+				local nextPhase
+				if timestamp < state.RiseEndsAt and remainingRise > 0.04 then
+					nextPhase = "Rising"
+				elseif powered then
+					nextPhase = "Gliding"
+				else
+					nextPhase = "ExhaustedGlide"
 				end
-				horizontal = horizontal.Magnitude > 0.05 and horizontal.Unit or Vector3.zero
-				state.Root.AssemblyLinearVelocity = horizontal * state.Speed
-					+ Vector3.new(0, math.max(0, math.min(3, state.Root.AssemblyLinearVelocity.Y)), 0)
+				local completedRise = state.Phase == "Rising"
+					and nextPhase ~= "Rising"
+				if nextPhase ~= state.Phase then
+					state.Phase = nextPhase
+					player:SetAttribute("WingFlightPhase", nextPhase)
+					if completedRise then
+						player:SetAttribute(
+							"WingLastRiseHeight",
+							math.max(0, state.Root.Position.Y - state.RiseStartY)
+						)
+						player:SetAttribute("WingRiseTargetY", nil)
+					end
+				end
+				local moveDirection = state.Humanoid.MoveDirection
+				local desiredDirection = Vector3.new(moveDirection.X, 0, moveDirection.Z)
+				if desiredDirection.Magnitude < 0.05 then
+					local look = state.Root.CFrame.LookVector
+					desiredDirection = Vector3.new(look.X, 0, look.Z)
+				end
+				desiredDirection = desiredDirection.Magnitude > 0.05
+					and desiredDirection.Unit
+					or Vector3.zero
+				state.LastDirection = state.LastDirection
+					and state.LastDirection:Lerp(desiredDirection, math.clamp(dt * 7, 0, 1))
+					or desiredDirection
+				local currentVelocity = state.Root.AssemblyLinearVelocity
+				local horizontalMultiplier
+				if state.Phase == "Rising" then
+					horizontalMultiplier = flightConfig.RiseHorizontalMultiplier
+				elseif state.Phase == "Gliding" then
+					horizontalMultiplier = flightConfig.GlideSpeedMultiplier
+				else
+					horizontalMultiplier = flightConfig.ExhaustedGlideSpeedMultiplier
+				end
+				local desiredHorizontal =
+					state.LastDirection * state.Speed * horizontalMultiplier
+				local smoothedHorizontal = Vector3.new(currentVelocity.X, 0, currentVelocity.Z):Lerp(
+					desiredHorizontal,
+					math.clamp(dt * 6, 0, 1)
+				)
+				local verticalVelocity
+				if state.Phase == "Rising" then
+					-- A altura, e nao apenas o tempo, determina o fim da subida.
+					-- A velocidade maxima cria o impulso rapido e a frenagem
+					-- proporcional evita ultrapassar perceptivelmente o topo.
+					local brakingAcceleration = math.max(
+						55,
+						(flightConfig.RiseVelocity * flightConfig.RiseVelocity)
+							/ math.max(2, 2 * flightConfig.RiseHeight)
+					)
+					verticalVelocity = math.min(
+						flightConfig.RiseVelocity,
+						math.sqrt(
+							math.max(0, 2 * brakingAcceleration * remainingRise)
+						)
+					)
+					local nextStepDistance = verticalVelocity * dt
+					if nextStepDistance > remainingRise then
+						verticalVelocity = math.max(0, remainingRise / math.max(dt, 0.001))
+					end
+				else
+					local fallTarget = state.Phase == "Gliding"
+						and flightConfig.GlideFallSpeed
+						or flightConfig.ExhaustedGlideFallSpeed
+					local currentVertical = completedRise and 0 or currentVelocity.Y
+					verticalVelocity = currentVertical
+						+ (fallTarget - currentVertical)
+							* math.clamp(dt * 5.5, 0, 1)
+					verticalVelocity = math.max(verticalVelocity, fallTarget)
+				end
+				state.Root.AssemblyLinearVelocity = smoothedHorizontal
+					+ Vector3.new(0, verticalVelocity, 0)
+			end
+		end
+		for _, player in ipairs(Players:GetPlayers()) do
+			if not flightStates[player] then
+				local energy = wingEnergyStates[player]
+				local character = player.Character
+				local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+				local canRecharge = energy
+					and humanoid
+					and humanoid.Health > 0
+					and humanoid.FloorMaterial ~= Enum.Material.Air
+					and player:GetAttribute("IsDowned") ~= true
+					and player:GetAttribute("WaterContacting") ~= true
+				if canRecharge and energy.Amount < energy.Maximum then
+					energy.Amount = math.min(
+						energy.Maximum,
+						energy.Amount + energy.RechargePerSecond * dt
+					)
+					publishWingEnergy(player, energy, false)
+				end
 			end
 		end
 		boostElapsed += dt

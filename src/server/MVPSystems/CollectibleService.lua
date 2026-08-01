@@ -471,9 +471,7 @@ local function addCollectibleMarker(island, cell)
 end
 
 local function populateIsland(island, random)
-	if island:GetAttribute("CanSpawnItem") ~= true
-		or island:GetAttribute("SoloMerchantReserved") == true
-	then
+	if island:GetAttribute("CanSpawnItem") ~= true then
 		return 0
 	end
 	local chanceMultiplier = math.max(0, tonumber(island:GetAttribute("CollectibleChanceMultiplier")) or 1)

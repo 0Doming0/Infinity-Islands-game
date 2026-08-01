@@ -1,4 +1,4 @@
--- Sky Dungeon WaterRiseSystem V27 - aviso antes da inundacao e perigo da agua.
+-- Sky Dungeon WaterRiseSystem V28 - agua perigosa inclusive durante o tutorial.
 -- A agua usa a media protegida do coletivo. Sua superficie visual e dividida
 -- em tiles proximos aos jogadores, pois a fronteira pode crescer em qualquer X/Z.
 
@@ -12,6 +12,7 @@ local ScoreService = require(script.Parent.ScoreService_SkyDungeon_V10)
 local RunLevelService = require(script.Parent.RunLevelService)
 local CollectibleService = require(script.Parent.Parent:FindFirstChild("MVPSystems"):FindFirstChild("CollectibleService"))
 
+workspace:SetAttribute("WaterTutorialDangerVersion", "TutorialWaterAlwaysDangerousV1")
 
 local waterEvent = ReplicatedStorage:FindFirstChild("WaterEvent")
 if not waterEvent then
@@ -814,13 +815,19 @@ while true do
 		local touchingWater = feetY <= currentWaterY
 		local sanctuaryGraceActive = hasSanctuaryFloodGrace(player, data, touchingWater)
 		if touchingWater then
+			local enteredWater = data.inWater ~= true
 			data.inWater = true
 			player:SetAttribute("WaterContacting", true)
+			if enteredWater and player:GetAttribute("TutorialCompleted") ~= true then
+				-- Registra a licao sem encerrar a protecao contra inimigos. O HUD
+				-- reage a WaterDamageActive e mostra que o jogador precisa subir.
+				player:SetAttribute("TutorialWaterDangerSeen", true)
+				player:SetAttribute("TutorialWaterContactedAt", workspace:GetServerTimeNow())
+			end
 			if not sanctuaryGraceActive then
 				removeSafeZoneProtection(player, character)
 			end
 			local waterCanDamage = not sanctuaryGraceActive
-				and player:GetAttribute("TutorialWaterProtection") ~= true
 				and character:FindFirstChildOfClass("ForceField") == nil
 			setWaterDamageActive(player, waterCanDamage)
 			if waterCanDamage then

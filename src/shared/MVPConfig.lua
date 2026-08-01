@@ -97,15 +97,26 @@ local Config = {
 		GuaranteedEveryRounds = 6,
 		MediumChance = 0.08,
 		LargeChance = 0.16,
-		SoloMerchantMinimumRound = 2,
-		SoloMerchantChance = 0.07,
-		RandomMerchantRespawnCheckSeconds = 2,
-		RandomMerchantEdgePadding = 5,
-		-- O mercador errante prefere uma ilha ativa/proxima para nao nascer
-		-- invisivel no fim da malha procedural. Ele e reposicionado quando fica
-		-- muito longe ou quando a agua alcanca sua ilha.
-		RandomMerchantPlayerRadius = 320,
-		RandomMerchantRelocateDistance = 650,
+		-- O Mercador do Ceu e pessoal e criado apenas no cliente. Nenhuma ilha
+		-- e reservada para ele pelo gerador do mapa.
+		PersonalSkyMerchantRelocateDistance = 55,
+		-- O NPC pode antecipar a rota uma unica vez enquanto ainda nao foi
+		-- percebido. Depois de apresentado, fica preso a ilha do encontro.
+		PersonalSkyMerchantMaximumRelocations = 1,
+		PersonalSkyMerchantPromptPresentationSeconds = 1.5,
+		PersonalSkyMerchantNearbyPresentationDistance = 28,
+		PersonalSkyMerchantNearbyPresentationSeconds = 4,
+		PersonalSkyMerchantIgnoreDistance = 65,
+		PersonalSkyMerchantIgnoreSeconds = 3,
+		-- A oferta pronta espera brevemente o jogador demonstrar uma rota. Ao
+		-- receber a intencao do gerador, o conjunto completo nasce numa area
+		-- lateral da ilha e uma trilha celestial conduz o jogador ate a bancada.
+		PersonalSkyMerchantIntentWaitSeconds = 10,
+		PersonalSkyMerchantStandEdgeClearance = 4,
+		PersonalSkyMerchantStandSideOffset = 8,
+		PersonalSkyMerchantPathEntryInset = 3,
+		PersonalSkyMerchantPathLength = 13,
+		PersonalSkyMerchantPathWidth = 3.2,
 		MinimumBuildingCount = 2,
 		MaximumBuildingCount = 3,
 		MinimumVillagerCount = 2,
@@ -192,9 +203,18 @@ local Config = {
 	Monetization = {
 		-- O algoritmo apenas prepara uma recomendacao dentro do mercador.
 		-- Nunca abre uma janela de compra sozinho.
-		FirstOfferDelaySeconds = 180,
-		OfferEvaluationSeconds = 20,
-		OfferCooldownSeconds = 6 * 60,
+		-- A primeira janela varia deterministicamente por jogador. O mercador
+		-- nao aparece em um segundo identico para todos, mas tambem nao deixa
+		-- uma necessidade real esperando por varios minutos.
+		FirstOfferDelaySeconds = 70,
+		FirstOfferDelayJitterSeconds = 35,
+		OfferEvaluationSeconds = 5,
+		OfferCooldownSeconds = 4 * 60,
+		NeedObservationSeconds = 8,
+		NeedObservationJitterSeconds = 20,
+		UrgentOfferScore = 68,
+		UrgentNeedObservationSeconds = 3,
+		UrgentNeedObservationJitterSeconds = 8,
 		RefusedProductCooldownSeconds = 15 * 60,
 		MaximumOffersPerSession = 2,
 		CombatQuietSeconds = 12,
@@ -207,6 +227,11 @@ local Config = {
 		SessionIntentWeight = 0.25,
 		PlatformSpenderWeight = 0.15,
 		MinimumOfferScore = 42,
+		-- Mostra somente as melhores necessidades. Candidatos com contexto
+		-- repetido (por exemplo, varias asas) competem entre si e apenas o melhor
+		-- daquele contexto entra na lista.
+		MaximumMerchantRecommendations = 2,
+		MerchantRecommendationScoreWindow = 12,
 		StoreOpenIntentDebounceSeconds = 5,
 		TemporaryWingUsesPerPurchase = 3,
 	},

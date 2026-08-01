@@ -16,6 +16,7 @@ local CompanionCatalog = require(ReplicatedStorage:WaitForChild("CompanionCatalo
 local ScoreService = require(script.Parent.Parent.BlockParkour:WaitForChild("ScoreService_SkyDungeon_V10"))
 local PlayerDataService = require(script.Parent.Parent.BlockParkour:WaitForChild("PlayerDataService_SkyDungeon_V10"))
 local DeveloperProductService = require(script.Parent:WaitForChild("DeveloperProductService"))
+local MarketingOfferService = require(script.Parent:WaitForChild("MarketingOfferService"))
 
 local DeathReviveService = {}
 local pending = setmetatable({}, { __mode = "k" })
@@ -333,6 +334,7 @@ local function prepareInitialPlayer(player)
 end
 
 function DeathReviveService.RecordDeath(player, runScore, lostCoins, cause)
+	MarketingOfferService.Record(player, "Death", 1)
 	local serial = (player:GetAttribute("DeathScreenSerial") or 0) + 1
 	local state = {
 		Serial = serial,

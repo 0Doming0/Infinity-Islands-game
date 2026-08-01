@@ -1,5 +1,7 @@
 -- Tutorial contextual para iniciantes. O progresso e autoritativo no servidor e
 -- continua valido quando o jogador morre, reconecta ou entra no meio de um round.
+-- Enquanto o tutorial estiver incompleto, somente ataques de inimigos sao
+-- bloqueados. A agua continua perigosa e ignora esta protecao.
 
 local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
@@ -32,6 +34,24 @@ local SAFE_WATER_CLEARANCE = 9
 local CONTEXT_RECHECK_SECONDS = 1
 local CONTEXT_CHANGE_GRACE_SECONDS = 2
 local MAX_LOCAL_TARGET_DISTANCE = 58
+local PROTECTION_VERSION = "TutorialEnemySafeWaterDangerV1"
+
+workspace:SetAttribute("TutorialProtectionSystemVersion", PROTECTION_VERSION)
+
+local function setTutorialEnemyProtection(player, active)
+	local enabled = active == true
+	player:SetAttribute("TutorialEnemyProtection", enabled)
+	-- A protecao antiga contra agua nao faz mais parte do tutorial. Manter o
+	-- atributo explicitamente falso evita que servidores atualizados preservem
+	-- um valor legado durante o carregamento ou respawn.
+	player:SetAttribute("TutorialWaterProtection", false)
+
+	local character = player.Character
+	if character then
+		character:SetAttribute("TutorialEnemyProtected", enabled)
+		character:SetAttribute("TutorialProtectionVersion", PROTECTION_VERSION)
+	end
+end
 
 local STAGES = {
 	[1] = {
@@ -57,7 +77,7 @@ local STAGES = {
 	[5] = {
 		Id = "Water",
 		Title = "ÁGUA",
-		Instruction = "Suba da água.",
+		Instruction = "A água causa dano. Suba!",
 	},
 }
 
@@ -349,9 +369,9 @@ finishTutorial = function(player, state, skipped)
 	state.Token += 1
 	destroyStageAssets(player, state)
 	player:SetAttribute("TutorialActive", false)
-	player:SetAttribute("TutorialWaterProtection", false)
 	player:SetAttribute("TutorialCompleted", true)
 	player:SetAttribute("TutorialStage", TOTAL_STAGES)
+	setTutorialEnemyProtection(player, false)
 	if not state.ForcedForTesting or (MVPConfig.Tutorial or {}).PersistForcedCompletion == true then
 		PlayerDataService.SetTutorialProgress(player, TOTAL_STAGES, true)
 	end
@@ -450,6 +470,8 @@ local function bindCharacter(player, state, character)
 	if not humanoid or not root or not state.Active then
 		return
 	end
+	character:SetAttribute("TutorialEnemyProtected", true)
+	character:SetAttribute("TutorialProtectionVersion", PROTECTION_VERSION)
 	humanoid.StateChanged:Connect(function(_, nextState)
 		if states[player] == state and state.Active and nextState == Enum.HumanoidStateType.Jumping then
 			state.Jumped = true
@@ -474,17 +496,17 @@ local function setupPlayer(player)
 		return
 	end
 	setupStarted[player] = true
-	-- Protege a entrada enquanto o DataStore decide se este jogador ainda e
-	-- iniciante. Perfis concluidos perdem a protecao assim que o load termina.
-	player:SetAttribute("TutorialWaterProtection", true)
+	-- Protege contra inimigos enquanto o DataStore decide se este jogador ainda
+	-- e iniciante. A agua nunca usa esta protecao.
+	setTutorialEnemyProtection(player, true)
 	local data = PlayerDataService.Load(player)
 	local stage, completed = PlayerDataService.GetTutorialProgress(player)
 	local forcedForTesting = forceTutorialForTesting()
 	if completed and not forcedForTesting then
 		player:SetAttribute("TutorialActive", false)
-		player:SetAttribute("TutorialWaterProtection", false)
 		player:SetAttribute("TutorialCompleted", true)
 		player:SetAttribute("TutorialStage", TOTAL_STAGES)
+		setTutorialEnemyProtection(player, false)
 		return
 	end
 
@@ -502,9 +524,9 @@ local function setupPlayer(player)
 	}
 	states[player] = state
 	player:SetAttribute("TutorialActive", true)
-	player:SetAttribute("TutorialWaterProtection", true)
 	player:SetAttribute("TutorialCompleted", false)
 	player:SetAttribute("TutorialStage", state.Stage)
+	setTutorialEnemyProtection(player, true)
 
 	player.CharacterAdded:Connect(function(character)
 		bindCharacter(player, state, character)

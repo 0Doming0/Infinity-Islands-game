@@ -15,6 +15,12 @@ local playerGui = player:WaitForChild("PlayerGui")
 local villagerEvent = ReplicatedStorage:WaitForChild("VillagerEvent")
 local monetizationEvent = ReplicatedStorage:WaitForChild("MonetizationEvent")
 local request = ReplicatedStorage:WaitForChild("MonetizationRequest")
+local personalMerchantOpen = playerGui:FindFirstChild("PersonalSkyMerchantOpen")
+if not personalMerchantOpen then
+	personalMerchantOpen = Instance.new("BindableEvent")
+	personalMerchantOpen.Name = "PersonalSkyMerchantOpen"
+	personalMerchantOpen.Parent = playerGui
+end
 
 local COLORS = {
 	Backdrop = Color3.fromRGB(5, 9, 16),
@@ -104,7 +110,7 @@ local subtitle = Instance.new("TextLabel")
 subtitle.Position = UDim2.fromScale(0, 0.57)
 subtitle.Size = UDim2.new(1, -62, 0.36, 0)
 subtitle.BackgroundTransparency = 1
-subtitle.Text = "A OFERTA TERMINA QUANDO A ÁGUA CHEGAR À ILHA"
+subtitle.Text = "RECOMENDACOES ESCOLHIDAS PARA A SUA JORNADA"
 subtitle.TextColor3 = COLORS.Warning
 subtitle.TextXAlignment = Enum.TextXAlignment.Left
 subtitle.Font = Enum.Font.GothamBold
@@ -714,8 +720,22 @@ local function closeMerchant(notifyServer)
 	merchantOpen = false
 	panel.Visible = false
 	backdrop.Visible = false
+	player:SetAttribute("PersonalSkyMerchantUIState", "Closed")
 	restoreCamera()
 	if wasOpen and notifyServer ~= false then
+		local offerSerial = tonumber(player:GetAttribute("PersonalSkyMerchantEncounterSerial"))
+		player:SetAttribute("PersonalSkyMerchantUIState", "DismissRequested")
+		task.spawn(function()
+			pcall(
+				request.InvokeServer,
+				request,
+				"PersonalMerchantEncounter",
+				{
+					Outcome = "Dismissed",
+					OfferSerial = offerSerial,
+				}
+			)
+		end)
 		villagerEvent:FireServer({ action = "closeShop" })
 	end
 end
@@ -734,13 +754,22 @@ local function showExpirationToast(message)
 	end)
 end
 
-local function openMerchant()
-	local success, store = pcall(request.InvokeServer, request, "OpenStore")
-	if not success or type(store) ~= "table" then
+local function openMerchant(preloadedStore)
+	local store = preloadedStore
+	if type(store) ~= "table" then
+		local success
+		success, store = pcall(request.InvokeServer, request, "OpenStore")
+		if not success then
+			store = nil
+		end
+	end
+	if type(store) ~= "table" or type(store.Entries) ~= "table" or #store.Entries == 0 then
 		closeMerchant()
+		player:SetAttribute("PersonalSkyMerchantUIState", "OpenFailedNoOffers")
 		return
 	end
 	merchantOpen = true
+	player:SetAttribute("PersonalSkyMerchantUIState", "Open")
 	releaseFirstPerson()
 	backdrop.Visible = true
 	panel.Visible = true
@@ -781,10 +810,6 @@ nextButton.Activated:Connect(function()
 end)
 
 local function requestClose()
-	local entry = entries[currentIndex]
-	if entry and entry.Recommended then
-		invoke("DismissOffer", entry.Id)
-	end
 	closeMerchant()
 end
 
@@ -795,6 +820,10 @@ player.CharacterAdded:Connect(function()
 	if merchantOpen then
 		closeMerchant()
 	end
+end)
+
+personalMerchantOpen.Event:Connect(function(store)
+	openMerchant(store)
 end)
 
 UserInputService.InputBegan:Connect(function(input, processed)
@@ -829,7 +858,9 @@ monetizationEvent.OnClientEvent:Connect(function(data)
 	if type(data) ~= "table" then
 		return
 	end
-	if data.Action == "OfferReady" and merchantOpen then
+	if data.Action == "OpenPersonalMerchant" then
+		openMerchant(data.Store)
+	elseif data.Action == "OfferReady" and merchantOpen then
 		task.defer(openMerchant)
 	elseif data.Action == "PurchaseGranted" or data.Action == "Entitlements" then
 		setStatus(data.Message or "Compra concluida.", COLORS.Good)

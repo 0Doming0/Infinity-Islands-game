@@ -109,10 +109,9 @@ local SHOPS = {
 	},
 }
 
--- O Mercador do Ceu fica fora de VILLAGE_SHOP_ORDER de proposito. Ele usa o
--- algoritmo de comerciante solitario nas ilhas normais, nunca substitui a
--- populacao original dos santuarios e apresenta somente o catalogo narrativo
--- de monetizacao. Itens por moedas continuam pertencendo aos NPCs da vila.
+-- O Mercador do Ceu fica fora de VILLAGE_SHOP_ORDER de proposito. Seu NPC e
+-- criado localmente para cada jogador pelo algoritmo de recomendacao; ele
+-- nunca substitui a populacao das vilas nem reserva ilhas do mapa.
 SHOPS.SkyMerchant = {
 	ShopId = "SkyMerchant",
 	DisplayName = "Mercador do Ceu",

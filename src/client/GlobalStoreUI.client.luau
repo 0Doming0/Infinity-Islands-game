@@ -39,7 +39,7 @@ gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = false
 gui.DisplayOrder = 44
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-gui:SetAttribute("Version", "GlobalStoreV1")
+gui:SetAttribute("Version", "GlobalStoreV2PersonalMerchant")
 gui.Parent = playerGui
 
 local openButton = Instance.new("TextButton")

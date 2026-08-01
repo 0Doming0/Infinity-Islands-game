@@ -76,6 +76,7 @@ local reusedEdgeCount = 0
 local lastWorldAttributeUpdateAt = -math.huge
 local playerVisitedNodes = setmetatable({}, { __mode = "k" })
 local playerApproachIntents = setmetatable({}, { __mode = "k" })
+local PLAYER_INTENT_VALUE_NAME = "WorldIntentTargetIsland"
 local latestCollectiveSnapshot = {
 	Count = 0,
 	MeanY = nil,
@@ -128,6 +129,57 @@ local function getAlivePlayerRoots()
 	return result
 end
 
+local function getIntentTargetValue(player)
+	local existing = player:FindFirstChild(PLAYER_INTENT_VALUE_NAME)
+	if existing and not existing:IsA("ObjectValue") then
+		existing:Destroy()
+		existing = nil
+	end
+	if not existing then
+		existing = Instance.new("ObjectValue")
+		existing.Name = PLAYER_INTENT_VALUE_NAME
+		existing.Parent = player
+	end
+	return existing
+end
+
+local function clearPublishedApproachTarget(player)
+	local targetValue = player:FindFirstChild(PLAYER_INTENT_VALUE_NAME)
+	if targetValue and targetValue:IsA("ObjectValue") then
+		targetValue.Value = nil
+	end
+	player:SetAttribute("WorldIntentTargetIslandKey", nil)
+	player:SetAttribute("WorldIntentTargetConfidence", nil)
+	player:SetAttribute("WorldIntentTargetUpdatedAt", nil)
+	player:SetAttribute("WorldIntentState", "WaitingForTravelDirection")
+end
+
+local function publishApproachTarget(player, record, intent)
+	if not record
+		or not record.IslandModel
+		or not record.IslandModel.Parent
+	then
+		return false
+	end
+	local targetValue = getIntentTargetValue(player)
+	targetValue.Value = record.IslandModel
+	local sustainConfidence = intent.Sustain
+		/ math.max(0.001, Config.FRONTIER_INTENT_SUSTAIN_SECONDS)
+	local progressConfidence = intent.Progress
+		/ math.max(0.001, Config.FRONTIER_INTENT_MIN_PROGRESS_STUDS)
+	player:SetAttribute("WorldIntentTargetIslandKey", record.Key)
+	player:SetAttribute(
+		"WorldIntentTargetConfidence",
+		math.floor(math.clamp(math.min(sustainConfidence, progressConfidence), 0, 1) * 100 + 0.5)
+			/ 100
+	)
+	player:SetAttribute("WorldIntentTargetUpdatedAt", workspace:GetServerTimeNow())
+	player:SetAttribute("WorldIntentState", "TravelIntentConfirmed")
+	player:SetAttribute("WorldIntentAlgorithmVersion", "FrontierApproachSharedV1")
+	intent.Published = true
+	return true
+end
+
 local function validateConfig()
 	assert(Config.ENABLE_ISLAND_FRONTIER_WORLD, "[SkyDungeon] A fronteira por ilha esta desativada.")
 	assert(Config.FRONTIER_DISCOVERY_POLL_SECONDS >= 0.1, "Intervalo de descoberta muito baixo.")
@@ -138,6 +190,9 @@ local function validateConfig()
 	assert(Config.FRONTIER_INTENT_MIN_PROGRESS_STUDS > 0, "Progresso minimo de intencao invalido.")
 	assert(Config.FRONTIER_INTENT_MIN_MOVE_SPEED_STUDS >= 0, "Velocidade minima de intencao invalida.")
 	assert(Config.FRONTIER_INTENT_MIN_ALIGNMENT >= -1 and Config.FRONTIER_INTENT_MIN_ALIGNMENT <= 1)
+	assert(Config.FRONTIER_INTENT_PUBLISH_SUSTAIN_SECONDS >= 0)
+	assert(Config.FRONTIER_INTENT_PUBLISH_MIN_PROGRESS_STUDS >= 0)
+	assert(Config.FRONTIER_INTENT_PUBLISH_STALE_SECONDS > 0)
 	assert(Config.FRONTIER_MAX_GEOMETRY_OPERATIONS_PER_FRAME >= 1)
 	assert(Config.FRONTIER_GEOMETRY_PARTS_PER_FRAME >= 1)
 	assert(Config.FRONTIER_GENERATION_TIME_BUDGET_SECONDS > 0)
@@ -1143,6 +1198,7 @@ local function prepareApproachedFrontiers(playerRoots)
 		local currentLevel = entry.Player:GetAttribute("CurrentLogicalLevel")
 		local best
 		local bestScore = math.huge
+		local bestCanExpand = false
 		if typeof(currentIslandKey) == "string" and typeof(currentLevel) == "number" then
 			local outgoing = outgoingEdgesBySource[currentIslandKey]
 			for _, record in ipairs(queryNearbyRecords(
@@ -1158,9 +1214,6 @@ local function prepareApproachedFrontiers(playerRoots)
 				end
 				if isDirectChoice
 					and record.Spec.Level == currentLevel + 1
-					and not record.Expanded
-					and not record.Expanding
-					and not record.ScheduledExpansionRoundId
 					and record.Model
 					and record.Model.Parent
 					and not pointInsideIsland(
@@ -1179,6 +1232,9 @@ local function prepareApproachedFrontiers(playerRoots)
 						if score < bestScore then
 							best = record
 							bestScore = score
+							bestCanExpand = not record.Expanded
+								and not record.Expanding
+								and not record.ScheduledExpansionRoundId
 						end
 					end
 				end
@@ -1186,7 +1242,15 @@ local function prepareApproachedFrontiers(playerRoots)
 		end
 
 		if not best then
-			playerApproachIntents[entry.Player] = nil
+			local previousIntent = playerApproachIntents[entry.Player]
+			if not previousIntent
+				or not previousIntent.LastConfirmedAt
+				or now - previousIntent.LastConfirmedAt
+					> Config.FRONTIER_INTENT_PUBLISH_STALE_SECONDS
+			then
+				clearPublishedApproachTarget(entry.Player)
+				playerApproachIntents[entry.Player] = nil
+			end
 			continue
 		end
 
@@ -1210,25 +1274,32 @@ local function prepareApproachedFrontiers(playerRoots)
 		end
 		local movingSpeed = horizontalVelocity.Magnitude
 		local intent = playerApproachIntents[entry.Player]
+		local movingToward = false
 		if not intent or intent.TargetKey ~= best.Key then
+			if intent and intent.TargetKey ~= best.Key then
+				clearPublishedApproachTarget(entry.Player)
+			end
 			intent = {
 				TargetKey = best.Key,
 				LastScore = bestScore,
 				Progress = 0,
 				Sustain = 0,
 				LastSampleAt = now,
+				LastConfirmedAt = nil,
+				Published = false,
 				CooldownUntil = intent and intent.CooldownUntil or 0,
 			}
 			playerApproachIntents[entry.Player] = intent
 		else
 			local elapsed = math.clamp(now - intent.LastSampleAt, 0, 0.5)
 			local improvement = intent.LastScore - bestScore
-			local movingToward = movingSpeed >= Config.FRONTIER_INTENT_MIN_MOVE_SPEED_STUDS
+			movingToward = movingSpeed >= Config.FRONTIER_INTENT_MIN_MOVE_SPEED_STUDS
 				and alignment >= Config.FRONTIER_INTENT_MIN_ALIGNMENT
 				and improvement >= -Config.FRONTIER_INTENT_DISTANCE_REGRESSION_TOLERANCE_STUDS
 			if movingToward then
 				intent.Sustain += elapsed
 				intent.Progress += math.max(0, improvement)
+				intent.LastConfirmedAt = now
 			else
 				intent.Sustain = math.max(0, intent.Sustain - elapsed * 2)
 			end
@@ -1236,7 +1307,21 @@ local function prepareApproachedFrontiers(playerRoots)
 			intent.LastSampleAt = now
 		end
 
-		if now >= intent.CooldownUntil
+		if movingToward
+			and intent.Sustain >= Config.FRONTIER_INTENT_PUBLISH_SUSTAIN_SECONDS
+			and intent.Progress >= Config.FRONTIER_INTENT_PUBLISH_MIN_PROGRESS_STUDS
+		then
+			publishApproachTarget(entry.Player, best, intent)
+		elseif intent.Published
+			and intent.LastConfirmedAt
+			and now - intent.LastConfirmedAt > Config.FRONTIER_INTENT_PUBLISH_STALE_SECONDS
+		then
+			clearPublishedApproachTarget(entry.Player)
+			intent.Published = false
+		end
+
+		if bestCanExpand
+			and now >= intent.CooldownUntil
 			and intent.Sustain >= Config.FRONTIER_INTENT_SUSTAIN_SECONDS
 			and intent.Progress >= Config.FRONTIER_INTENT_MIN_PROGRESS_STUDS
 		then
@@ -1626,6 +1711,9 @@ function ChunkManager.Start()
 	lastWorldAttributeUpdateAt = -math.huge
 	playerVisitedNodes = setmetatable({}, { __mode = "k" })
 	playerApproachIntents = setmetatable({}, { __mode = "k" })
+	for _, player in ipairs(Players:GetPlayers()) do
+		clearPublishedApproachTarget(player)
+	end
 	latestCollectiveSnapshot = CollectiveProgressService.GetSnapshot()
 	prepareWorld()
 	local startSpec = IslandGraphPlanner.GetNodeSpec(baseSeed, 0, 0, 0)
@@ -1983,6 +2071,9 @@ end
 
 function ChunkManager.Stop()
 	running = false
+	for _, player in ipairs(Players:GetPlayers()) do
+		clearPublishedApproachTarget(player)
+	end
 end
 
 return ChunkManager

@@ -9,7 +9,7 @@ local MonetizationCatalog = require(ReplicatedStorage:WaitForChild("Monetization
 
 local IslandTypeService = {}
 local GRASS_FACE_NAME = "NormalBiomeGrassTopFace"
-local SOLO_MERCHANT_DECISION_VERSION = 1
+local SOLO_MERCHANT_DECISION_VERSION = 2
 
 local function setGrassColor(floor, grass, color)
 	floor:SetAttribute("DistantGrassColor", color)
@@ -33,44 +33,6 @@ end
 local function normalizedSeed(value)
 	local seed = math.floor(math.abs(tonumber(value) or 1)) % 2147483647
 	return seed == 0 and 1 or seed
-end
-
-local function isSoloMerchantRole(role)
-	return role == "FrontierIsland"
-		or string.find(role, "SideRoom", 1, true) ~= nil
-end
-
-local function reserveSoloMerchant(island, context, roundIndex, role)
-	local minimumRound = math.max(
-		1,
-		math.floor(tonumber(MVPConfig.Village.SoloMerchantMinimumRound) or 2)
-	)
-	if roundIndex < minimumRound
-		or island:GetAttribute("IslandType") ~= "Normal"
-		or island:GetAttribute("IsSanctuary") == true
-		or island:GetAttribute("IsSocialSanctuary") == true
-		or not isSoloMerchantRole(role)
-	then
-		return false
-	end
-
-	local chance = math.clamp(tonumber(MVPConfig.Village.SoloMerchantChance) or 0, 0, 1)
-	local seed = normalizedSeed(
-		(island:GetAttribute("IslandSeed") or context.RoundSeed or 1)
-			+ MVPConfig.Village.RandomSalt
-	)
-	local roll = Random.new(seed):NextNumber()
-	local reserved = roll <= chance
-	island:SetAttribute("SoloMerchantRoll", roll)
-	island:SetAttribute("SoloMerchantChance", chance)
-	island:SetAttribute("SoloMerchantReserved", reserved)
-	if reserved then
-		-- A reserva acontece antes de baus, monstros e coletaveis serem adiados.
-		-- Assim a ordem dos workers nunca muda o resultado da ilha.
-		island:SetAttribute("CanSpawnMonster", false)
-		island:SetAttribute("CanSpawnItem", false)
-	end
-	return reserved
 end
 
 local function addLabel(island, floor, text, color)
@@ -212,7 +174,8 @@ function IslandTypeService.Classify(island, context)
 		styleIsland(island, "Elite", tier)
 		return "Elite"
 	end
-	reserveSoloMerchant(island, context, roundIndex, role)
+	-- O Mercador do Ceu pessoal existe somente no cliente. Ilhas normais nunca
+	-- sao reservadas para ele e conservam as regras comuns de mobs e itens.
 	return "Normal"
 end
 

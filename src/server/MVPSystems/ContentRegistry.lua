@@ -26,6 +26,17 @@ local rootFolder = nil
 local entriesByCategory = {}
 local entriesById = {}
 
+local function isReservedSkyMerchantTemplate(template)
+	if not template then
+		return false
+	end
+	local lowerName = string.lower(template.Name)
+	return lowerName == "skymechant"
+		or lowerName == "skymerchant"
+		or template:GetAttribute("ReservedForSkyMerchant") == true
+		or template:GetAttribute("ShopId") == "SkyMerchant"
+end
+
 local function copyCategory(category)
 	local source = entriesByCategory[category] or {}
 	local copy = table.create(#source)
@@ -56,6 +67,11 @@ local function registerCategory(category, folder)
 	local byId = {}
 
 	for _, template in ipairs(folder:GetChildren()) do
+		-- SkyMechant e um visual exclusivo do Mercador pessoal. Nao o registra
+		-- como aldeao comum, impedindo casas e geradores genericos de consumi-lo.
+		if category == "Villagers" and isReservedSkyMerchantTemplate(template) then
+			continue
+		end
 		local enabled = template:GetAttribute("Enabled")
 		if enabled == false then
 			continue

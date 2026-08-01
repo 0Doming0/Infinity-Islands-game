@@ -20,6 +20,11 @@ local ScoreService = require(BlockParkour:WaitForChild("ScoreService_SkyDungeon_
 local SwordProgressionService = {}
 local started = false
 local deliveryTokens = setmetatable({}, { __mode = "k" })
+local initializedPlayers = setmetatable({}, { __mode = "k" })
+local characterGenerations = setmetatable({}, { __mode = "k" })
+
+local DELIVERY_CHECKPOINTS = table.freeze({ 0, 0.35, 1.5, 4 })
+local DELIVERY_VERSION = "FirstSpawnReliableV2"
 
 local function ensureFolder(parent, name)
 	local folder = parent:FindFirstChild(name)
@@ -172,7 +177,7 @@ local function isCatalogSword(instance)
 	return instance:IsA("Tool") and Catalog.Get(instance:GetAttribute("SwordId") or instance.Name) ~= nil
 end
 
-local function removeRuntimeSwords(player)
+local function removeRuntimeSwordsExcept(player, keep)
 	local containers = {
 		player.Character,
 		player:FindFirstChildOfClass("Backpack"),
@@ -181,12 +186,35 @@ local function removeRuntimeSwords(player)
 	for _, container in ipairs(containers) do
 		if container then
 			for _, child in ipairs(container:GetChildren()) do
-				if isCatalogSword(child) then
+				if child ~= keep and isCatalogSword(child) then
 					child:Destroy()
 				end
 			end
 		end
 	end
+end
+
+local function getSwordId(instance)
+	if not isCatalogSword(instance) then
+		return nil
+	end
+	return instance:GetAttribute("SwordId") or instance.Name
+end
+
+local function findDeliveredSword(player, swordId, character, backpack)
+	for _, container in ipairs({ character, backpack }) do
+		if container then
+			for _, child in ipairs(container:GetChildren()) do
+				if
+					getSwordId(child) == swordId
+					and child:GetAttribute("ServerValidatedSword") == true
+				then
+					return child
+				end
+			end
+		end
+	end
+	return nil
 end
 
 local function cloneRuntimeSword(swordId)
@@ -213,8 +241,58 @@ local function cloneRuntimeSword(swordId)
 	return sword
 end
 
-function SwordProgressionService.DeliverEquippedSword(player, autoEquip)
+local function publishSwordAttributes(player, swordId)
+	local definition = Catalog.Get(swordId)
+	player:SetAttribute("EquippedSword", swordId)
+	player:SetAttribute("EquippedSwordName", definition.DisplayName)
+	ScoreService.SetSwordMultiplier(player, definition.ScoreMultiplier)
+	player:SetAttribute("SwordCoinMultiplier", definition.CoinMultiplier)
+end
+
+local function watchDeliveredSword(player, character, sword)
+	if sword:GetAttribute("StarterSwordRemovalWatch") == true then
+		return
+	end
+	sword:SetAttribute("StarterSwordRemovalWatch", true)
+	sword.AncestryChanged:Connect(function()
+		task.delay(0.15, function()
+			if
+				player.Parent ~= Players
+				or player.Character ~= character
+				or sword:IsDescendantOf(character)
+				or sword:IsDescendantOf(player)
+			then
+				return
+			end
+			local humanoid = character:FindFirstChildOfClass("Humanoid")
+			if humanoid and humanoid.Health > 0 then
+				player:SetAttribute("StarterSwordDeliveryState", "RecoveringRemovedSword")
+				SwordProgressionService.DeliverEquippedSword(
+					player,
+					true,
+					character,
+					"RuntimeSwordRemoved"
+				)
+			end
+		end)
+	end)
+end
+
+function SwordProgressionService.DeliverEquippedSword(player, autoEquip, expectedCharacter, reason)
 	local data = PlayerDataService.Get(player) or PlayerDataService.Load(player)
+	local character = expectedCharacter or player.Character
+	if
+		player.Parent ~= Players
+		or not character
+		or player.Character ~= character
+	then
+		return false, "CharacterChanged"
+	end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not humanoid or humanoid.Health <= 0 then
+		return false, "CharacterNotAlive"
+	end
+
 	local swordId = data.EquippedSword
 	if not Catalog.Get(swordId) or not data.OwnedSwords[swordId] then
 		swordId = Catalog.GetStarterId()
@@ -222,35 +300,58 @@ function SwordProgressionService.DeliverEquippedSword(player, autoEquip)
 		PlayerDataService.SetEquippedSword(player, swordId)
 	end
 
+	-- Resolve e valida a mochila atual antes de remover qualquer Tool. No spawn
+	-- inicial o Roblox pode substituir uma Backpack criada cedo; apagar primeiro
+	-- deixava uma janela na qual a entrega terminava sem espada.
+	local backpack = player:FindFirstChildOfClass("Backpack")
+		or player:WaitForChild("Backpack", 8)
+	if
+		not backpack
+		or backpack.Parent ~= player
+		or player.Character ~= character
+	then
+		return false, "BackpackChanged"
+	end
+
+	local sword = findDeliveredSword(player, swordId, character, backpack)
+	if not sword then
+		sword = cloneRuntimeSword(swordId)
+		if not sword then
+			warn("[SwordProgression] Template ausente para " .. swordId)
+			player:SetAttribute("StarterSwordDeliveryState", "TemplateMissing")
+			return false, "TemplateMissing"
+		end
+	end
+
+	-- A partir daqui nao ha yield: duas solicitacoes concorrentes nao podem
+	-- apagar a arma uma da outra entre a limpeza e a insercao.
 	deliveryTokens[player] = (deliveryTokens[player] or 0) + 1
 	local token = deliveryTokens[player]
-	removeRuntimeSwords(player)
-	local backpack = player:FindFirstChildOfClass("Backpack") or player:WaitForChild("Backpack", 8)
-	if not backpack or deliveryTokens[player] ~= token then
-		return false
+	removeRuntimeSwordsExcept(player, sword)
+	if sword.Parent == nil then
+		sword.Parent = backpack
 	end
-	local sword = cloneRuntimeSword(swordId)
-	if not sword then
-		warn("[SwordProgression] Template ausente para " .. swordId)
-		return false
-	end
-	sword.Parent = backpack
-	local definition = Catalog.Get(swordId)
-	player:SetAttribute("EquippedSword", swordId)
-	player:SetAttribute("EquippedSwordName", definition.DisplayName)
-	ScoreService.SetSwordMultiplier(player, definition.ScoreMultiplier)
-	player:SetAttribute("SwordCoinMultiplier", definition.CoinMultiplier)
+	publishSwordAttributes(player, swordId)
+	watchDeliveredSword(player, character, sword)
+	player:SetAttribute("StarterSwordDeliveryVersion", DELIVERY_VERSION)
+	player:SetAttribute("StarterSwordDeliveryState", "Ready")
+	player:SetAttribute("StarterSwordLastReason", tostring(reason or "Direct"))
+	player:SetAttribute("StarterSwordReady", true)
 
-	if autoEquip ~= false then
+	if autoEquip ~= false and sword.Parent == backpack then
 		task.defer(function()
-			local character = player.Character
-			local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-			if humanoid and humanoid.Health > 0 and sword.Parent == backpack then
+			if
+				deliveryTokens[player] == token
+				and player.Character == character
+				and humanoid.Parent == character
+				and humanoid.Health > 0
+				and sword.Parent == backpack
+			then
 				humanoid:EquipTool(sword)
 			end
 		end)
 	end
-	return true
+	return true, sword
 end
 
 function SwordProgressionService.GetShopInventory(player)
@@ -314,25 +415,75 @@ function SwordProgressionService.Equip(player, swordId)
 end
 
 local function setupPlayer(player)
-	local data = PlayerDataService.Load(player)
-	local count = 0
-	for _, owned in pairs(data.OwnedSwords) do
-		if owned then
-			count += 1
-		end
+	if initializedPlayers[player] then
+		return
 	end
-	player:SetAttribute("OwnedSwordCount", count)
-	player:SetAttribute("EquippedSword", data.EquippedSword)
-	player.CharacterAdded:Connect(function()
-		task.delay(0.35, function()
-			if player.Parent == Players then
-				SwordProgressionService.DeliverEquippedSword(player, true)
+	initializedPlayers[player] = true
+	player:SetAttribute("StarterSwordDeliveryVersion", DELIVERY_VERSION)
+	player:SetAttribute("StarterSwordDeliveryState", "WaitingForCharacter")
+	player:SetAttribute("StarterSwordReady", false)
+
+	local function scheduleForCharacter(character)
+		characterGenerations[player] = (characterGenerations[player] or 0) + 1
+		local generation = characterGenerations[player]
+		player:SetAttribute("StarterSwordReady", false)
+		player:SetAttribute("StarterSwordDeliveryState", "WaitingForData")
+
+		task.spawn(function()
+			-- Checkpoints posteriores tornam a entrega autocorretiva caso outro
+			-- sistema do primeiro spawn substitua a Backpack ou remova a Tool.
+			local elapsed = 0
+			for attempt, checkpoint in ipairs(DELIVERY_CHECKPOINTS) do
+				local waitTime = checkpoint - elapsed
+				elapsed = checkpoint
+				if waitTime > 0 then
+					task.wait(waitTime)
+				end
+				if
+					player.Parent ~= Players
+					or player.Character ~= character
+					or characterGenerations[player] ~= generation
+				then
+					return
+				end
+				player:SetAttribute("StarterSwordDeliveryAttempt", attempt)
+				local success, failure = SwordProgressionService.DeliverEquippedSword(
+					player,
+					true,
+					character,
+					attempt == 1 and "CharacterAdded" or "FirstSpawnVerification"
+				)
+				if not success then
+					player:SetAttribute("StarterSwordDeliveryState", tostring(failure))
+				end
 			end
 		end)
-	end)
-	if player.Character then
-		task.delay(0.35, SwordProgressionService.DeliverEquippedSword, player, true)
 	end
+
+	-- A conexao vem antes do DataStore. Um PlayerAdded de servidor ja aberto
+	-- pode gerar o personagem enquanto Load() ainda esta aguardando rede.
+	player.CharacterAdded:Connect(scheduleForCharacter)
+	if player.Character then
+		scheduleForCharacter(player.Character)
+	end
+
+	task.spawn(function()
+		local data = PlayerDataService.Load(player)
+		if player.Parent ~= Players then
+			return
+		end
+		local count = 0
+		for _, owned in pairs(data.OwnedSwords) do
+			if owned then
+				count += 1
+			end
+		end
+		player:SetAttribute("OwnedSwordCount", count)
+		player:SetAttribute("EquippedSword", data.EquippedSword)
+		if not player.Character then
+			player:SetAttribute("StarterSwordDeliveryState", "DataReadyWaitingForCharacter")
+		end
+	end)
 end
 
 function SwordProgressionService.Start()
@@ -345,6 +496,8 @@ function SwordProgressionService.Start()
 	Players.PlayerAdded:Connect(setupPlayer)
 	Players.PlayerRemoving:Connect(function(player)
 		deliveryTokens[player] = nil
+		initializedPlayers[player] = nil
+		characterGenerations[player] = nil
 	end)
 	for _, player in ipairs(Players:GetPlayers()) do
 		task.spawn(setupPlayer, player)

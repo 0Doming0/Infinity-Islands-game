@@ -15,7 +15,13 @@ local ASSET_FOLDER_NAME = "Monetization"
 local EQUIPMENT_SLOT_ATTRIBUTE = "MonetizationEquipmentSlot"
 local PRODUCT_ATTRIBUTE = "MonetizationProductId"
 local FALLBACK_ATTRIBUTE = "MonetizationAssetFallback"
+local WING_ANIMATION_NAME = "PlayWings"
+local WING_ANIMATION_READY_ATTRIBUTE = "PlayWingsAnimationReady"
+local WING_ANIMATION_PLAYING_ATTRIBUTE = "PlayWingsAnimationPlaying"
+local WING_ANIMATION_TRACK_NAME_ATTRIBUTE = "WingFlightAnimationName"
 local warned = {}
+local wingAnimationTracks = setmetatable({}, { __mode = "k" })
+local stopTrack
 
 local function warnOnce(key, message)
 	if warned[key] then
@@ -85,7 +91,7 @@ function MonetizationAssetService.FindTemplate(definition)
 			return direct
 		end
 	end
-	-- Permite organizar os quatro modelos em subpastas sem perder a descoberta
+	-- Permite organizar os modelos em subpastas sem perder a descoberta
 	-- automatica, mas nunca procura fora de MVPAssets/Monetization.
 	for _, descendant in ipairs(folder:GetDescendants()) do
 		if acceptedTemplate(descendant) then
@@ -139,6 +145,9 @@ function MonetizationAssetService.ClearSlot(character, slot)
 		return
 	end
 	for _, instance in ipairs(equipmentRoots(character, slot)) do
+		if slot == "Wings" then
+			stopTrack(instance, 0)
+		end
 		instance:Destroy()
 	end
 	if slot == "Wings" then
@@ -226,6 +235,162 @@ local function partsOf(clone)
 	return parts
 end
 
+local function animationName(definition)
+	local config = definition and definition.Asset
+	if type(config) == "table"
+		and type(config.FlightAnimationName) == "string"
+		and config.FlightAnimationName ~= ""
+	then
+		return config.FlightAnimationName
+	end
+	return WING_ANIMATION_NAME
+end
+
+local function prepareWingAnimator(clone, definition, slot)
+	if slot ~= "Wings" then
+		return
+	end
+
+	local name = animationName(definition)
+	local animation = clone:FindFirstChild(name, true)
+	if not animation or not animation:IsA("Animation") then
+		clone:SetAttribute(WING_ANIMATION_READY_ATTRIBUTE, false)
+		warnOnce(
+			"MissingWingAnimation:" .. tostring(definition.Id),
+			string.format(
+				"%s precisa conter um objeto Animation chamado %s.",
+				tostring(definition.DisplayName or definition.Id),
+				name
+			)
+		)
+		return
+	end
+	clone:SetAttribute(WING_ANIMATION_TRACK_NAME_ATTRIBUTE, name)
+
+	-- O Animator precisa nascer no servidor para a animacao das asas ser
+	-- replicada e ficar visivel para todos os jogadores.
+	local controller = clone:FindFirstChildWhichIsA("AnimationController", true)
+	if not controller then
+		controller = Instance.new("AnimationController")
+		controller.Name = "WingsAnimationController"
+		controller.Parent = clone
+	end
+	local animator = controller:FindFirstChildOfClass("Animator")
+	if not animator then
+		animator = Instance.new("Animator")
+		animator.Name = "WingsAnimator"
+		animator.Parent = controller
+	end
+	clone:SetAttribute(WING_ANIMATION_READY_ATTRIBUTE, true)
+end
+
+local function animationRoots(character)
+	return equipmentRoots(character, "Wings")
+end
+
+stopTrack = function(root, fadeTime)
+	local cachedTrack = wingAnimationTracks[root]
+	local expectedName = root:GetAttribute(WING_ANIMATION_TRACK_NAME_ATTRIBUTE)
+	if type(expectedName) ~= "string" or expectedName == "" then
+		expectedName = WING_ANIMATION_NAME
+	end
+
+	-- Nao dependa apenas do cache: uma faixa pode continuar viva no Animator
+	-- depois de uma troca rapida de modelo, recarregamento ou interrupcao do voo.
+	for _, descendant in ipairs(root:GetDescendants()) do
+		if descendant:IsA("Animator") then
+			local ok, playingTracks = pcall(
+				descendant.GetPlayingAnimationTracks,
+				descendant
+			)
+			if ok then
+				for _, track in ipairs(playingTracks) do
+					local source = track.Animation
+					local isWingFlightTrack = track == cachedTrack
+						or track.Name == expectedName
+						or (
+							source
+							and source:IsDescendantOf(root)
+							and source.Name == expectedName
+						)
+					if isWingFlightTrack then
+						pcall(track.Stop, track, fadeTime or 0.08)
+					end
+				end
+			end
+		end
+	end
+
+	if cachedTrack and cachedTrack.IsPlaying then
+		pcall(cachedTrack.Stop, cachedTrack, fadeTime or 0.08)
+	end
+	wingAnimationTracks[root] = nil
+	root:SetAttribute(WING_ANIMATION_PLAYING_ATTRIBUTE, false)
+end
+
+function MonetizationAssetService.StopWingAnimations(character, fadeTime)
+	if not character then
+		return false
+	end
+	local changed = false
+	for _, root in ipairs(animationRoots(character)) do
+		stopTrack(root, fadeTime)
+		changed = true
+	end
+	return changed
+end
+
+function MonetizationAssetService.SetWingAnimationPlaying(character, definition, playing)
+	if not character then
+		return false
+	end
+
+	local changed = false
+	for _, root in ipairs(animationRoots(character)) do
+		if not playing then
+			stopTrack(root, 0.08)
+			changed = true
+			continue
+		end
+
+		local name = animationName(definition)
+		local animation = root:FindFirstChild(name, true)
+		local animator = root:FindFirstChildWhichIsA("Animator", true)
+		if not animation or not animation:IsA("Animation") or not animator then
+			root:SetAttribute(WING_ANIMATION_READY_ATTRIBUTE, false)
+			continue
+		end
+
+		local track = wingAnimationTracks[root]
+		if not track then
+			local loaded, result = pcall(animator.LoadAnimation, animator, animation)
+			if not loaded then
+				warnOnce(
+					"LoadWingAnimation:" .. tostring(definition and definition.Id),
+					"Nao foi possivel carregar " .. name .. ": " .. tostring(result)
+				)
+				continue
+			end
+			track = result
+			track.Looped = true
+			track.Priority = Enum.AnimationPriority.Movement
+			wingAnimationTracks[root] = track
+			track.Stopped:Connect(function()
+				if wingAnimationTracks[root] == track then
+					root:SetAttribute(WING_ANIMATION_PLAYING_ATTRIBUTE, false)
+				end
+			end)
+		end
+		if not track.IsPlaying then
+			track:Play(0.12, 1, 1)
+		end
+		root:SetAttribute(WING_ANIMATION_READY_ATTRIBUTE, true)
+		root:SetAttribute(WING_ANIMATION_PLAYING_ATTRIBUTE, true)
+		changed = true
+	end
+	return changed
+end
+
 local function equipAccessory(character, humanoid, torso, clone, definition, slot)
 	local handle = clone:FindFirstChild("Handle")
 	if not handle or not handle:IsA("BasePart") then
@@ -282,27 +447,63 @@ local function equipModel(character, torso, clone, definition, slot)
 	clone.Parent = character
 
 	local config = definition.Asset or {}
+	local orientationOffset = typeof(config.ModelOrientationOffset) == "CFrame"
+		and config.ModelOrientationOffset or CFrame.new()
 	local attachmentName = type(config.AttachmentName) == "string"
 		and config.AttachmentName or "BodyBackAttachment"
 	local sourceAttachment = clone:FindFirstChild(attachmentName, true)
 	local targetAttachment = findAttachmentOutside(character, attachmentName, clone)
 	local pivot = clonePivot(clone)
 	if sourceAttachment and sourceAttachment:IsA("Attachment") and targetAttachment and pivot then
-		local delta = targetAttachment.WorldCFrame * sourceAttachment.WorldCFrame:Inverse()
+		-- A orientacao extra e aplicada no espaco local do attachment do
+		-- personagem. Assim modelos que vieram girados do editor podem ser
+		-- corrigidos sem alterar o asset original no ServerStorage.
+		local targetCFrame = targetAttachment.WorldCFrame * orientationOffset
+		local delta = targetCFrame * sourceAttachment.WorldCFrame:Inverse()
 		pivotClone(clone, delta * pivot)
 	else
 		local offset = typeof(config.FallbackOffset) == "CFrame"
 			and config.FallbackOffset or CFrame.new(0, 0, 0.65)
-		pivotClone(clone, torso.CFrame * offset)
+		pivotClone(clone, torso.CFrame * offset * orientationOffset)
 	end
 
+	-- Em rigs animados, as partes Part1 de Motor6D precisam permanecer livres
+	-- para o Animator movimenta-las. Somente as raizes do rig sao presas ao
+	-- torso. Modelos sem Motor6D mantem o encaixe rigido anterior.
+	local animatedParts = {}
+	local hasMotor = false
+	for _, descendant in ipairs(clone:GetDescendants()) do
+		if descendant:IsA("Motor6D")
+			and descendant.Part0
+			and descendant.Part1
+			and descendant.Part0:IsDescendantOf(clone)
+			and descendant.Part1:IsDescendantOf(clone)
+		then
+			hasMotor = true
+			animatedParts[descendant.Part1] = true
+		end
+	end
+	local weldedRoots = 0
 	for _, part in ipairs(parts) do
+		if hasMotor and animatedParts[part] then
+			continue
+		end
 		local weld = Instance.new("WeldConstraint")
 		weld.Name = "MonetizationAutoWeld"
 		weld.Part0 = torso
 		weld.Part1 = part
 		weld.Parent = part
+		weldedRoots += 1
 	end
+	if weldedRoots == 0 then
+		local rootPart = clone:IsA("Model") and clone.PrimaryPart or parts[1]
+		local weld = Instance.new("WeldConstraint")
+		weld.Name = "MonetizationAutoWeld"
+		weld.Part0 = torso
+		weld.Part1 = rootPart
+		weld.Parent = rootPart
+	end
+	prepareWingAnimator(clone, definition, slot)
 	return true, clone
 end
 
