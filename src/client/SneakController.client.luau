@@ -1,4 +1,4 @@
--- Shift/R3/botao de toque: agachamento no estilo Minecraft.
+-- Shift segura; R3/botao de toque alternam o agachamento no estilo Minecraft.
 -- Um raycast acompanha a direcao do input. Quando nao existe piso adiante,
 -- uma barreira invisivel criada somente neste cliente impede a queda sem
 -- cancelar o input, teleportar ou alterar a velocidade do personagem.
@@ -32,6 +32,18 @@ local sneakIdleAnimation
 local sneakWalkAnimation
 local sneakIdleTrack
 local sneakWalkTrack
+local sneakButton
+
+local function updateSneakButton()
+	if not sneakButton then
+		return
+	end
+	sneakButton.BackgroundColor3 = crouchWanted and Color3.fromRGB(72, 177, 139) or Color3.fromRGB(88, 108, 126)
+	local caption = sneakButton:FindFirstChild("CompactCaption")
+	if caption and caption:IsA("TextLabel") then
+		caption.Text = crouchWanted and "AGACHADO" or "AGACHAR"
+	end
+end
 
 local function removeEdgeBarrier()
 	if edgeBarrier then
@@ -227,6 +239,7 @@ local function requestCrouch(enabled, force)
 	end
 
 	crouchWanted = enabled
+	updateSneakButton()
 	lastRequestAt = os.clock()
 	if enabled then
 		-- O servidor tambem garante exclusao mutua, mas isto elimina atraso visual.
@@ -416,27 +429,50 @@ end)
 
 local function sneakAction(_, inputState)
 	if inputState == Enum.UserInputState.Begin then
-		requestCrouch(true, true)
-	elseif inputState == Enum.UserInputState.End or inputState == Enum.UserInputState.Cancel then
-		requestCrouch(false, true)
+		-- R3 e toque sao toggle. Teclado continua com comportamento segurar via
+		-- InputBegan/InputEnded acima.
+		requestCrouch(not crouchWanted, true)
 	end
 	return Enum.ContextActionResult.Sink
 end
 
 ContextActionService:BindAction(ACTION_NAME, sneakAction, true, Enum.KeyCode.ButtonR3)
-ContextActionService:SetTitle(ACTION_NAME, "AGACHAR")
+ContextActionService:SetTitle(ACTION_NAME, "◢")
 ContextActionService:SetPosition(ACTION_NAME, SprintConfig.SneakTouchButtonPosition)
 
 local button = ContextActionService:GetButton(ACTION_NAME)
 if button then
+	sneakButton = button
 	button.Name = "SneakButton"
-	button.Size = UDim2.fromOffset(82, 82)
+	button.Size = UDim2.fromOffset(58, 58)
 	button.BackgroundColor3 = Color3.fromRGB(88, 108, 126)
 	button.BackgroundTransparency = 0.14
 	local corner = Instance.new("UICorner")
 	corner.CornerRadius = UDim.new(1, 0)
 	corner.Parent = button
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(220, 232, 241)
+	stroke.Transparency = 0.34
+	stroke.Thickness = 1.5
+	stroke.Parent = button
+	local caption = Instance.new("TextLabel")
+	caption.Name = "CompactCaption"
+	caption.AnchorPoint = Vector2.new(0.5, 1)
+	caption.Position = UDim2.new(0.5, 0, 1, -5)
+	caption.Size = UDim2.new(1, -6, 0, 10)
+	caption.BackgroundTransparency = 1
+	caption.Text = "AGACHAR"
+	caption.TextColor3 = Color3.fromRGB(243, 248, 252)
+	caption.Font = Enum.Font.GothamBold
+	caption.TextSize = 8
+	caption.Parent = button
 end
+
+player:GetAttributeChangedSignal("IsDowned"):Connect(function()
+	if player:GetAttribute("IsDowned") == true and crouchWanted then
+		requestCrouch(false, true)
+	end
+end)
 
 RunService.PreSimulation:Connect(function()
 	if not crouchWanted or not character or not humanoid or not root or humanoid.Health <= 0 then
@@ -512,4 +548,3 @@ player.CharacterAdded:Connect(bindCharacter)
 if player.Character then
 	task.spawn(bindCharacter, player.Character)
 end
-

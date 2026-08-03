@@ -90,6 +90,13 @@ local function canEvaluate(player, state, timestamp)
 	if player:GetAttribute("ShopOpen") == true then
 		return false, "WaitingForShopClose"
 	end
+	if player:GetAttribute("PersonalSkyMerchantWorldState") == "AttachedToIsland"
+		and player:GetAttribute("MerchantOfferReady") ~= true
+	then
+		-- O NPC visual permanece na ilha onde nasceu. Uma nova recomendacao so
+		-- pode usar outro ponto depois que aquela ilha for removida/reciclada.
+		return false, "WaitingForPreviousMerchantIsland"
+	end
 	if player:GetAttribute("InitialGameStarted") ~= true then
 		return false, "WaitingForGameStart"
 	end
@@ -589,6 +596,29 @@ function MarketingOfferService.Dismiss(player, productId)
 		return false
 	end
 	return endPendingEncounter(player, state, "Dismissed", true)
+end
+
+function MarketingOfferService.ExpireEncounter(player, offerSerial)
+	if not player or player.Parent ~= Players then
+		return false
+	end
+	local state = sessions[player]
+	if not state or not state.Pending then
+		return false
+	end
+	local serial = math.max(0, math.floor(tonumber(offerSerial) or -1))
+	if serial ~= state.EncounterSerial then
+		return false
+	end
+	if player:GetAttribute("ShopOpen") == true
+		and player:GetAttribute("ActiveShopId") == "SkyMerchant"
+	then
+		player:SetAttribute("ShopOpen", false)
+		player:SetAttribute("ActiveShopId", nil)
+		player:SetAttribute("SkyMerchantOfferValid", nil)
+		player:SetAttribute("SkyMerchantRobuxOfferId", nil)
+	end
+	return endPendingEncounter(player, state, "ExpiredWithIsland", false)
 end
 
 function MarketingOfferService.MarkPurchased(player, productId)

@@ -723,19 +723,8 @@ local function closeMerchant(notifyServer)
 	player:SetAttribute("PersonalSkyMerchantUIState", "Closed")
 	restoreCamera()
 	if wasOpen and notifyServer ~= false then
-		local offerSerial = tonumber(player:GetAttribute("PersonalSkyMerchantEncounterSerial"))
-		player:SetAttribute("PersonalSkyMerchantUIState", "DismissRequested")
-		task.spawn(function()
-			pcall(
-				request.InvokeServer,
-				request,
-				"PersonalMerchantEncounter",
-				{
-					Outcome = "Dismissed",
-					OfferSerial = offerSerial,
-				}
-			)
-		end)
+		-- Fechar a janela nao recusa a recomendacao nem aposenta o NPC. Enquanto
+		-- a ilha existir, o jogador pode conversar com o mesmo mercador novamente.
 		villagerEvent:FireServer({ action = "closeShop" })
 	end
 end
@@ -862,6 +851,11 @@ monetizationEvent.OnClientEvent:Connect(function(data)
 		openMerchant(data.Store)
 	elseif data.Action == "OfferReady" and merchantOpen then
 		task.defer(openMerchant)
+	elseif data.Action == "OfferEnded" and data.Outcome == "ExpiredWithIsland" then
+		if merchantOpen then
+			closeMerchant(false)
+		end
+		showExpirationToast("A ilha submergiu — o Mercador partiu com ela e a oferta terminou.")
 	elseif data.Action == "PurchaseGranted" or data.Action == "Entitlements" then
 		setStatus(data.Message or "Compra concluida.", COLORS.Good)
 		if merchantOpen then

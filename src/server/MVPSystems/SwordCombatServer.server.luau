@@ -362,7 +362,10 @@ end
 
 local function executeHit(player, tool, comboIndex, token)
 	local state = getState(player)
-	if state.Token ~= token then
+	if state.Token ~= token
+		or player:GetAttribute("IsDowned") == true
+		or (player.Character and player.Character:GetAttribute("MovementLocked") == true)
+	then
 		return
 	end
 	local character, _, attackerRoot = getLivingCharacter(player)
@@ -465,7 +468,10 @@ local function executeHit(player, tool, comboIndex, token)
 end
 
 local function attack(player, tool)
-	if player:GetAttribute("ShopOpen") == true then
+	if player:GetAttribute("ShopOpen") == true
+		or player:GetAttribute("IsDowned") == true
+		or (player.Character and player.Character:GetAttribute("MovementLocked") == true)
+	then
 		return
 	end
 	if not Config.IsSword(tool) then
@@ -534,6 +540,9 @@ local function attack(player, tool)
 	character = player.Character
 	if not character then
 		warn("[REJEITADO] Character nil (pos-resolucao)")
+		return
+	end
+	if player:GetAttribute("IsDowned") == true or character:GetAttribute("MovementLocked") == true then
 		return
 	end
 	humanoid = character:FindFirstChildOfClass("Humanoid")

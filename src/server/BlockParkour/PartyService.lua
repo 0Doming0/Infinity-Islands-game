@@ -44,7 +44,7 @@ local function memberArray(party)
 		elseif right == party.Leader then
 			return false
 		end
-		return left.UserId < right.UserId
+		return string.lower(left.DisplayName) < string.lower(right.DisplayName)
 	end)
 	return result
 end
@@ -101,6 +101,9 @@ local function serializeInvites(player)
 			invites[inviter] = nil
 		end
 	end
+	table.sort(result, function(left, right)
+		return string.lower(left.DisplayName) < string.lower(right.DisplayName)
+	end)
 	return result
 end
 
@@ -127,6 +130,9 @@ local function serializeState(player)
 			})
 		end
 	end
+	table.sort(available, function(left, right)
+		return string.lower(left.DisplayName) < string.lower(right.DisplayName)
+	end)
 	return {
 		Party = party and {
 			Id = party.Id,
@@ -249,6 +255,8 @@ local function invite(player, targetUserId)
 	partyEvent:FireClient(target, {
 		Action = "Invite",
 		Message = player.DisplayName .. " convidou voce para um grupo.",
+		FromUserId = player.UserId,
+		FromDisplayName = player.DisplayName,
 		State = serializeState(target),
 	})
 	return true, "Convite enviado."

@@ -29,13 +29,20 @@ local function refreshSword()
 	equippedSword = findEquippedSword()
 	local button = ContextActionService:GetButton(ACTION_NAME)
 	if button then
-		button.Visible = UserInputService.TouchEnabled and equippedSword ~= nil
+		button.Visible = UserInputService.TouchEnabled
+			and equippedSword ~= nil
+			and player:GetAttribute("IsDowned") ~= true
 	end
 end
 
 local function attackAction(_, inputState)
 	if inputState ~= Enum.UserInputState.Begin then
 		return Enum.ContextActionResult.Pass
+	end
+	if player:GetAttribute("IsDowned") == true
+		or (player.Character and player.Character:GetAttribute("MovementLocked") == true)
+	then
+		return Enum.ContextActionResult.Sink
 	end
 	local sword = equippedSword or findEquippedSword()
 	if sword and sword.Parent == player.Character then
@@ -52,8 +59,8 @@ ContextActionService:BindAction(
 	Enum.KeyCode.F,
 	Enum.KeyCode.ButtonR2
 )
-ContextActionService:SetTitle(ACTION_NAME, "ATACAR")
-ContextActionService:SetPosition(ACTION_NAME, UDim2.fromScale(0.82, 0.72))
+ContextActionService:SetTitle(ACTION_NAME, "⚔")
+ContextActionService:SetPosition(ACTION_NAME, UDim2.fromScale(0.80, 0.70))
 
 local function styleTouchButton()
 	local button = ContextActionService:GetButton(ACTION_NAME)
@@ -61,17 +68,30 @@ local function styleTouchButton()
 		return
 	end
 	button.Name = "SwordAttackButton"
-	button.Size = UDim2.fromOffset(112, 112)
+	button.Size = UDim2.fromOffset(76, 76)
 	button.BackgroundColor3 = Color3.fromRGB(122, 58, 185)
 	button.BackgroundTransparency = 0.12
-	button.Visible = UserInputService.TouchEnabled and equippedSword ~= nil
+	button.Visible = UserInputService.TouchEnabled
+		and equippedSword ~= nil
+		and player:GetAttribute("IsDowned") ~= true
 	local corner = button:FindFirstChildOfClass("UICorner") or Instance.new("UICorner")
 	corner.CornerRadius = UDim.new(1, 0)
 	corner.Parent = button
 	local stroke = button:FindFirstChildOfClass("UIStroke") or Instance.new("UIStroke")
 	stroke.Color = Color3.fromRGB(235, 208, 255)
-	stroke.Thickness = 3
+	stroke.Thickness = 2
 	stroke.Parent = button
+	local caption = button:FindFirstChild("CompactCaption") or Instance.new("TextLabel")
+	caption.Name = "CompactCaption"
+	caption.AnchorPoint = Vector2.new(0.5, 1)
+	caption.Position = UDim2.new(0.5, 0, 1, -7)
+	caption.Size = UDim2.new(1, -8, 0, 12)
+	caption.BackgroundTransparency = 1
+	caption.Text = "ATACAR"
+	caption.TextColor3 = Color3.fromRGB(245, 232, 255)
+	caption.Font = Enum.Font.GothamBold
+	caption.TextSize = 9
+	caption.Parent = button
 end
 
 local function bindCharacter(character)
@@ -95,3 +115,5 @@ if player.Character then
 	bindCharacter(player.Character)
 end
 task.defer(styleTouchButton)
+
+player:GetAttributeChangedSignal("IsDowned"):Connect(refreshSword)

@@ -5,6 +5,7 @@ local DataStoreService = game:GetService("DataStoreService")
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 local CompanionCatalog = require(ReplicatedStorage:WaitForChild("CompanionCatalog"))
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
@@ -77,7 +78,7 @@ local function playerIsAvailable(player)
 		or player.Parent ~= Players
 		or player:GetAttribute("IsDowned") == true
 		or player:GetAttribute("InitialGameStarted") ~= true
-		or not PlayerDataService.CanSave(player)
+		or (not RunService:IsStudio() and not PlayerDataService.CanSave(player))
 	then
 		return false
 	end
@@ -142,11 +143,10 @@ local function availableInventory(player)
 	end
 	local entries = {}
 	for instanceId, record in pairs(companions) do
-		if not equippedSet[instanceId] then
-			local snapshot = recordSnapshot(instanceId, record)
-			snapshot.TradeLocked = TradeService.IsCompanionLocked(player, instanceId)
-			table.insert(entries, snapshot)
-		end
+		local snapshot = recordSnapshot(instanceId, record)
+		snapshot.TradeLocked = TradeService.IsCompanionLocked(player, instanceId)
+		snapshot.Equipped = equippedSet[instanceId] == true
+		table.insert(entries, snapshot)
 	end
 	table.sort(entries, function(left, right)
 		if left.Level ~= right.Level then
@@ -172,6 +172,9 @@ local function validInvites(player)
 			invites[inviter] = nil
 		end
 	end
+	table.sort(result, function(left, right)
+		return string.lower(left.DisplayName) < string.lower(right.DisplayName)
+	end)
 	return result
 end
 
@@ -187,6 +190,9 @@ local function stateFor(player)
 				})
 			end
 		end
+		table.sort(availablePlayers, function(left, right)
+			return string.lower(left.DisplayName) < string.lower(right.DisplayName)
+		end)
 	end
 	if not session then
 		return {
@@ -195,6 +201,7 @@ local function stateFor(player)
 			AvailablePlayers = availablePlayers,
 			Inventory = availableInventory(player),
 			MaxOffer = MAX_OFFER,
+			PersistenceMode = PlayerDataService.CanSave(player) and "Persistent" or "StudioTemporary",
 		}
 	end
 	local partner = session.A == player and session.B or session.A
@@ -217,16 +224,21 @@ local function stateFor(player)
 		Invites = {},
 		AvailablePlayers = {},
 		MaxOffer = MAX_OFFER,
+		PersistenceMode = PlayerDataService.CanSave(player) and "Persistent" or "StudioTemporary",
 	}
 end
 
-local function publish(player, action, message)
+local function publish(player, action, message, metadata)
 	if event and player.Parent == Players then
-		event:FireClient(player, {
+		local payload = {
 			Action = action or "State",
 			Message = message,
 			State = stateFor(player),
-		})
+		}
+		for key, value in pairs(metadata or {}) do
+			payload[key] = value
+		end
+		event:FireClient(player, payload)
 	end
 end
 
@@ -247,6 +259,16 @@ local function unlockOffer(player, offer)
 	end
 end
 
+local function restoreAutoUnequipped(session, player)
+	local restored = session.AutoUnequipped and session.AutoUnequipped[player]
+	for instanceId in pairs(restored or {}) do
+		PlayerDataService.SetCompanionEquipped(player, instanceId, true)
+	end
+	if session.AutoUnequipped then
+		session.AutoUnequipped[player] = {}
+	end
+end
+
 local function cancelSession(session, reason)
 	if not session or session.Cancelled then
 		return
@@ -255,6 +277,7 @@ local function cancelSession(session, reason)
 	session.CountdownSerial += 1
 	for _, player in ipairs({ session.A, session.B }) do
 		unlockOffer(player, session.Offers[player])
+		restoreAutoUnequipped(session, player)
 		if sessionsByPlayer[player] == session then
 			sessionsByPlayer[player] = nil
 			publish(player, "Cancelled", reason or "Troca cancelada.")
@@ -330,7 +353,7 @@ local function companionRecords(player, offer)
 			Level = record.Level,
 			XP = record.XP,
 			Kills = record.Kills,
-			Upgrades = table.clone(record.Upgrades),
+			Upgrades = table.clone(record.Upgrades or {}),
 		}
 	end
 	return records
@@ -390,6 +413,38 @@ local function finalizeSession(session, serial)
 	local recordsB = companionRecords(session.B, offerB)
 	if not recordsA or not recordsB then
 		cancelSession(session, "A oferta mudou e a troca foi cancelada.")
+		return
+	end
+
+	-- No Studio, DataStore pode estar desabilitado. A troca continua funcional
+	-- entre os clientes de teste, sem fingir que os dados temporarios persistem.
+	if RunService:IsStudio()
+		and (not PlayerDataService.CanSave(session.A) or not PlayerDataService.CanSave(session.B))
+	then
+		local transferred, transferError = PlayerDataService.TransferCompanions(
+			session.A,
+			session.B,
+			offerA,
+			offerB
+		)
+		if not transferred then
+			cancelSession(session, transferError or "A troca de teste nao pode ser concluida.")
+			return
+		end
+		unlockOffer(session.A, offerA)
+		unlockOffer(session.B, offerB)
+		sessionsByPlayer[session.A] = nil
+		sessionsByPlayer[session.B] = nil
+		refreshCompanionUI(session.A)
+		refreshCompanionUI(session.B)
+		publish(session.A, "Completed", "Troca concluida no teste local!", {
+			PartnerDisplayName = session.B.DisplayName,
+			Temporary = true,
+		})
+		publish(session.B, "Completed", "Troca concluida no teste local!", {
+			PartnerDisplayName = session.A.DisplayName,
+			Temporary = true,
+		})
 		return
 	end
 
@@ -468,8 +523,8 @@ local function finalizeSession(session, serial)
 	local message = savedA and savedB
 		and "Troca concluída!"
 		or "Troca concluída; a sincronização será verificada no próximo acesso."
-	publish(session.A, "Completed", message)
-	publish(session.B, "Completed", message)
+	publish(session.A, "Completed", message, { PartnerDisplayName = session.B.DisplayName })
+	publish(session.B, "Completed", message, { PartnerDisplayName = session.A.DisplayName })
 end
 
 local function beginCountdown(session)
@@ -490,13 +545,17 @@ local function invite(player, targetUserId)
 		or target == player
 		or sessionsByPlayer[player]
 		or sessionsByPlayer[target]
+		or not playersAreNear(player, target)
 	then
 		return false, "Jogador indisponível."
 	end
 	local invites = invitesByTarget[target] or {}
 	invitesByTarget[target] = invites
 	invites[player] = os.clock() + INVITE_LIFETIME
-	publish(target, "Invite", player.DisplayName .. " convidou você para uma troca.")
+	publish(target, "Invite", player.DisplayName .. " convidou você para uma troca.", {
+		FromUserId = player.UserId,
+		FromDisplayName = player.DisplayName,
+	})
 	return true, "Convite enviado."
 end
 
@@ -533,13 +592,17 @@ local function accept(player, inviterUserId)
 			[inviter] = false,
 			[player] = false,
 		},
+		AutoUnequipped = {
+			[inviter] = {},
+			[player] = {},
+		},
 		CountdownSerial = 0,
 		CountdownEndsAt = nil,
 		Cancelled = false,
 	}
 	sessionsByPlayer[inviter] = session
 	sessionsByPlayer[player] = session
-	publishSession(session, "Started", "Troca iniciada. Apenas companheiros desequipados podem ser oferecidos.")
+	publishSession(session, "Started", "Troca iniciada. Slimes equipados serao desequipados ao entrar na oferta.")
 	return true, "Troca iniciada."
 end
 
@@ -559,10 +622,16 @@ local function mutateOffer(player, instanceId, shouldAdd)
 			index
 			or #offer >= MAX_OFFER
 			or not companions[instanceId]
-			or PlayerDataService.IsCompanionEquipped(player, instanceId)
 			or TradeService.IsCompanionLocked(player, instanceId)
 		then
 			return false, "Esse companheiro não pode entrar na oferta."
+		end
+		if PlayerDataService.IsCompanionEquipped(player, instanceId) then
+			local unequipped = PlayerDataService.SetCompanionEquipped(player, instanceId, false)
+			if not unequipped then
+				return false, "Nao foi possivel desequipar esse slime para a troca."
+			end
+			session.AutoUnequipped[player][instanceId] = true
 		end
 		table.insert(offer, instanceId)
 		lockedCompanions[player] = lockedCompanions[player] or {}
@@ -573,6 +642,10 @@ local function mutateOffer(player, instanceId, shouldAdd)
 		end
 		table.remove(offer, index)
 		unlockOffer(player, { instanceId })
+		if session.AutoUnequipped[player][instanceId] then
+			session.AutoUnequipped[player][instanceId] = nil
+			PlayerDataService.SetCompanionEquipped(player, instanceId, true)
+		end
 	end
 	resetConfirmations(session)
 	publishSession(session, "OfferChanged", "A oferta foi alterada; confirme novamente.")

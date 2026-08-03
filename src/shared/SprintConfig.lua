@@ -24,8 +24,12 @@ local SprintConfig = {
 	SneakSpeedMultiplier = 0.50,
 	RequestRetryInterval = 0.40,
 	IdleStopDelay = 0.85,
-	TouchButtonPosition = UDim2.fromScale(0.66, 0.74),
-	SneakTouchButtonPosition = UDim2.fromScale(0.80, 0.63),
+	-- Controles compactos: corrida fica proxima ao joystick e agachamento acima
+	-- do ataque, sem cobrir o botao de pulo padrao do Roblox.
+	TouchButtonPosition = UDim2.fromScale(0.30, 0.70),
+	SneakTouchButtonPosition = UDim2.fromScale(0.87, 0.57),
+	JoystickSprintPushPixels = 52,
+	JoystickSprintHorizontalTolerance = 1.15,
 	SneakCameraDrop = 1.15,
 	-- Deixe qualquer campo vazio para nao usar a animacao daquele estado.
 	-- Aceita somente o numero ("123456789") ou "rbxassetid://123456789".

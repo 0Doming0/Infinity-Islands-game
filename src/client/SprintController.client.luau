@@ -1,5 +1,6 @@
 -- V23: mostra numericamente o limite atual enquanto o jogador corre.
--- Corrida: dois toques em W, L3 ou botao de toque.
+-- Corrida: dois toques em W; L3/botao sao toggle; no mobile, empurrar o
+-- joystick para frente alem do limite ativa enquanto o toque permanece.
 -- Shift pertence ao SneakController e nunca ativa corrida.
 
 local ContextActionService = game:GetService("ContextActionService")
@@ -15,8 +16,11 @@ local remote = ReplicatedStorage:WaitForChild("SprintRequest")
 
 local ACTION_NAME = "SkyDungeonSprint"
 local wDown = false
-local controllerSprintDown = false
-local touchSprintDown = false
+local controllerSprintLatched = false
+local touchButtonLatched = false
+local joystickSprintLatched = false
+local joystickTouch
+local joystickOrigin
 local doubleTapLatched = false
 local lastForwardTap = -math.huge
 local lastRequestAt = -math.huge
@@ -29,6 +33,7 @@ local staminaGui
 local staminaBackground
 local staminaFill
 local staminaLimitLabel
+local sprintButton
 
 local function formatDuration(seconds)
 	local formatted = string.format("%.1f", seconds)
@@ -114,7 +119,22 @@ local function updateStaminaBar()
 end
 
 local function wantsSprint()
-	return wDown and doubleTapLatched or controllerSprintDown or touchSprintDown
+	return wDown and doubleTapLatched
+		or controllerSprintLatched
+		or touchButtonLatched
+		or joystickSprintLatched
+end
+
+local function updateSprintButton()
+	if not sprintButton then
+		return
+	end
+	local active = touchButtonLatched or joystickSprintLatched or controllerSprintLatched
+	sprintButton.BackgroundColor3 = active and Color3.fromRGB(65, 211, 145) or Color3.fromRGB(54, 164, 214)
+	local caption = sprintButton:FindFirstChild("CompactCaption")
+	if caption and caption:IsA("TextLabel") then
+		caption.Text = active and "CORRENDO" or "CORRER"
+	end
 end
 
 local function sendSprintRequest(force)
@@ -199,38 +219,101 @@ UserInputService.InputEnded:Connect(function(input)
 end)
 
 local function sprintAction(_, inputState, inputObject)
-	local isTouch = inputObject.UserInputType == Enum.UserInputType.Touch
+	local isTouch = inputObject and inputObject.UserInputType == Enum.UserInputType.Touch
 	if inputState == Enum.UserInputState.Begin then
 		if isTouch then
-			touchSprintDown = true
+			touchButtonLatched = not touchButtonLatched
 		else
-			controllerSprintDown = true
-		end
-	elseif inputState == Enum.UserInputState.End or inputState == Enum.UserInputState.Cancel then
-		if isTouch then
-			touchSprintDown = false
-		else
-			controllerSprintDown = false
+			controllerSprintLatched = not controllerSprintLatched
 		end
 	end
+	updateSprintButton()
 	sendSprintRequest(true)
 	return Enum.ContextActionResult.Sink
 end
 
 ContextActionService:BindAction(ACTION_NAME, sprintAction, true, Enum.KeyCode.ButtonL3)
-ContextActionService:SetTitle(ACTION_NAME, "CORRER")
+ContextActionService:SetTitle(ACTION_NAME, "↟")
 ContextActionService:SetPosition(ACTION_NAME, SprintConfig.TouchButtonPosition)
 
 local button = ContextActionService:GetButton(ACTION_NAME)
 if button then
+	sprintButton = button
 	button.Name = "SprintButton"
-	button.Size = UDim2.fromOffset(92, 92)
+	button.Size = UDim2.fromOffset(58, 58)
 	button.BackgroundColor3 = Color3.fromRGB(54, 164, 214)
-	button.BackgroundTransparency = 0.14
+	button.BackgroundTransparency = 0.12
 	local corner = Instance.new("UICorner")
 	corner.CornerRadius = UDim.new(1, 0)
 	corner.Parent = button
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(201, 242, 255)
+	stroke.Transparency = 0.25
+	stroke.Thickness = 1.5
+	stroke.Parent = button
+	local caption = Instance.new("TextLabel")
+	caption.Name = "CompactCaption"
+	caption.AnchorPoint = Vector2.new(0.5, 1)
+	caption.Position = UDim2.new(0.5, 0, 1, -5)
+	caption.Size = UDim2.new(1, -6, 0, 10)
+	caption.BackgroundTransparency = 1
+	caption.Text = "CORRER"
+	caption.TextColor3 = Color3.fromRGB(235, 250, 255)
+	caption.Font = Enum.Font.GothamBold
+	caption.TextSize = 8
+	caption.Parent = button
 end
+
+-- Gesto de corrida inspirado em shooters mobile: ao empurrar o joystick bem
+-- para frente, a corrida fica travada enquanto aquele toque controla o
+-- movimento. Soltar o joystick encerra a corrida automaticamente.
+UserInputService.TouchStarted:Connect(function(input, _processed)
+	-- O thumbstick padrao do Roblox marca o toque como processado pelo CoreGui.
+	-- Ainda assim precisamos observar seu deslocamento; nao consumimos o evento.
+	local camera = workspace.CurrentCamera
+	local viewport = camera and camera.ViewportSize or Vector2.new(1280, 720)
+	if input.Position.X <= viewport.X * 0.46 and input.Position.Y >= viewport.Y * 0.43 then
+		joystickTouch = input
+		joystickOrigin = input.Position
+		joystickSprintLatched = false
+	end
+end)
+
+UserInputService.TouchMoved:Connect(function(input)
+	if input ~= joystickTouch or not joystickOrigin then
+		return
+	end
+	local delta = input.Position - joystickOrigin
+	local push = tonumber(SprintConfig.JoystickSprintPushPixels) or 52
+	local tolerance = tonumber(SprintConfig.JoystickSprintHorizontalTolerance) or 1.15
+	local shouldLatch = delta.Y <= -push and math.abs(delta.X) <= math.abs(delta.Y) * tolerance
+	if shouldLatch and not joystickSprintLatched then
+		joystickSprintLatched = true
+		updateSprintButton()
+		sendSprintRequest(true)
+	end
+end)
+
+UserInputService.TouchEnded:Connect(function(input)
+	if input ~= joystickTouch then
+		return
+	end
+	joystickTouch = nil
+	joystickOrigin = nil
+	joystickSprintLatched = false
+	updateSprintButton()
+	sendSprintRequest(true)
+end)
+
+player:GetAttributeChangedSignal("IsDowned"):Connect(function()
+	if player:GetAttribute("IsDowned") == true then
+		controllerSprintLatched = false
+		touchButtonLatched = false
+		joystickSprintLatched = false
+		updateSprintButton()
+		sendSprintRequest(true)
+	end
+end)
 
 RunService.Heartbeat:Connect(function()
 	if wantsSprint() and character and humanoid and humanoid.Health > 0 then

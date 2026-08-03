@@ -18,7 +18,7 @@ local processedIslands = setmetatable({}, { __mode = "k" })
 local warnedMissingVillagerTemplates = {}
 local loggedVillagerTemplateResolution = {}
 local warnedInvalidVillagerTemplates = {}
-local SKY_MERCHANT_SPAWNER_VERSION = "PersonalOnlyThematicStandV4"
+local SKY_MERCHANT_SPAWNER_VERSION = "PerPlayerReplicatedThematicStandV5"
 local PERSONAL_MERCHANT_ASSET_FOLDER = "PersonalSkyMerchantAssets"
 
 workspace:SetAttribute("SkyMerchantSpawnerVersion", SKY_MERCHANT_SPAWNER_VERSION)
@@ -591,9 +591,8 @@ local function populateIsland(island)
 	-- os visuais mudam entre novas geracoes/sessoes.
 	local visualRandom = Random.new()
 	local createVillage = shouldSpawnVillage(island, random)
-	-- O Mercador do Ceu e exclusivamente local e pessoal. O gerador do mapa
-	-- nunca reserva uma ilha, nunca remove mobs por causa dele e nunca cria um
-	-- NPC compartilhado.
+	-- O Mercador do Ceu e pessoal e replicado pelo PersonalSkyMerchantWorld.
+	-- O gerador do mapa nunca reserva uma ilha nem remove mobs por causa dele.
 	if not createVillage then
 		return
 	end
@@ -736,10 +735,10 @@ end
 ServerStorage.DescendantAdded:Connect(queueMerchantTemplateRefresh)
 ServerStorage.DescendantRemoving:Connect(queueMerchantTemplateRefresh)
 
-workspace:SetAttribute("SkyMerchantSpawnState", "PersonalOnly")
+workspace:SetAttribute("SkyMerchantSpawnState", "PerPlayerReplicated")
 workspace:SetAttribute(
 	"SkyMerchantSpawnDetail",
-	"mercador pessoal segue a intencao de rota; nenhum mercador e criado pelo mapa"
+	"um mercador replicado por jogador segue sua intencao; ofertas continuam privadas"
 )
 
 print("[MVP Village] Gerador procedural iniciado; modelos de exemplo habilitados.")

@@ -53,6 +53,38 @@ detail.Parent = card
 
 local markers = {}
 
+local function clearRagdollVisual(targetPlayer)
+	local character = targetPlayer and targetPlayer.Character
+	if not character or targetPlayer:GetAttribute("IsDowned") == true then
+		return
+	end
+	local folder = character:FindFirstChild("DownedRagdoll")
+	if folder then
+		folder:Destroy()
+	end
+	for _, descendant in ipairs(character:GetDescendants()) do
+		if descendant:IsA("Motor6D") then
+			descendant.Enabled = true
+			descendant.Transform = CFrame.identity
+		elseif (descendant:IsA("Constraint") or descendant:IsA("Attachment"))
+			and string.sub(descendant.Name, 1, #"DownedRagdoll_") == "DownedRagdoll_"
+		then
+			descendant:Destroy()
+		elseif descendant:IsA("BasePart") then
+			descendant.AssemblyLinearVelocity = Vector3.zero
+			descendant.AssemblyAngularVelocity = Vector3.zero
+		end
+	end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if humanoid and humanoid.Health > 0 then
+		humanoid.PlatformStand = false
+		humanoid.AutoRotate = true
+		pcall(function()
+			humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+		end)
+	end
+end
+
 local function removeMarker(player)
 	local marker = markers[player]
 	if marker then
@@ -151,9 +183,19 @@ end)
 
 event.OnClientEvent:Connect(function(data)
 	if type(data) == "table" and data.UserId then
-		local player = Players:GetPlayerByUserId(data.UserId)
-		if player then
-			ensureMarker(player)
+		local targetPlayer = Players:GetPlayerByUserId(data.UserId)
+		if targetPlayer then
+			if data.Action == "Revived" then
+				removeMarker(targetPlayer)
+				clearRagdollVisual(targetPlayer)
+				-- Replicacao de constraints e Motor6D pode chegar em frames diferentes.
+				-- Repetir a limpeza visual torna o levantamento consistente inclusive
+				-- para observadores com ping alto.
+				task.delay(0.12, clearRagdollVisual, targetPlayer)
+				task.delay(0.35, clearRagdollVisual, targetPlayer)
+			else
+				ensureMarker(targetPlayer)
+			end
 		end
 	end
 end)

@@ -101,7 +101,12 @@ end
 
 local function activate(tool)
 	local character = player.Character
-	if not character or tool.Parent ~= character or not Config.IsSword(tool) then
+	if not character
+		or tool.Parent ~= character
+		or not Config.IsSword(tool)
+		or player:GetAttribute("IsDowned") == true
+		or character:GetAttribute("MovementLocked") == true
+	then
 		return
 	end
 
@@ -189,6 +194,28 @@ end
 player:GetAttributeChangedSignal("SwordHitSerial"):Connect(function()
 	local heavy = player:GetAttribute("SwordHitHeavy") == true
 	shakeCamera(heavy and Config.Visuals.HeavyCameraShake or Config.Visuals.CameraShake)
+end)
+
+player:GetAttributeChangedSignal("IsDowned"):Connect(function()
+	if player:GetAttribute("IsDowned") ~= true then
+		return
+	end
+	state.Combo = 0
+	state.LastAttackAt = -math.huge
+	state.NextAttackAt = math.huge
+	for _, cache in pairs(animationCache) do
+		for slot, track in pairs(cache.Tracks or {}) do
+			if string.find(slot, "Attack") and track.IsPlaying then
+				track:Stop(0.05)
+			end
+		end
+	end
+end)
+
+player:GetAttributeChangedSignal("IsDowned"):Connect(function()
+	if player:GetAttribute("IsDowned") ~= true then
+		state.NextAttackAt = 0
+	end
 end)
 
 player.CharacterAdded:Connect(bindCharacter)

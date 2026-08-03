@@ -231,8 +231,10 @@ end
 
 local function applyResponsiveLayout()
 	local compact = useCompactCards()
-	openButton.Position = UDim2.new(1, compact and -12 or -18, 0, compact and 54 or 64)
-	openButton.Size = compact and UDim2.fromOffset(104, 46) or UDim2.fromOffset(126, 50)
+	openButton.Position = UDim2.new(1, compact and -10 or -18, 0, compact and 54 or 64)
+	openButton.Size = compact and UDim2.fromOffset(52, 44) or UDim2.fromOffset(112, 46)
+	openButton.Text = compact and "◆\nLOJA" or "◆  LOJA"
+	openButton.TextSize = compact and 11 or 16
 	title.TextSize = compact and 18 or 23
 	subtitle.TextSize = compact and 11 or 13
 	for _, parts in pairs(cardsByProductId) do

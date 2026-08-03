@@ -3,6 +3,7 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 local PlayerStatusService = require(script.Parent:WaitForChild("PlayerStatusService"))
@@ -133,6 +134,10 @@ local function activateRagdoll(state)
 			descendant.Anchored = false
 			descendant.CanCollide = descendant ~= root
 				and descendant:FindFirstAncestorOfClass("Accessory") == nil
+			-- Durante o ragdoll o servidor precisa ser o dono da simulacao. Se a
+			-- vitima continuar com network ownership, ela pode levantar localmente
+			-- enquanto os demais clientes ainda recebem a pose caida.
+			pcall(descendant.SetNetworkOwner, descendant, nil)
 		elseif
 			descendant:IsA("Motor6D")
 			and descendant.Part0
@@ -155,6 +160,56 @@ local function activateRagdoll(state)
 		humanoid:ChangeState(Enum.HumanoidStateType.Physics)
 	end)
 	return true
+end
+
+local function stabilizeRevivedCharacter(player, state)
+	local character = state.Character
+	local humanoid = state.Humanoid
+	local root = state.Root
+	if not character or not character.Parent or not humanoid or not root or not root.Parent then
+		return
+	end
+
+	root.Anchored = true
+	root.AssemblyLinearVelocity = Vector3.zero
+	root.AssemblyAngularVelocity = Vector3.zero
+	for _, descendant in ipairs(character:GetDescendants()) do
+		if descendant:IsA("BasePart") then
+			descendant.AssemblyLinearVelocity = Vector3.zero
+			descendant.AssemblyAngularVelocity = Vector3.zero
+		elseif descendant:IsA("Motor6D") then
+			descendant.Transform = CFrame.identity
+		end
+	end
+
+	local flatLook = Vector3.new(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z)
+	if flatLook.Magnitude < 0.1 then
+		flatLook = Vector3.new(0, 0, -1)
+	else
+		flatLook = flatLook.Unit
+	end
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = { character }
+	params.IgnoreWater = true
+	local floor = workspace:Raycast(root.Position + Vector3.new(0, 5, 0), Vector3.new(0, -14, 0), params)
+	local minimumY = floor and floor.Position.Y + humanoid.HipHeight + root.Size.Y / 2 or root.Position.Y
+	local uprightPosition = Vector3.new(root.Position.X, math.max(root.Position.Y, minimumY), root.Position.Z)
+	root.CFrame = CFrame.lookAt(uprightPosition, uprightPosition + flatLook)
+
+	humanoid.PlatformStand = false
+	humanoid.AutoRotate = state.AutoRotate
+	pcall(function()
+		humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+	end)
+	RunService.Heartbeat:Wait()
+	if root.Parent and humanoid.Health > 0 then
+		root.Anchored = state.RootAnchored
+		pcall(root.SetNetworkOwner, root, player)
+		pcall(function()
+			humanoid:ChangeState(Enum.HumanoidStateType.Running)
+		end)
+	end
 end
 
 local function deactivateRagdoll(state)
@@ -272,9 +327,7 @@ local function revive(rescuer, target, state)
 	deactivateRagdoll(state)
 	restoreMovement(target, state)
 	state.Humanoid.Health = math.max(1, state.Humanoid.MaxHealth * REVIVE_HEALTH_RATIO)
-	pcall(function()
-		state.Humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
-	end)
+	stabilizeRevivedCharacter(target, state)
 	target:SetAttribute("RescueWeakUntil", serverTime() + RESCUE_WEAKNESS_SECONDS)
 	local forceField = Instance.new("ForceField")
 	forceField.Name = "RescueProtection"
@@ -333,6 +386,8 @@ function DownedService.TryInterceptFatal(player, humanoid, damage, source)
 		ExpiresAt = serverTime() + DOWNED_SECONDS,
 	}
 	states[player] = state
+	state.RagdollSerial = (tonumber(character:GetAttribute("DownedRagdollSerial")) or 0) + 1
+	character:SetAttribute("DownedRagdollSerial", state.RagdollSerial)
 	player:SetAttribute("IsDowned", true)
 	player:SetAttribute("DownedExpiresAt", state.ExpiresAt)
 	player:SetAttribute("DownedBySource", tostring(source or "Combat"))
