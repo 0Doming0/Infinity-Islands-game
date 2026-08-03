@@ -198,6 +198,19 @@ local function scoreCandidates(player, state, timestamp)
 		})
 	end
 
+	-- Sem esta oferta de entrada, um jogador novo no RunLevel 1 nao produz
+	-- candidato algum. MerchantOfferReady permanece falso para sempre, portanto
+	-- nenhum alvo futuro e nenhum modelo do Mercador chegam a ser criados.
+	-- TemporaryWings custa moedas e funciona como demonstracao segura antes das
+	-- recomendacoes premium contextuais dos niveis seguintes.
+	if not ownsAnyWing(player) and runLevel < 2 then
+		add(
+			"TemporaryWings",
+			97,
+			"Experimente tres voos antes de decidir quais asas combinam com sua jornada."
+		)
+	end
+
 	if not ownsAnyWing(player) and runLevel >= 2 then
 		add("AzureWings", 30 + runLevel * 15, "Voce chegou longe. Asas podem ajudar nos proximos saltos.")
 	end

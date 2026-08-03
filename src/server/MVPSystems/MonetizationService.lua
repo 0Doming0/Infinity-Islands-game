@@ -748,6 +748,41 @@ local function isSkyMerchantOpen(player)
 		and player:GetAttribute("SkyMerchantOfferValid") == true
 end
 
+local function playerReachedAssignedMerchant(player)
+	local targetKey = tostring(player:GetAttribute("PersonalSkyMerchantTargetIslandKey") or "")
+	if targetKey == "" then
+		return false
+	end
+	local targetValue = player:FindFirstChild("PersonalSkyMerchantTargetIsland")
+	local target = targetValue and targetValue:IsA("ObjectValue") and targetValue.Value or nil
+	if not target
+		or not target:IsA("Model")
+		or not target:IsDescendantOf(workspace)
+		or target:GetAttribute("IsSkyIsland") ~= true
+		or tostring(target:GetAttribute("IslandNodeKey") or "") ~= targetKey
+	then
+		return false
+	end
+	local merchant = workspace:FindFirstChild("PersonalSkyMerchant_" .. tostring(player.UserId), true)
+	if not merchant
+		or not merchant:IsA("Model")
+		or merchant:GetAttribute("ServerManagedPersonalSkyMerchant") ~= true
+		or tonumber(merchant:GetAttribute("OwnerUserId")) ~= player.UserId
+		or tostring(merchant:GetAttribute("SpawnIslandKey") or "") ~= targetKey
+	then
+		return false
+	end
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	local anchor = merchant:FindFirstChild("MerchantInteractionAnchor", true)
+	return root
+		and root:IsA("BasePart")
+		and anchor
+		and anchor:IsA("BasePart")
+		and (root.Position - anchor.Position).Magnitude
+			<= math.max(10, tonumber(MVPConfig.Village.PromptDistance) or 13) + 2
+end
+
 local function promptPurchase(player, productId, purchaseSource)
 	local definition = MonetizationCatalog.Get(productId)
 	if not definition
@@ -1072,7 +1107,7 @@ function MonetizationService.Start()
 	event = ensureRemote("RemoteEvent", "MonetizationEvent")
 	request = ensureRemote("RemoteFunction", "MonetizationRequest")
 	workspace:SetAttribute("GlobalStoreServerVersion", "GlobalStoreV2PersonalMerchant")
-	workspace:SetAttribute("PersonalSkyMerchantServerVersion", "EncounterMemoryV4")
+	workspace:SetAttribute("PersonalSkyMerchantServerVersion", "SharedVisualValidatedOpenV5")
 	workspace:SetAttribute("MobilityPerksServerVersion", "WingAnimatorLandingStopV7")
 	MarketingOfferService.SetEvent(event)
 	MarketingOfferService.Start()
@@ -1119,6 +1154,12 @@ function MonetizationService.Start()
 					Message = "O Mercador ainda nao possui uma recomendacao para voce.",
 				}
 			end
+			if not playerReachedAssignedMerchant(player) then
+				return {
+					Success = false,
+					Message = "Aproxime-se do seu Mercador do Ceu para ver as ofertas.",
+				}
+			end
 			local character = player.Character
 			local humanoid = character and character:FindFirstChildWhichIsA("Humanoid")
 			local root = character and character:FindFirstChild("HumanoidRootPart")
@@ -1128,30 +1169,36 @@ function MonetizationService.Start()
 					Message = "O Mercador aguarda voce retornar a expedicao.",
 				}
 			end
-			player:SetAttribute("ShopOpen", true)
-			player:SetAttribute("ActiveShopId", "SkyMerchant")
-			player:SetAttribute("SkyMerchantOfferValid", true)
-			player:SetAttribute("SkyMerchantRobuxOfferId", nil)
-			player:SetAttribute("PersonalSkyMerchantState", "Open")
 			local store = MonetizationService.GetStore(player)
 			if type(store.Entries) ~= "table" or #store.Entries == 0 then
-				player:SetAttribute("ShopOpen", false)
-				player:SetAttribute("ActiveShopId", nil)
-				player:SetAttribute("SkyMerchantOfferValid", nil)
 				return {
 					Success = false,
 					Message = "As recomendacoes mudaram. O Mercador esta preparando novas ofertas.",
 				}
 			end
-			MarketingOfferService.MarkOpened(player)
+			if not MarketingOfferService.MarkOpened(player) then
+				return {
+					Success = false,
+					Message = "Esta recomendacao expirou. Aguarde uma nova visita do Mercador.",
+				}
+			end
+			player:SetAttribute("ShopOpen", true)
+			player:SetAttribute("ActiveShopId", "SkyMerchant")
+			player:SetAttribute("SkyMerchantOfferValid", true)
+			player:SetAttribute("SkyMerchantRobuxOfferId", nil)
+			player:SetAttribute("PersonalSkyMerchantState", "Open")
+			local openSerial = (tonumber(player:GetAttribute("PersonalSkyMerchantOpenSerial")) or 0) + 1
+			player:SetAttribute("PersonalSkyMerchantOpenSerial", openSerial)
+			player:SetAttribute("PersonalSkyMerchantLastOpenedAt", workspace:GetServerTimeNow())
 			MarketingOfferService.RecordStoreOpened(player)
 			if event then
 				event:FireClient(player, {
 					Action = "OpenPersonalMerchant",
 					Store = store,
+					OpenSerial = openSerial,
 				})
 			end
-			return { Success = true, Store = store }
+			return { Success = true, Store = store, OpenSerial = openSerial }
 		elseif action == "GetEntitlements" then
 			local wing = bestWing(player)
 			local cape = MonetizationCatalog.Get("InvisibilityCape")

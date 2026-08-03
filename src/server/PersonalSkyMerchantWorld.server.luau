@@ -4,6 +4,7 @@
 -- os mercadores, mas somente o cliente do OwnerUserId cria o ProximityPrompt e
 -- abre as recomendacoes privadas validadas pelo MonetizationService.
 
+local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -36,9 +37,46 @@ local function findIsland(key)
 	return nil
 end
 
+local function isVillageOrSanctuary(island)
+	if not island or not island:IsA("Model") then
+		return true
+	end
+	if island:GetAttribute("VillageSpawned") == true
+		or island:GetAttribute("IsSocialSanctuary") == true
+		or CollectionService:HasTag(island, "SkyDungeonSanctuary")
+	then
+		return true
+	end
+	local role = string.lower(tostring(island:GetAttribute("IslandRole") or ""))
+	if string.find(role, "sanctuary", 1, true)
+		or string.find(role, "village", 1, true)
+	then
+		return true
+	end
+	return island:FindFirstChild("MVPVillage") ~= nil
+end
+
+local function isNormalMerchantIsland(island)
+	return island
+		and island:IsA("Model")
+		and island:IsDescendantOf(workspace)
+		and island:GetAttribute("IsSkyIsland") == true
+		and tostring(island:GetAttribute("IslandType") or "Normal") == "Normal"
+		and not isVillageOrSanctuary(island)
+end
+
 local function selectedIsland(player)
-	return findIsland(tostring(player:GetAttribute("WorldIntentTargetIslandKey") or ""))
-		or findIsland(tostring(player:GetAttribute("CurrentIslandKey") or ""))
+	local key = tostring(player:GetAttribute("PersonalSkyMerchantTargetIslandKey") or "")
+	if key == "" then
+		return nil
+	end
+	local targetValue = player:FindFirstChild("PersonalSkyMerchantTargetIsland")
+	local island = targetValue and targetValue:IsA("ObjectValue") and targetValue.Value or nil
+	if isNormalMerchantIsland(island) and islandKey(island) == key then
+		return island
+	end
+	island = findIsland(key)
+	return isNormalMerchantIsland(island) and island or nil
 end
 
 local function attachedActiveIsland(model)
@@ -146,15 +184,41 @@ end
 
 local function sanitize(model)
 	for _, descendant in ipairs(model:GetDescendants()) do
-		if descendant:IsA("BaseScript") or descendant:IsA("ProximityPrompt") or descendant:IsA("BillboardGui") then
+		if descendant:IsA("BaseScript")
+			or descendant:IsA("ProximityPrompt")
+			or descendant:IsA("BillboardGui")
+			or descendant:IsA("Animator")
+			or descendant:IsA("AnimationController")
+			or descendant:IsA("BodyMover")
+			or descendant:IsA("LinearVelocity")
+			or descendant:IsA("AngularVelocity")
+			or descendant:IsA("AlignPosition")
+			or descendant:IsA("AlignOrientation")
+			or descendant:IsA("VectorForce")
+			or descendant:IsA("Torque")
+		then
 			descendant:Destroy()
+		elseif descendant:IsA("Humanoid") then
+			descendant.AutoRotate = false
+			descendant.WalkSpeed = 0
+			descendant.JumpPower = 0
+			descendant.JumpHeight = 0
+			descendant.PlatformStand = true
+			pcall(function()
+				descendant.EvaluateStateMachine = false
+			end)
 		elseif descendant:IsA("BasePart") then
 			descendant.Anchored = true
+			descendant.AssemblyLinearVelocity = Vector3.zero
+			descendant.AssemblyAngularVelocity = Vector3.zero
 			descendant.CanCollide = false
 			descendant.CanTouch = false
 			descendant.CanQuery = false
 		end
 	end
+	model:SetAttribute("StaticStore", true)
+	model:SetAttribute("MovementLocked", true)
+	model:SetAttribute("RotationLocked", true)
 end
 
 local function getPlacement(player, island, footprint)
@@ -183,7 +247,8 @@ local function addSharedPresentation(model, player, interactionPosition, topOffs
 	anchor.Anchored = true
 	anchor.CanCollide = false
 	anchor.CanTouch = false
-	anchor.CanQuery = false
+	-- O cliente proprietario adiciona o ProximityPrompt nesta ancora.
+	anchor.CanQuery = true
 	anchor.Parent = model
 
 	local highlight = Instance.new("Highlight")
@@ -270,24 +335,25 @@ local function spawnFor(player, island)
 		model:Destroy()
 		return nil
 	end
-	local horizontalCenter = Vector3.new(center.X, position.Y, center.Z)
-	if (horizontalCenter - position).Magnitude < 0.1 then
-		horizontalCenter = position + Vector3.new(0, 0, -1)
-	end
-	model:PivotTo(CFrame.lookAt(position, horizontalCenter))
+	-- Apenas translada o asset. A rotacao criada no modelo e preservada e a
+	-- loja nunca olha para o jogador ou para o centro da ilha.
+	local originalPivot = model:GetPivot()
 	local boundsCFrame, boundsSize = visibleBounds(model)
-	model:PivotTo(
-		model:GetPivot()
-			+ Vector3.new(
-				position.X - boundsCFrame.Position.X,
-				position.Y - (boundsCFrame.Position.Y - boundsSize.Y / 2),
-				position.Z - boundsCFrame.Position.Z
-			)
-	)
+	model:PivotTo(originalPivot + Vector3.new(
+		position.X - boundsCFrame.Position.X,
+		position.Y - (boundsCFrame.Position.Y - boundsSize.Y / 2),
+		position.Z - boundsCFrame.Position.Z
+	))
 	boundsCFrame, boundsSize = visibleBounds(model)
-	local forward = Vector3.new(horizontalCenter.X - position.X, 0, horizontalCenter.Z - position.Z).Unit
-	local frontDepth = math.abs(forward.X) * boundsSize.X / 2 + math.abs(forward.Z) * boundsSize.Z / 2
-	local interactionPosition = Vector3.new(position.X, position.Y + 2.3, position.Z) + forward * (frontDepth + 1.8)
+	local towardCenter = Vector3.new(center.X - boundsCFrame.Position.X, 0, center.Z - boundsCFrame.Position.Z)
+	local forward = towardCenter.Magnitude < 0.1 and Vector3.new(0, 0, -1) or towardCenter.Unit
+	local frontDepth = math.abs(forward.X) * boundsSize.X / 2
+		+ math.abs(forward.Z) * boundsSize.Z / 2
+	local interactionPosition = Vector3.new(
+		boundsCFrame.Position.X,
+		position.Y + math.clamp(boundsSize.Y * 0.35, 2, 3.5),
+		boundsCFrame.Position.Z
+	) + forward * (frontDepth + 1.25)
 
 	model.Name = MODEL_PREFIX .. tostring(player.UserId)
 	model:SetAttribute("PersonalSkyMerchant", true)
@@ -298,6 +364,10 @@ local function spawnFor(player, island)
 	model:SetAttribute("OfferSerial", tonumber(player:GetAttribute("PersonalSkyMerchantEncounterSerial")) or 0)
 	model:SetAttribute("OffersArePrivate", true)
 	model:SetAttribute("UsesPublishedTemplate", usesPublishedTemplate)
+	model:SetAttribute("StaticStore", true)
+	model:SetAttribute("MovementLocked", true)
+	model:SetAttribute("RotationLocked", true)
+	model:SetAttribute("SpawnPolicy", "FutureNormalIslandSharedVisualV5")
 	addSharedPresentation(model, player, interactionPosition, math.max(4, boundsSize.Y + 0.8))
 	model.Parent = island
 	player:SetAttribute("PersonalSkyMerchantWorldState", "AttachedToIsland")
@@ -314,27 +384,39 @@ local function updatePlayer(player)
 	if existing then
 		local island = attachedActiveIsland(existing)
 		if island then
-			-- Fechar, ignorar ou comprar altera apenas a interacao/oferta. O modelo
-			-- continua preso a esta ilha e jamais e reposicionado pelo controlador.
-			if player:GetAttribute("MerchantOfferReady") == true then
-				local offerSerial = math.max(
-					0,
-					math.floor(
-						tonumber(player:GetAttribute("PersonalSkyMerchantEncounterSerial")) or 0
+			local encounterState = tostring(player:GetAttribute("PersonalSkyMerchantEncounterState") or "Unseen")
+			local targetKey = tostring(player:GetAttribute("PersonalSkyMerchantTargetIslandKey") or "")
+			if encounterState == "Unseen"
+				and (
+					targetKey == ""
+					or islandKey(island) ~= targetKey
+					or not isNormalMerchantIsland(island)
+				)
+			then
+				-- A classificacao de vila pode terminar alguns frames depois da
+				-- geometria. Antes de o jogador ver a loja, descarte esse alvo.
+				destroyMerchant(player)
+				existing = nil
+			else
+				-- Depois de encontrado, o modelo fica preso a mesma ilha e nunca
+				-- persegue o jogador nem muda de rota.
+				if player:GetAttribute("MerchantOfferReady") == true then
+					local offerSerial = math.max(
+						0,
+						math.floor(tonumber(player:GetAttribute("PersonalSkyMerchantEncounterSerial")) or 0)
 					)
-				)
-				existing:SetAttribute(
-					"OfferSerial",
-					offerSerial
-				)
-				lifecycle(player).OfferSerial = offerSerial
+					existing:SetAttribute("OfferSerial", offerSerial)
+					lifecycle(player).OfferSerial = offerSerial
+				end
+				return
 			end
-			return
+		else
+			retireWithIsland(player)
 		end
-		retireWithIsland(player)
 	end
 
 	if player:GetAttribute("MerchantOfferReady") ~= true then
+		player:SetAttribute("PersonalSkyMerchantWorldState", "WaitingForRecommendation")
 		return
 	end
 	local serial = tonumber(player:GetAttribute("PersonalSkyMerchantEncounterSerial")) or 0
@@ -342,17 +424,23 @@ local function updatePlayer(player)
 	if serial <= (state.RetiredOfferSerial or -1) then
 		-- A ilha desta oferta ja foi aposentada. Aguarde um novo serial em vez de
 		-- ressuscitar o mesmo encontro na ilha atual do jogador.
+		player:SetAttribute("PersonalSkyMerchantWorldState", "WaitingForNextOfferSerial")
 		return
 	end
 	local island = selectedIsland(player)
 	if not island then
+		player:SetAttribute("PersonalSkyMerchantWorldState", "WaitingForFutureNormalIsland")
 		return
 	end
+	player:SetAttribute("PersonalSkyMerchantWorldState", "Spawning")
 	local model = spawnFor(player, island)
 	modelsByPlayer[player] = model
 	if model then
 		state.IslandKey = islandKey(island)
 		state.OfferSerial = math.max(0, math.floor(serial))
+		player:SetAttribute("PersonalSkyMerchantWorldState", "AttachedToIsland")
+	else
+		player:SetAttribute("PersonalSkyMerchantWorldState", "SpawnFailedNoValidPlacement")
 	end
 end
 
@@ -369,7 +457,7 @@ local function setup(player)
 		"MerchantOfferReady",
 		"PersonalSkyMerchantEncounterState",
 		"PersonalSkyMerchantEncounterSerial",
-		"WorldIntentTargetIslandKey",
+		"PersonalSkyMerchantTargetIslandKey",
 		"CurrentIslandKey",
 	}) do
 		player:GetAttributeChangedSignal(attribute):Connect(function()
@@ -420,4 +508,4 @@ task.spawn(function()
 	end
 end)
 
-workspace:SetAttribute("PersonalSkyMerchantWorldVersion", "IslandBoundLifecycleV2")
+workspace:SetAttribute("PersonalSkyMerchantWorldVersion", "GuaranteedFutureSpawnV6")
