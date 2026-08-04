@@ -1,18 +1,32 @@
--- Escolhe uma unica ilha futura para cada encontro do Mercador do Ceu.
+-- Escolhe uma ilha alcançável para cada encontro pessoal do Mercador do Céu.
 --
--- O gerador continua sendo a autoridade sobre a rota pretendida do jogador.
--- Este controlador apenas converte essa intencao em um encontro persistente:
--- depois que uma ilha futura e escolhida, o alvo nao muda porque o jogador
--- olhou para outro lado. Sem uma ilha futura valida, o mercador nao aparece.
+-- Prioridade V8:
+-- 1. ilha futura publicada pela intenção real de movimento;
+-- 2. ilha futura normal mais próxima fisicamente;
+-- 3. ilha normal segura atual ou mais próxima, após uma espera curta.
+--
+-- A oferta permanece viva enquanto o encontro ainda não foi aberto. Se a ilha
+-- for reciclada ou o jogador mudar de ramificação, o alvo é recalculado.
 
 local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 
 local TARGET_VALUE_NAME = "PersonalSkyMerchantTargetIsland"
 local INTENT_VALUE_NAME = "WorldIntentTargetIsland"
 local CHECK_SECONDS = 0.5
 local WATER_CLEARANCE_STUDS = 8
-local VERSION = "FutureNormalIslandGuaranteedV6"
+local INTENT_GRACE_SECONDS = math.max(
+	1,
+	tonumber(MVPConfig.Village.PersonalSkyMerchantIntentWaitSeconds) or 5
+)
+local SAFE_FALLBACK_SECONDS = math.max(
+	INTENT_GRACE_SECONDS,
+	tonumber(MVPConfig.Village.PersonalSkyMerchantSafeFallbackSeconds) or 11
+)
+local VERSION = "GuaranteedReachableFallbackV8"
 
 local states = setmetatable({}, { __mode = "k" })
 
@@ -41,12 +55,19 @@ local function clearTarget(player, state, assignmentState)
 	state.Target = nil
 	state.TargetKey = nil
 	state.TargetOfferSerial = nil
+	state.TargetProgress = nil
+	state.TargetSource = nil
 	local value = getOrCreateTargetValue(player)
 	value.Value = nil
 	player:SetAttribute("PersonalSkyMerchantTargetIslandKey", nil)
 	player:SetAttribute("PersonalSkyMerchantTargetLockedAt", nil)
 	player:SetAttribute("PersonalSkyMerchantTargetSource", nil)
-	player:SetAttribute("PersonalSkyMerchantTargetAssignmentState", assignmentState or "WaitingForFutureIsland")
+	player:SetAttribute("PersonalSkyMerchantTargetProgress", nil)
+	player:SetAttribute("PersonalSkyMerchantTargetDistance", nil)
+	player:SetAttribute(
+		"PersonalSkyMerchantTargetAssignmentState",
+		assignmentState or "WaitingForFutureIsland"
+	)
 end
 
 local function findIslandByKey(key)
@@ -91,12 +112,7 @@ local function isVillageOrSanctuary(island)
 		return true
 	end
 	local village = island:FindFirstChild("MVPVillage")
-	if village
-		and (
-			village:GetAttribute("ProceduralVillage") == true
-			or village:IsA("Folder")
-		)
-	then
+	if village then
 		return true
 	end
 	for _, child in ipairs(island:GetChildren()) do
@@ -107,6 +123,11 @@ local function isVillageOrSanctuary(island)
 	return false
 end
 
+local function floorOf(island)
+	local floor = island and island:FindFirstChild("IslandFloor")
+	return floor and floor:IsA("BasePart") and floor or nil
+end
+
 local function isNormalMerchantIsland(island)
 	return island
 		and island:IsA("Model")
@@ -114,11 +135,12 @@ local function isNormalMerchantIsland(island)
 		and island:GetAttribute("IsSkyIsland") == true
 		and tostring(island:GetAttribute("IslandType") or "Normal") == "Normal"
 		and not isVillageOrSanctuary(island)
+		and floorOf(island) ~= nil
 end
 
 local function isAboveWater(island)
-	local floor = island:FindFirstChild("IslandFloor")
-	if not floor or not floor:IsA("BasePart") then
+	local floor = floorOf(island)
+	if not floor then
 		return false
 	end
 	local water = workspace:FindFirstChild("Water")
@@ -129,41 +151,72 @@ local function isAboveWater(island)
 	return floor.Position.Y + floor.Size.Y / 2 > surfaceY + WATER_CLEARANCE_STUDS
 end
 
-local function isFutureCandidate(player, state, island)
-	if not isNormalMerchantIsland(island) then
+local function islandProgress(island)
+	return tonumber(island and island:GetAttribute("LogicalLevel"))
+		or tonumber(island and island:GetAttribute("RoundIndex"))
+end
+
+local function currentProgress(player)
+	return tonumber(player:GetAttribute("CurrentLogicalLevel"))
+		or tonumber(player:GetAttribute("CurrentRoundIndex"))
+		or -math.huge
+end
+
+local function getLivingRoot(player)
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildWhichIsA("Humanoid")
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if humanoid and humanoid.Health > 0 and root and root:IsA("BasePart") then
+		return root
+	end
+	return nil
+end
+
+local function distanceToIsland(player, island)
+	local root = getLivingRoot(player)
+	local floor = floorOf(island)
+	if not root or not floor then
+		return math.huge
+	end
+	return (floor.Position - root.Position).Magnitude
+end
+
+local function isBaseCandidate(state, island)
+	if not isNormalMerchantIsland(island) or not isAboveWater(island) then
 		return false
 	end
 	local key = getIslandKey(island)
-	if key == ""
-		or key == tostring(player:GetAttribute("CurrentIslandKey") or "")
-		or state.VisitedKeys[key] == true
-	then
+	if key == "" then
 		return false
 	end
-	if not isAboveWater(island) then
+	local rejectedUntil = tonumber(state.RejectedKeys[key]) or 0
+	if rejectedUntil > workspace:GetServerTimeNow() then
 		return false
 	end
+	state.RejectedKeys[key] = nil
 	return true
 end
 
-local function islandProgress(island)
-	return tonumber(island:GetAttribute("LogicalLevel"))
-		or tonumber(island:GetAttribute("RoundIndex"))
-		or math.huge
+local function isFutureCandidate(player, state, island)
+	if not isBaseCandidate(state, island) then
+		return false
+	end
+	local key = getIslandKey(island)
+	return key ~= tostring(player:GetAttribute("CurrentIslandKey") or "")
+		and state.VisitedKeys[key] ~= true
 end
 
 local function resolveGeneratedFutureIsland(player, state)
-	local currentProgress = tonumber(player:GetAttribute("CurrentLogicalLevel"))
-		or tonumber(player:GetAttribute("CurrentRoundIndex"))
-		or -math.huge
+	local progressNow = currentProgress(player)
 	local candidates = {}
 	for _, descendant in ipairs(workspace:GetDescendants()) do
 		if isFutureCandidate(player, state, descendant) then
 			local progress = islandProgress(descendant)
-			if progress > currentProgress then
+			if progress and progress > progressNow then
 				table.insert(candidates, {
 					Island = descendant,
 					Progress = progress,
+					Distance = distanceToIsland(player, descendant),
 					Key = getIslandKey(descendant),
 				})
 			end
@@ -173,26 +226,94 @@ local function resolveGeneratedFutureIsland(player, state)
 		if left.Progress ~= right.Progress then
 			return left.Progress < right.Progress
 		end
+		if left.Distance ~= right.Distance then
+			return left.Distance < right.Distance
+		end
 		return left.Key < right.Key
 	end)
+	local nearestDistance = candidates[1] and candidates[1].Distance or nil
+	player:SetAttribute("PersonalSkyMerchantFutureCandidateCount", #candidates)
+	player:SetAttribute(
+		"PersonalSkyMerchantNearestCandidateDistance",
+		nearestDistance and nearestDistance < math.huge
+			and math.floor(nearestDistance + 0.5)
+			or nil
+	)
 	return candidates[1] and candidates[1].Island or nil
+end
+
+local function resolveSafeFallbackIsland(player, state)
+	local currentKey = tostring(player:GetAttribute("CurrentIslandKey") or "")
+	local currentIsland = findIslandByKey(currentKey)
+	if isBaseCandidate(state, currentIsland) then
+		player:SetAttribute("PersonalSkyMerchantFallbackCandidateCount", 1)
+		return currentIsland, "CurrentSafeNormalIsland"
+	end
+
+	local progressNow = currentProgress(player)
+	local candidates = {}
+	for _, descendant in ipairs(workspace:GetDescendants()) do
+		if isBaseCandidate(state, descendant) then
+			local progress = islandProgress(descendant) or progressNow
+			local progressPenalty = progress >= progressNow and 0 or 1
+			table.insert(candidates, {
+					Island = descendant,
+					ProgressPenalty = progressPenalty,
+					ProgressDelta = math.abs(progress - progressNow),
+					Distance = distanceToIsland(player, descendant),
+					Key = getIslandKey(descendant),
+				})
+		end
+	end
+	table.sort(candidates, function(left, right)
+		if left.ProgressPenalty ~= right.ProgressPenalty then
+			return left.ProgressPenalty < right.ProgressPenalty
+		end
+		if left.ProgressDelta ~= right.ProgressDelta then
+			return left.ProgressDelta < right.ProgressDelta
+		end
+		if left.Distance ~= right.Distance then
+			return left.Distance < right.Distance
+		end
+		return left.Key < right.Key
+	end)
+	player:SetAttribute("PersonalSkyMerchantFallbackCandidateCount", #candidates)
+	return candidates[1] and candidates[1].Island or nil, "NearestSafeNormalIsland"
 end
 
 local function lockTarget(player, state, island, source)
 	local key = getIslandKey(island)
-	if key == "" then
+	if key == "" or not isBaseCandidate(state, island) then
 		return false
 	end
+	local serial = math.max(
+		0,
+		math.floor(tonumber(player:GetAttribute("PersonalSkyMerchantEncounterSerial")) or 0)
+	)
 	state.Target = island
 	state.TargetKey = key
-	state.TargetOfferSerial = math.max(0, math.floor(tonumber(player:GetAttribute("MerchantOffersShown")) or 0))
+	state.TargetOfferSerial = serial
+	state.TargetProgress = islandProgress(island) or currentProgress(player)
+	state.TargetSource = source or "Unknown"
 	local value = getOrCreateTargetValue(player)
 	value.Value = island
+	local distance = distanceToIsland(player, island)
 	player:SetAttribute("PersonalSkyMerchantTargetIslandKey", key)
 	player:SetAttribute("PersonalSkyMerchantTargetLockedAt", workspace:GetServerTimeNow())
-	player:SetAttribute("PersonalSkyMerchantTargetOfferSerial", state.TargetOfferSerial)
-	player:SetAttribute("PersonalSkyMerchantTargetSource", source or "Unknown")
-	player:SetAttribute("PersonalSkyMerchantTargetAssignmentState", "LockedToFutureNormalIsland")
+	player:SetAttribute("PersonalSkyMerchantTargetOfferSerial", serial)
+	player:SetAttribute("PersonalSkyMerchantTargetSource", state.TargetSource)
+	player:SetAttribute("PersonalSkyMerchantTargetProgress", state.TargetProgress)
+	player:SetAttribute(
+		"PersonalSkyMerchantTargetDistance",
+		distance < math.huge and math.floor(distance + 0.5) or nil
+	)
+	local assignmentState = "LockedToFutureNormalIsland"
+	if state.TargetSource == "CurrentSafeNormalIsland" then
+		assignmentState = "LockedToCurrentSafeIsland"
+	elseif state.TargetSource == "NearestSafeNormalIsland" then
+		assignmentState = "LockedToNearestSafeIsland"
+	end
+	player:SetAttribute("PersonalSkyMerchantTargetAssignmentState", assignmentState)
 	player:SetAttribute("PersonalSkyMerchantSpawnPolicy", VERSION)
 	return true
 end
@@ -209,17 +330,34 @@ end
 
 local function targetStillValid(player, state)
 	local target = state.Target
-	if not target
+	if not target or not isBaseCandidate(state, target) then
 		return false
 	end
-	if not isNormalMerchantIsland(target)
-		or getIslandKey(target) ~= state.TargetKey
-		or not isAboveWater(target)
-	then
+	if getIslandKey(target) ~= state.TargetKey then
 		return false
 	end
-	local offerSerial = math.max(0, math.floor(tonumber(player:GetAttribute("MerchantOffersShown")) or 0))
-	return offerSerial == state.TargetOfferSerial
+	local serial = math.max(
+		0,
+		math.floor(tonumber(player:GetAttribute("PersonalSkyMerchantEncounterSerial")) or 0)
+	)
+	return serial == state.TargetOfferSerial
+end
+
+local function isRetargetable(encounterState)
+	return encounterState == "Unseen" or encounterState == "Presented"
+end
+
+local function resetForOffer(player, state, serial)
+	clearTarget(player, state, "WaitingForRoute")
+	state.OfferSerial = serial
+	state.OfferReadyAt = workspace:GetServerTimeNow()
+	table.clear(state.RejectedKeys)
+	state.LastRetargetRequestSerial = tonumber(
+		player:GetAttribute("PersonalSkyMerchantRetargetRequestSerial")
+	) or 0
+	player:SetAttribute("PersonalSkyMerchantRejectedTargetIslandKey", nil)
+	player:SetAttribute("PersonalSkyMerchantFutureCandidateCount", 0)
+	player:SetAttribute("PersonalSkyMerchantFallbackCandidateCount", 0)
 end
 
 local function updatePlayer(player)
@@ -230,6 +368,9 @@ local function updatePlayer(player)
 	rememberCurrentIsland(player, state)
 
 	if player:GetAttribute("MerchantOfferReady") ~= true then
+		state.OfferReadyAt = nil
+		state.OfferSerial = nil
+		table.clear(state.RejectedKeys)
 		if state.Target then
 			clearTarget(player, state, "WaitingForRecommendation")
 		else
@@ -238,10 +379,35 @@ local function updatePlayer(player)
 		return
 	end
 
+	local serial = math.max(
+		0,
+		math.floor(tonumber(player:GetAttribute("PersonalSkyMerchantEncounterSerial")) or 0)
+	)
+	if state.OfferSerial ~= serial then
+		resetForOffer(player, state, serial)
+	end
+
+	local retargetRequestSerial = tonumber(
+		player:GetAttribute("PersonalSkyMerchantRetargetRequestSerial")
+	) or 0
+	if retargetRequestSerial ~= (state.LastRetargetRequestSerial or 0) then
+		state.LastRetargetRequestSerial = retargetRequestSerial
+		local rejectedKey = tostring(
+			player:GetAttribute("PersonalSkyMerchantRejectedTargetIslandKey") or ""
+		)
+		if rejectedKey ~= "" then
+			state.RejectedKeys[rejectedKey] = workspace:GetServerTimeNow() + 6
+			if state.TargetKey == rejectedKey then
+				clearTarget(player, state, "RetargetingAfterSpawnFailure")
+			end
+		end
+	end
+
 	local encounterState = tostring(player:GetAttribute("PersonalSkyMerchantEncounterState") or "Unseen")
 	if encounterState == "Ignored"
 		or encounterState == "Dismissed"
 		or encounterState == "Purchased"
+		or encounterState == "ExpiredWithIsland"
 	then
 		clearTarget(player, state, "EncounterEnded:" .. encounterState)
 		return
@@ -249,40 +415,86 @@ local function updatePlayer(player)
 
 	if state.Target then
 		if targetStillValid(player, state) then
-			local value = getOrCreateTargetValue(player)
-			if value.Value ~= state.Target then
-				value.Value = state.Target
+			local currentKey = tostring(player:GetAttribute("CurrentIslandKey") or "")
+			local progressNow = currentProgress(player)
+			local targetProgress = state.TargetProgress or progressNow
+			local isFutureSource = state.TargetSource == "TravelIntent"
+				or state.TargetSource == "NearestReachableGeneratedIsland"
+			if isRetargetable(encounterState)
+				and isFutureSource
+				and currentKey ~= state.TargetKey
+				and progressNow >= targetProgress
+			then
+				clearTarget(player, state, "RetargetingAfterRouteChanged")
+			else
+				local value = getOrCreateTargetValue(player)
+				if value.Value ~= state.Target then
+					value.Value = state.Target
+				end
+				return
 			end
-			return
-		end
-		-- Uma ilha removida antes de ser percebida pode ser substituida por uma
-		-- futura. Depois de apresentada, o cliente encerra o encontro como ignorado.
-		clearTarget(player, state, encounterState == "Unseen"
-			and "TargetLostBeforeDiscovery"
-			or "TargetLostAfterPresentation")
-		if encounterState ~= "Unseen" then
-			return
+		else
+			clearTarget(
+				player,
+				state,
+				isRetargetable(encounterState)
+					and "TargetLostRetargeting"
+					or "TargetLostAfterOpen"
+			)
+			if not isRetargetable(encounterState) then
+				return
+			end
 		end
 	end
 
-	if encounterState ~= "Unseen" then
+	if not isRetargetable(encounterState) then
 		return
 	end
+
+	local readyFor = workspace:GetServerTimeNow() - (state.OfferReadyAt or workspace:GetServerTimeNow())
 	local candidate = resolveIntentIsland(player)
-	local source = "TravelIntent"
-	if not isFutureCandidate(player, state, candidate) then
-		-- WorldIntentTargetIsland e temporario e some quando o jogador para.
-		-- A versao anterior dependia exclusivamente dele e podia manter a oferta
-		-- pronta para sempre sem selecionar qualquer ilha para o Mercador.
-		candidate = resolveGeneratedFutureIsland(player, state)
-		source = "NearestGeneratedFutureIsland"
-	end
 	if isFutureCandidate(player, state, candidate) then
-		lockTarget(player, state, candidate, source)
-	else
-		player:SetAttribute("PersonalSkyMerchantTargetSource", nil)
-		player:SetAttribute("PersonalSkyMerchantTargetAssignmentState", "WaitingForGeneratedFutureIsland")
+		lockTarget(player, state, candidate, "TravelIntent")
+		return
 	end
+
+	if readyFor < INTENT_GRACE_SECONDS then
+		player:SetAttribute("PersonalSkyMerchantTargetSource", nil)
+		player:SetAttribute("PersonalSkyMerchantTargetAssignmentState", "WaitingForTravelIntent")
+		player:SetAttribute(
+			"PersonalSkyMerchantTargetWaitSeconds",
+			math.ceil(INTENT_GRACE_SECONDS - readyFor)
+		)
+		return
+	end
+
+	candidate = resolveGeneratedFutureIsland(player, state)
+	if isFutureCandidate(player, state, candidate) then
+		player:SetAttribute("PersonalSkyMerchantTargetWaitSeconds", nil)
+		lockTarget(player, state, candidate, "NearestReachableGeneratedIsland")
+		return
+	end
+
+	if readyFor < SAFE_FALLBACK_SECONDS then
+		player:SetAttribute("PersonalSkyMerchantTargetSource", nil)
+		player:SetAttribute("PersonalSkyMerchantTargetAssignmentState", "WaitingForSafeFallback")
+		player:SetAttribute(
+			"PersonalSkyMerchantTargetWaitSeconds",
+			math.ceil(SAFE_FALLBACK_SECONDS - readyFor)
+		)
+		return
+	end
+
+	local fallbackSource
+	candidate, fallbackSource = resolveSafeFallbackIsland(player, state)
+	if candidate and lockTarget(player, state, candidate, fallbackSource) then
+		player:SetAttribute("PersonalSkyMerchantTargetWaitSeconds", nil)
+		return
+	end
+
+	player:SetAttribute("PersonalSkyMerchantTargetSource", nil)
+	player:SetAttribute("PersonalSkyMerchantTargetAssignmentState", "WaitingForAnySafeNormalIsland")
+	player:SetAttribute("PersonalSkyMerchantTargetWaitSeconds", nil)
 end
 
 local function setupPlayer(player)
@@ -291,20 +503,31 @@ local function setupPlayer(player)
 	end
 	local state = {
 		VisitedKeys = {},
+		RejectedKeys = {},
 		Target = nil,
 		TargetKey = nil,
 		TargetOfferSerial = nil,
+		TargetProgress = nil,
+		TargetSource = nil,
+		OfferReadyAt = nil,
+		OfferSerial = nil,
+		LastRetargetRequestSerial = 0,
 	}
 	states[player] = state
 	getOrCreateTargetValue(player)
 	player:SetAttribute("PersonalSkyMerchantSpawnPolicy", VERSION)
 	player:SetAttribute("PersonalSkyMerchantTargetAssignmentState", "WaitingForRecommendation")
+	player:SetAttribute("PersonalSkyMerchantFutureCandidateCount", 0)
+	player:SetAttribute("PersonalSkyMerchantFallbackCandidateCount", 0)
 	rememberCurrentIsland(player, state)
 
 	for _, attribute in ipairs({
 		"MerchantOfferReady",
 		"MerchantOffersShown",
+		"PersonalSkyMerchantEncounterSerial",
 		"PersonalSkyMerchantEncounterState",
+		"PersonalSkyMerchantRejectedTargetIslandKey",
+		"PersonalSkyMerchantRetargetRequestSerial",
 		"WorldIntentTargetIslandKey",
 		"CurrentIslandKey",
 		"CurrentLogicalLevel",

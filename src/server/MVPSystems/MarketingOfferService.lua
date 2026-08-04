@@ -63,17 +63,6 @@ local function configured(definition)
 		and MonetizationCatalog.GetConfiguredAssetId(definition) > 0
 end
 
-local function waterIsSafe(player)
-	local character = player.Character
-	local root = character and character:FindFirstChild("HumanoidRootPart")
-	local water = workspace:FindFirstChild("Water")
-	local surfaceY = water and tonumber(water:GetAttribute("SurfaceY"))
-	if not root or not surfaceY then
-		return true
-	end
-	return root.Position.Y - surfaceY >= CONFIG.MinimumWaterGapStuds
-end
-
 local function canEvaluate(player, state, timestamp)
 	if timestamp < state.FirstOfferAt then
 		return false, "WaitingForOfferDelay", state.FirstOfferAt - timestamp
@@ -87,16 +76,9 @@ local function canEvaluate(player, state, timestamp)
 	if player:GetAttribute("IsDowned") == true then
 		return false, "WaitingForRecovery"
 	end
-	if player:GetAttribute("ShopOpen") == true then
-		return false, "WaitingForShopClose"
-	end
-	if player:GetAttribute("PersonalSkyMerchantWorldState") == "AttachedToIsland"
-		and player:GetAttribute("MerchantOfferReady") ~= true
-	then
-		-- O NPC visual permanece na ilha onde nasceu. Uma nova recomendacao so
-		-- pode usar outro ponto depois que aquela ilha for removida/reciclada.
-		return false, "WaitingForPreviousMerchantIsland"
-	end
+	-- Abrir outra interface ou ainda existir um modelo antigo nao pode impedir
+	-- a preparacao da recomendacao. O WorldService V8 limpa modelos obsoletos e
+	-- a compra continua dependendo de interacao explicita com o Mercador.
 	if player:GetAttribute("InitialGameStarted") ~= true then
 		return false, "WaitingForGameStart"
 	end
@@ -104,14 +86,11 @@ local function canEvaluate(player, state, timestamp)
 	if not tutorialCompleted and tutorialStage < 5 then
 		return false, "WaitingForTutorial"
 	end
-	if timestamp - (tonumber(player:GetAttribute("LastDamageReceivedAt")) or 0)
-		< CONFIG.CombatQuietSeconds
-	then
-		return false, "WaitingForCombatToEnd"
-	end
-	if not waterIsSafe(player) then
-		return false, "WaitingForSafeWaterGap"
-	end
+
+	-- Preparar uma recomendacao nao abre UI nem compra. Bloquear esta etapa por
+	-- dano recente ou proximidade da agua fazia jogadores em movimento normal
+	-- nunca chegarem a MerchantOfferReady. A interacao continua validada quando
+	-- o jogador encontra fisicamente a loja e pressiona E.
 	return true, "Eligible"
 end
 
@@ -138,8 +117,6 @@ local function platformSpenderFit(state, definition)
 		return nil
 	end
 	if state.PlatformSpenderStatus == "OtherPayer" then
-		-- Neutro: ter dados disponiveis nao deve penalizar quem nao esta no
-		-- grupo de gastadores ativos da plataforma.
 		return 50
 	end
 	if state.PlatformSpenderStatus ~= "Active" then
@@ -175,34 +152,51 @@ local function scoreCandidates(player, state, timestamp)
 	local runLevel = math.max(1, tonumber(player:GetAttribute("RunLevel")) or 1)
 	local equipSlots = math.max(1, tonumber(player:GetAttribute("CompanionEquipSlots")) or 1)
 	local ownedWingProductId = player:GetAttribute("OwnedWingProductId")
+	local ownsPermanentWing = ownedWingProductId ~= nil
 	local candidates = {}
-	local function add(productId, behaviorScore, reason)
+	local fallbackUsed = false
+	local fallbackProductId
+
+	local function add(productId, behaviorScore, reason, isFallback)
 		local definition = MonetizationCatalog.Get(productId)
 		if not configured(definition)
 			or (definition.PaidRandomItem and not state.PaidRandomItemsAllowed)
 			or state.ShownProducts[productId]
 			or timestamp < (state.RefusedUntil[productId] or 0)
 		then
-			return
+			return false
+		end
+		if productId == "TemporaryWings" and ownsPermanentWing then
+			return false
+		end
+		if productId == "InvisibilityCape"
+			and player:GetAttribute("OwnsInvisibilityCape") == true
+		then
+			return false
+		end
+		if productId == "CompanionSlot" and equipSlots >= 4 then
+			return false
 		end
 		behaviorScore = math.clamp(tonumber(behaviorScore) or 0, 0, 100)
 		local intentScore = sessionIntentScore(state, definition)
 		local spenderScore = platformSpenderFit(state, definition)
-		table.insert(candidates, {
+		local candidate = {
 			ProductId = productId,
 			Context = productContext(definition),
 			Score = weightedScore(behaviorScore, intentScore, spenderScore),
 			BehaviorScore = behaviorScore,
 			IntentScore = intentScore,
 			Reason = reason,
-		})
+			Fallback = isFallback == true,
+		}
+		table.insert(candidates, candidate)
+		if candidate.Fallback and not fallbackProductId then
+			fallbackUsed = true
+			fallbackProductId = productId
+		end
+		return true
 	end
 
-	-- Sem esta oferta de entrada, um jogador novo no RunLevel 1 nao produz
-	-- candidato algum. MerchantOfferReady permanece falso para sempre, portanto
-	-- nenhum alvo futuro e nenhum modelo do Mercador chegam a ser criados.
-	-- TemporaryWings custa moedas e funciona como demonstracao segura antes das
-	-- recomendacoes premium contextuais dos niveis seguintes.
 	if not ownsAnyWing(player) and runLevel < 2 then
 		add(
 			"TemporaryWings",
@@ -210,7 +204,6 @@ local function scoreCandidates(player, state, timestamp)
 			"Experimente tres voos antes de decidir quais asas combinam com sua jornada."
 		)
 	end
-
 	if not ownsAnyWing(player) and runLevel >= 2 then
 		add("AzureWings", 30 + runLevel * 15, "Voce chegou longe. Asas podem ajudar nos proximos saltos.")
 	end
@@ -246,6 +239,47 @@ local function scoreCandidates(player, state, timestamp)
 		add("PaidWheelSpin", 20 + signals.WheelSpins * 12, "Voce ja conhece as recompensas e probabilidades da roleta.")
 	end
 
+	local bestNaturalScore = 0
+	for _, candidate in ipairs(candidates) do
+		bestNaturalScore = math.max(bestNaturalScore, candidate.Score)
+	end
+	if bestNaturalScore < (tonumber(CONFIG.MinimumOfferScore) or 0) then
+		-- Sempre existe pelo menos uma recomendacao utilizavel para o primeiro
+		-- encontro. A ordem evita oferecer asas temporarias a quem ja possui asas
+		-- permanentes e termina em um produto repetivel nao aleatorio.
+		local fallbackOptions = {
+			{
+				Id = "TemporaryWings",
+				Score = 98,
+				Reason = "Leve tres impulsos de voo para experimentar novas rotas nesta expedicao.",
+			},
+			{
+				Id = "InvisibilityCape",
+				Score = 96,
+				Reason = "Tenha uma rota de fuga pronta para os combates mais perigosos.",
+			},
+			{
+				Id = "CompanionSlot",
+				Score = 94,
+				Reason = "Prepare um espaco extra para ampliar sua equipe de slimes.",
+			},
+			{
+				Id = "EliteExpedition",
+				Score = 92,
+				Reason = "Guarde este selo para transformar sua proxima caca a Elite em uma recompensa maior.",
+			},
+		}
+		for _, fallback in ipairs(fallbackOptions) do
+			if add(fallback.Id, fallback.Score, fallback.Reason, true) then
+				break
+			end
+		end
+	end
+
+	player:SetAttribute("PersonalSkyMerchantRawCandidateCount", #candidates)
+	player:SetAttribute("PersonalSkyMerchantCandidateFallbackUsed", fallbackUsed)
+	player:SetAttribute("PersonalSkyMerchantCandidateFallbackProductId", fallbackProductId)
+
 	table.sort(candidates, function(left, right)
 		if left.Score ~= right.Score then
 			return left.Score > right.Score
@@ -260,15 +294,9 @@ local function selectBestCandidates(candidates)
 	if not best or best.Score < CONFIG.MinimumOfferScore then
 		return {}
 	end
-	local maximum = math.max(
-		1,
-		math.floor(tonumber(CONFIG.MaximumMerchantRecommendations) or 1)
-	)
+	local maximum = math.max(1, math.floor(tonumber(CONFIG.MaximumMerchantRecommendations) or 1))
 	maximum = math.min(2, maximum)
-	local scoreWindow = math.max(
-		0,
-		tonumber(CONFIG.MerchantRecommendationScoreWindow) or 0
-	)
+	local scoreWindow = math.max(0, tonumber(CONFIG.MerchantRecommendationScoreWindow) or 0)
 	local selected = {}
 	local selectedContexts = {}
 	for _, candidate in ipairs(candidates) do
@@ -301,8 +329,6 @@ local function loadPlayerSegments(player, state)
 		state.PlatformSpenderDataAvailable = true
 		state.PlatformSpenderStatus = "OtherPayer"
 	else
-		-- Unknown, HasData=false e qualquer falha usam o algoritmo neutro.
-		-- Nenhuma classificacao economica e presumida.
 		state.PlatformSpenderDataAvailable = false
 		state.PlatformSpenderStatus = "Unknown"
 	end
@@ -330,8 +356,7 @@ local function endPendingEncounter(player, state, outcome, applyRefusedCooldown)
 	local timestamp = now()
 	if applyRefusedCooldown then
 		for _, candidate in ipairs(state.Pending) do
-			state.RefusedUntil[candidate.ProductId] = timestamp
-				+ CONFIG.RefusedProductCooldownSeconds
+			state.RefusedUntil[candidate.ProductId] = timestamp + CONFIG.RefusedProductCooldownSeconds
 		end
 	end
 	state.Pending = nil
@@ -373,8 +398,6 @@ local function publish(player, state, candidates)
 	player:SetAttribute("MerchantRecommendedProductIds", table.concat(productIds, ","))
 	player:SetAttribute("MerchantRecommendedOfferCount", #productIds)
 	player:SetAttribute("PersonalSkyMerchantState", "Ready")
-	-- Publicado por ultimo para que o cliente receba serial, produtos e estado
-	-- antes de criar o NPC desta recomendacao.
 	player:SetAttribute("MerchantOfferReady", true)
 	if event then
 		event:FireClient(player, {
@@ -424,7 +447,7 @@ local function setup(player)
 		PlatformSpenderStatus = "Unknown",
 	}
 	sessions[player] = state
-	player:SetAttribute("PersonalSkyMerchantAlgorithmVersion", "NeedScoreV3NaturalTiming")
+	player:SetAttribute("PersonalSkyMerchantAlgorithmVersion", "GuaranteedEncounterV8")
 	player:SetAttribute("PersonalSkyMerchantState", "WaitingForEligibility")
 	player:SetAttribute("MerchantOfferReady", false)
 	player:SetAttribute("MerchantOffersShown", 0)
@@ -433,6 +456,11 @@ local function setup(player)
 	player:SetAttribute("MerchantOfferScore", nil)
 	player:SetAttribute("MerchantRecommendedProductIds", nil)
 	player:SetAttribute("MerchantRecommendedOfferCount", 0)
+	player:SetAttribute("PersonalSkyMerchantRawCandidateCount", 0)
+	player:SetAttribute("PersonalSkyMerchantSelectedCandidateCount", 0)
+	player:SetAttribute("PersonalSkyMerchantCandidateFallbackUsed", false)
+	player:SetAttribute("PersonalSkyMerchantCandidateFallbackProductId", nil)
+	player:SetAttribute("PersonalSkyMerchantPendingRecovered", false)
 	player:SetAttribute(
 		"PersonalSkyMerchantWaitSeconds",
 		math.max(0, math.ceil(state.FirstOfferAt - joinedAt))
@@ -471,9 +499,7 @@ function MarketingOfferService.RecordStoreOpened(player)
 	setup(player)
 	local intent = sessions[player].Intent
 	local timestamp = now()
-	if timestamp - intent.LastStoreOpenedAt
-		< (tonumber(CONFIG.StoreOpenIntentDebounceSeconds) or 5)
-	then
+	if timestamp - intent.LastStoreOpenedAt < (tonumber(CONFIG.StoreOpenIntentDebounceSeconds) or 5) then
 		return
 	end
 	intent.LastStoreOpenedAt = timestamp
@@ -550,8 +576,7 @@ function MarketingOfferService.RecordEncounter(player, outcome, offerSerial)
 			setEncounterState(player, state, "Presented")
 			player:SetAttribute("PersonalSkyMerchantState", "Presented")
 		end
-		local accepted = state.EncounterState == "Presented"
-			or state.EncounterState == "Opened"
+		local accepted = state.EncounterState == "Presented" or state.EncounterState == "Opened"
 		if accepted then
 			return true, nil, state.EncounterState
 		end
@@ -561,19 +586,13 @@ function MarketingOfferService.RecordEncounter(player, outcome, offerSerial)
 			return false, "InvalidTransition", state.EncounterState
 		end
 		local ended = endPendingEncounter(player, state, "Ignored", true)
-		if ended then
-			return true, nil, state.EncounterState
-		end
-		return false, "NoPendingOffer", state.EncounterState
+		return ended, ended and nil or "NoPendingOffer", state.EncounterState
 	elseif outcome == "Dismissed" then
 		if state.EncounterState ~= "Opened" then
 			return false, "InvalidTransition", state.EncounterState
 		end
 		local ended = endPendingEncounter(player, state, "Dismissed", true)
-		if ended then
-			return true, nil, state.EncounterState
-		end
-		return false, "NoPendingOffer", state.EncounterState
+		return ended, ended and nil or "NoPendingOffer", state.EncounterState
 	end
 	return false, "InvalidOutcome", state.EncounterState
 end
@@ -696,6 +715,36 @@ function MarketingOfferService.GetSignals(player)
 	return table.clone(sessions[player].Signals)
 end
 
+local function restorePendingAttributes(player, state)
+	local pending = state.Pending
+	local primary = pending and pending[1]
+	if not primary then
+		return false
+	end
+	local encounterState = tostring(state.EncounterState or "Unseen")
+	if encounterState == "Ignored"
+		or encounterState == "Dismissed"
+		or encounterState == "Purchased"
+		or encounterState == "ExpiredWithIsland"
+	then
+		return false
+	end
+	local recovered = player:GetAttribute("MerchantOfferReady") ~= true
+		or player:GetAttribute("MerchantOfferProductId") ~= primary.ProductId
+	local productIds = {}
+	for _, candidate in ipairs(pending) do
+		table.insert(productIds, candidate.ProductId)
+	end
+	player:SetAttribute("MerchantOfferProductId", primary.ProductId)
+	player:SetAttribute("MerchantOfferReason", primary.Reason)
+	player:SetAttribute("MerchantOfferScore", math.floor(primary.Score * 10 + 0.5) / 10)
+	player:SetAttribute("MerchantRecommendedProductIds", table.concat(productIds, ","))
+	player:SetAttribute("MerchantRecommendedOfferCount", #productIds)
+	player:SetAttribute("MerchantOfferReady", true)
+	player:SetAttribute("PersonalSkyMerchantPendingRecovered", recovered)
+	return true
+end
+
 function MarketingOfferService.Start()
 	if started then
 		return
@@ -708,25 +757,28 @@ function MarketingOfferService.Start()
 	Players.PlayerRemoving:Connect(function(player)
 		sessions[player] = nil
 	end)
+
 	task.spawn(function()
 		while true do
 			task.wait(CONFIG.OfferEvaluationSeconds)
 			local timestamp = now()
 			for _, player in ipairs(Players:GetPlayers()) do
 				local state = sessions[player]
-				if state and not state.Pending then
-					local eligible, reason, waitSeconds = canEvaluate(
-						player,
-						state,
-						timestamp
-					)
+				if state and state.Pending then
+					restorePendingAttributes(player, state)
+				elseif state then
+					player:SetAttribute("PersonalSkyMerchantPendingRecovered", false)
+					local eligible, reason, waitSeconds = canEvaluate(player, state, timestamp)
 					player:SetAttribute("PersonalSkyMerchantState", reason)
+					player:SetAttribute("PersonalSkyMerchantEligibilityReason", reason)
 					player:SetAttribute(
 						"PersonalSkyMerchantWaitSeconds",
 						waitSeconds and math.max(0, math.ceil(waitSeconds)) or nil
 					)
+
 					if eligible then
 						local candidates = selectBestCandidates(scoreCandidates(player, state, timestamp))
+						player:SetAttribute("PersonalSkyMerchantSelectedCandidateCount", #candidates)
 						if #candidates > 0 then
 							local productIds = {}
 							for _, candidate in ipairs(candidates) do
@@ -736,11 +788,8 @@ function MarketingOfferService.Start()
 							local bestScore = candidates[1].Score
 							if state.NeedSignature ~= signature or not state.NeedReadyAt then
 								state.NeedSignature = signature
-								state.NeedReadyAt = timestamp
-									+ needObservationDelay(player, state, bestScore)
+								state.NeedReadyAt = timestamp + needObservationDelay(player, state, bestScore)
 							else
-								-- Uma necessidade que ficou mais forte pode antecipar o
-								-- momento, mas nunca cria o NPC durante o combate.
 								state.NeedReadyAt = math.min(
 									state.NeedReadyAt,
 									timestamp + needObservationDelay(player, state, bestScore)
@@ -751,17 +800,11 @@ function MarketingOfferService.Start()
 								"PersonalSkyMerchantCandidateScore",
 								math.floor(bestScore * 10 + 0.5) / 10
 							)
-							player:SetAttribute(
-								"PersonalSkyMerchantWaitSeconds",
-								math.ceil(remaining)
-							)
+							player:SetAttribute("PersonalSkyMerchantWaitSeconds", math.ceil(remaining))
 							if remaining <= 0 then
 								publish(player, state, candidates)
 							else
-								player:SetAttribute(
-									"PersonalSkyMerchantState",
-									"WaitingForNaturalMoment"
-								)
+								player:SetAttribute("PersonalSkyMerchantState", "WaitingForNaturalMoment")
 							end
 						else
 							state.NeedSignature = nil

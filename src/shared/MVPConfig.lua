@@ -97,8 +97,8 @@ local Config = {
 		GuaranteedEveryRounds = 6,
 		MediumChance = 0.08,
 		LargeChance = 0.16,
-		-- O Mercador do Ceu e pessoal e criado apenas no cliente. Nenhuma ilha
-		-- e reservada para ele pelo gerador do mapa.
+		-- O Mercador do Ceu e pessoal, mas o modelo e criado no servidor para
+		-- todos enxergarem. Nenhuma ilha exclusiva e reservada pelo gerador.
 		PersonalSkyMerchantRelocateDistance = 55,
 		-- O NPC pode antecipar a rota uma unica vez enquanto ainda nao foi
 		-- percebido. Depois de apresentado, fica preso a ilha do encontro.
@@ -111,7 +111,15 @@ local Config = {
 		-- A oferta pronta espera brevemente o jogador demonstrar uma rota. Ao
 		-- receber a intencao do gerador, o conjunto completo nasce numa area
 		-- lateral da ilha e uma trilha celestial conduz o jogador ate a bancada.
-		PersonalSkyMerchantIntentWaitSeconds = 10,
+		PersonalSkyMerchantIntentWaitSeconds = 5,
+		-- Se nenhuma ilha futura normal estiver disponivel, o encontro usa uma
+		-- ilha normal segura proxima. Isto evita ofertas prontas sem NPC visivel.
+		PersonalSkyMerchantSafeFallbackSeconds = 11,
+		PersonalSkyMerchantSpawnRetrySeconds = 1.5,
+		-- Assets publicados maiores que a ilha usam automaticamente o modelo
+		-- simples de emergencia, em vez de cancelar o spawn.
+		PersonalSkyMerchantPublishedTemplateFloorRatio = 0.72,
+		PersonalSkyMerchantPublishedTemplateMaxHeight = 36,
 		PersonalSkyMerchantStandEdgeClearance = 4,
 		PersonalSkyMerchantStandSideOffset = 8,
 		PersonalSkyMerchantPathEntryInset = 3,
@@ -206,15 +214,17 @@ local Config = {
 		-- A primeira janela varia deterministicamente por jogador. O mercador
 		-- nao aparece em um segundo identico para todos, mas tambem nao deixa
 		-- uma necessidade real esperando por varios minutos.
-		FirstOfferDelaySeconds = 70,
-		FirstOfferDelayJitterSeconds = 35,
-		OfferEvaluationSeconds = 5,
+		-- A recomendacao nao abre popup. Por isso o primeiro encontro pode ser
+		-- preparado cedo e continuar dependendo da chegada fisica do jogador.
+		FirstOfferDelaySeconds = 15,
+		FirstOfferDelayJitterSeconds = 5,
+		OfferEvaluationSeconds = 2,
 		OfferCooldownSeconds = 4 * 60,
-		NeedObservationSeconds = 8,
-		NeedObservationJitterSeconds = 20,
+		NeedObservationSeconds = 1,
+		NeedObservationJitterSeconds = 2,
 		UrgentOfferScore = 68,
-		UrgentNeedObservationSeconds = 3,
-		UrgentNeedObservationJitterSeconds = 8,
+		UrgentNeedObservationSeconds = 0.5,
+		UrgentNeedObservationJitterSeconds = 1,
 		RefusedProductCooldownSeconds = 15 * 60,
 		MaximumOffersPerSession = 2,
 		CombatQuietSeconds = 12,
