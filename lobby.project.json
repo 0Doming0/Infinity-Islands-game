@@ -1,0 +1,28 @@
+{
+  "name": "SkyDungeon Lobby",
+  "servePort": 34873,
+  "placeId": 73123221454040,
+  "tree": {
+    "$className": "DataModel",
+
+    "ReplicatedStorage": {
+      
+        "$path": "src/lobby/shared"
+      
+    },
+
+    "ServerScriptService": {
+      
+        "$path": "src/lobby/server"
+      
+    },
+
+    "StarterPlayer": {
+      "StarterPlayerScripts": {
+        
+          "$path": "src/lobby/client"
+        
+      }
+    }
+  }
+}

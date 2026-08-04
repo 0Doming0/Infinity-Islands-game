@@ -1,11 +1,11 @@
--- Tutorial visual e contextual executado no mapa procedural compartilhado.
+-- Tutorial dinamico integrado ao mapa procedural compartilhado.
 --
--- Cada iniciante recebe objetivos pessoais, mas continua jogando no mesmo mundo
--- que os demais jogadores. O servidor valida toda a progressao e recria o
--- objetivo quando a ilha muda, a agua se aproxima ou o personagem renasce.
+-- O jogador escolhe livremente a rota, a ilha, o inimigo e a recompensa.
+-- O servidor apenas observa conquistas naturais e recomenda a oportunidade
+-- mais util no contexto atual. Nenhum waypoint, mob ou coletavel artificial
+-- e criado pelo tutorial.
 
 local CollectionService = game:GetService("CollectionService")
-local Debris = game:GetService("Debris")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -13,13 +13,9 @@ local RunService = game:GetService("RunService")
 local blockParkour = script.Parent:WaitForChild("BlockParkour")
 local mvpSystems = script.Parent:WaitForChild("MVPSystems")
 local PlayerDataService = require(blockParkour:WaitForChild("PlayerDataService_SkyDungeon_V10"))
-local ScoreService = require(blockParkour:WaitForChild("ScoreService_SkyDungeon_V10"))
-local CollectibleService = require(mvpSystems:WaitForChild("CollectibleService"))
 local RewardWheelService = require(mvpSystems:WaitForChild("RewardWheelService"))
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 
-ScoreService.Start()
-CollectibleService.Start()
 RewardWheelService.Start()
 
 local tutorialEvent = ReplicatedStorage:FindFirstChild("TutorialEvent")
@@ -33,61 +29,71 @@ if not tutorialEvent then
 	tutorialEvent.Parent = ReplicatedStorage
 end
 
-local TOTAL_STAGES = 5
-local CHECK_INTERVAL = 0.12
-local TARGET_RADIUS = 5.75
-local SAFE_WATER_CLEARANCE = 10
-local CONTEXT_RECHECK_SECONDS = 0.8
-local CONTEXT_CHANGE_GRACE_SECONDS = 1.25
-local MAX_LOCAL_TARGET_DISTANCE = 62
-local TRAINING_HIT_GOAL = 3
+local CHECK_INTERVAL = 0.15
+local CONTEXT_SCAN_INTERVAL = 0.65
+local GUIDANCE_REFRESH_SECONDS = 2.5
+local MOVEMENT_DISTANCE_GOAL = 12
+local EXPLORATION_HEIGHT_GOAL = 12
+local WATER_RISE_TO_OBSERVE = 0.75
+local WATER_DANGER_GAP = 24
+local WATER_SAFE_GAP = 18
+local WATER_SAFE_SECONDS = 2.5
+local WATER_RESPONSE_DISTANCE = 14
 local ENEMY_PROTECTION_MAX_SECONDS = 150
 local COMPLETION_WHEEL_SOURCE = "TutorialCompletion"
 local COMPLETION_WHEEL_DELAY_SECONDS = 1.15
-local PROTECTION_VERSION = "SharedWorldVisualTutorialCelebrationV3"
+local SYSTEM_VERSION = "DynamicWorldTutorialV4"
 
-workspace:SetAttribute("TutorialProtectionSystemVersion", PROTECTION_VERSION)
-workspace:SetAttribute("TutorialSystemVersion", PROTECTION_VERSION)
-
-local STAGES = {
-	[1] = {
-		Id = "Movement",
-		ActionText = "SIGA A LUZ",
-		Instruction = "Mova-se até o ponto brilhante.",
-		Hint = "Use o direcional para avançar.",
+local GOALS = table.freeze({
+	{
+		Id = "Mobility",
+		Label = "MOVIMENTAÇÃO",
 	},
-	[2] = {
-		Id = "Jump",
-		ActionText = "PULE",
-		Instruction = "Alcance o próximo ponto.",
-		Hint = "Pule enquanto avança.",
+	{
+		Id = "Exploration",
+		Label = "EXPLORAÇÃO",
 	},
-	[3] = {
-		Id = "Collectible",
-		ActionText = "PEGUE O FRAGMENTO",
-		Instruction = "Encoste no objeto brilhante.",
-		Hint = "Fragmentos concedem moedas e pontos.",
-	},
-	[4] = {
+	{
 		Id = "Combat",
-		ActionText = "ATAQUE",
-		Instruction = "Acerte o alvo de treino 3 vezes.",
-		Hint = "Equipe a espada e use o ataque.",
+		Label = "COMBATE",
 	},
-	[5] = {
-		Id = "Water",
-		ActionText = "SUBA!",
-		Instruction = "A água está subindo.",
-		Hint = "Procure sempre plataformas mais altas.",
-		Danger = true,
+	{
+		Id = "Reward",
+		Label = "RECOMPENSA",
 	},
-}
+	{
+		Id = "Survival",
+		Label = "SOBREVIVÊNCIA",
+	},
+})
 
-local states = {}
-local setupStarted = {}
+local GOAL_INDEX = {}
+for index, definition in ipairs(GOALS) do
+	GOAL_INDEX[definition.Id] = index
+end
+
+local states = setmetatable({}, { __mode = "k" })
+local setupStarted = setmetatable({}, { __mode = "k" })
+local boundCombatTargets = setmetatable({}, { __mode = "k" })
+local boundHumanoids = setmetatable({}, { __mode = "k" })
+local boundChests = setmetatable({}, { __mode = "k" })
+local boundPrompts = setmetatable({}, { __mode = "k" })
+
+workspace:SetAttribute("TutorialProtectionSystemVersion", SYSTEM_VERSION)
+workspace:SetAttribute("TutorialSystemVersion", SYSTEM_VERSION)
+workspace:SetAttribute("TutorialDesign", "DynamicContextualNoForcedTargets")
+workspace:SetAttribute("TutorialGoalCount", #GOALS)
 
 local function serverTime()
 	return workspace:GetServerTimeNow()
+end
+
+local function forceTutorialForTesting()
+	local config = MVPConfig.Tutorial or {}
+	if config.ForceForAllPlayers ~= true and config.Audience ~= "AllPlayers" then
+		return false
+	end
+	return config.ForceForAllPlayersOnlyInStudio ~= true or RunService:IsStudio()
 end
 
 local function setTutorialEnemyProtection(player, active)
@@ -98,16 +104,8 @@ local function setTutorialEnemyProtection(player, active)
 	local character = player.Character
 	if character then
 		character:SetAttribute("TutorialEnemyProtected", enabled)
-		character:SetAttribute("TutorialProtectionVersion", PROTECTION_VERSION)
+		character:SetAttribute("TutorialProtectionVersion", SYSTEM_VERSION)
 	end
-end
-
-local function forceTutorialForTesting()
-	local config = MVPConfig.Tutorial or {}
-	if config.ForceForAllPlayers ~= true and config.Audience ~= "AllPlayers" then
-		return false
-	end
-	return config.ForceForAllPlayersOnlyInStudio ~= true or RunService:IsStudio()
 end
 
 local function getLivingRoot(player)
@@ -122,401 +120,403 @@ end
 
 local function getWaterSurfaceY()
 	local water = workspace:FindFirstChild("Water")
-	return water and tonumber(water:GetAttribute("SurfaceY")) or -math.huge
+	local surfaceY = water and tonumber(water:GetAttribute("SurfaceY"))
+	return surfaceY
 end
 
-local function getCurrentRound(positionY)
-	for _, round in ipairs(CollectionService:GetTagged("SkyDungeonRound")) do
-		local bottom = tonumber(round:GetAttribute("RoundBottomWorldY") or round:GetAttribute("BottomWorldY"))
-		local top = tonumber(round:GetAttribute("RoundTopWorldY") or round:GetAttribute("TopWorldY"))
-		if bottom and top and positionY >= bottom and positionY <= top then
-			return tonumber(round:GetAttribute("RoundIndex")) or 0
+local function completedCount(state)
+	local count = 0
+	for _, definition in ipairs(GOALS) do
+		if state.Completed[definition.Id] then
+			count += 1
 		end
 	end
-	return 0
+	return count
 end
 
-local function isTutorialSurface(part)
-	return part:IsA("BasePart")
-		and part.CanCollide
-		and (part:GetAttribute("IsRoundConnector") == true or part.Name == "IslandFloor")
-end
-
-local function horizontalDistance(left, right)
-	return Vector2.new(left.X - right.X, left.Z - right.Z).Magnitude
-end
-
-local function forwardDirection(root)
-	local direction = Vector3.new(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z)
-	if direction.Magnitude < 0.05 then
-		return Vector3.new(0, 0, -1)
+local function goalMask(state)
+	local mask = 0
+	for index, definition in ipairs(GOALS) do
+		if state.Completed[definition.Id] then
+			mask += 2 ^ (index - 1)
+		end
 	end
-	return direction.Unit
+	return mask
 end
 
-local function surfacePoint(part, root, stage)
-	local topY = part.Position.Y + part.Size.Y / 2
-	if part.Name ~= "IslandFloor" then
-		return Vector3.new(part.Position.X, topY, part.Position.Z)
+local function isNaturalEnemy(model)
+	if not model or not model:IsA("Model") or not model:IsDescendantOf(workspace) then
+		return false
 	end
-
-	local offsets = {
-		[1] = 11,
-		[2] = 7,
-		[3] = 8,
-		[4] = 10,
-		[5] = 8,
-	}
-	local desired = root.Position + forwardDirection(root) * (offsets[stage] or 8)
-	local margin = 3
-	local halfX = math.max(0, part.Size.X / 2 - margin)
-	local halfZ = math.max(0, part.Size.Z / 2 - margin)
-	return Vector3.new(
-		math.clamp(desired.X, part.Position.X - halfX, part.Position.X + halfX),
-		topY,
-		math.clamp(desired.Z, part.Position.Z - halfZ, part.Position.Z + halfZ)
-	)
+	if Players:GetPlayerFromCharacter(model) then
+		return false
+	end
+	if model:GetAttribute("IsCompanion") == true
+		or model:GetAttribute("TutorialTrainingTarget") == true
+		or model:GetAttribute("EntityType") == "StaticObject"
+		or model:GetAttribute("Targetable") == false
+	then
+		return false
+	end
+	return model:FindFirstChildWhichIsA("Humanoid", true) ~= nil
 end
 
-local function candidateScore(stage, rootPosition, candidate, currentRound)
-	local horizontal = horizontalDistance(rootPosition, candidate.SurfacePosition)
-	local rise = candidate.SurfacePosition.Y - rootPosition.Y
-	local absoluteRise = math.abs(rise)
-	local sameRoundBonus = candidate.RoundIndex == currentRound and -10 or 0
-
-	if stage == 1 then
-		if horizontal < 7 or horizontal > 24 or absoluteRise > 8 then
-			return nil
-		end
-		return horizontal + absoluteRise * 2 + sameRoundBonus
-	elseif stage == 2 then
-		if horizontal < 3 or horizontal > 24 or rise < 1.5 or rise > 14 then
-			return nil
-		end
-		return horizontal + math.abs(rise - 5) * 2 + sameRoundBonus
-	elseif stage == 3 or stage == 4 then
-		if horizontal < 5 or horizontal > 24 or absoluteRise > 8 then
-			return nil
-		end
-		return horizontal + absoluteRise * 2 + sameRoundBonus
-	elseif stage == 5 then
-		if horizontal < 4 or horizontal > 45 or rise < 4 or rise > 24 then
-			return nil
-		end
-		return horizontal + math.abs(rise - 9) * 1.5 + sameRoundBonus
+local function creditedPlayer(model, humanoid)
+	local creator = humanoid and humanoid:FindFirstChild("creator")
+	if creator and creator:IsA("ObjectValue") and creator.Value and creator.Value:IsA("Player") then
+		return creator.Value
+	end
+	local userId = tonumber(model and model:GetAttribute("LastDamagedByUserId"))
+	if userId and userId > 0 then
+		return Players:GetPlayerByUserId(userId)
 	end
 	return nil
 end
 
-local function findContextTarget(root, stage)
-	local waterY = getWaterSurfaceY()
-	local currentRound = getCurrentRound(root.Position.Y)
-	local preferred
-	local preferredScore
-	local nearest
-	local nearestDistance = math.huge
+local sendGuidance
+local finishTutorial
 
-	for _, round in ipairs(CollectionService:GetTagged("SkyDungeonRound")) do
-		local roundIndex = tonumber(round:GetAttribute("RoundIndex")) or 0
-		for _, descendant in ipairs(round:GetDescendants()) do
-			if not isTutorialSurface(descendant) then
-				continue
-			end
-
-			local surface = surfacePoint(descendant, root, stage)
-			if surface.Y <= waterY + SAFE_WATER_CLEARANCE then
-				continue
-			end
-
-			local candidate = {
-				SourcePart = descendant,
-				SurfacePosition = surface,
-				TargetPosition = surface + Vector3.new(0, 2.8, 0),
-				RoundIndex = roundIndex,
-			}
-			local distance = (candidate.TargetPosition - root.Position).Magnitude
-			if distance < nearestDistance then
-				nearestDistance = distance
-				nearest = candidate
-			end
-
-			local score = candidateScore(stage, root.Position, candidate, currentRound)
-			if score and (not preferredScore or score < preferredScore) then
-				preferredScore = score
-				preferred = candidate
-			end
-		end
+local function completeGoal(player, state, goalId, source)
+	if not state.Active or state.Completed[goalId] or not GOAL_INDEX[goalId] then
+		return false
 	end
 
-	local selected = preferred
-	if not selected and stage ~= 5 and nearestDistance <= MAX_LOCAL_TARGET_DISTANCE then
-		selected = nearest
-	end
-	if selected then
-		selected.IsLocal = root.Position.Y > waterY + 1
-			and (selected.TargetPosition - root.Position).Magnitude <= MAX_LOCAL_TARGET_DISTANCE
-	end
-	return selected
-end
+	state.Completed[goalId] = true
+	local count = completedCount(state)
+	local definition = GOALS[GOAL_INDEX[goalId]]
+	player:SetAttribute("TutorialGoal_" .. goalId, true)
+	player:SetAttribute("TutorialCompletedGoalCount", count)
+	player:SetAttribute("TutorialDynamicGoalMask", goalMask(state))
+	player:SetAttribute("TutorialStage", count)
+	player:SetAttribute("TutorialLastCompletedGoal", goalId)
+	player:SetAttribute("TutorialLastCompletedGoalAt", serverTime())
+	player:SetAttribute("TutorialLastCompletedGoalSource", tostring(source or "ServerValidated"))
 
-local function ensureRuntimeFolder()
-	local folder = workspace:FindFirstChild("TutorialRuntime")
-	if not folder then
-		folder = Instance.new("Folder")
-		folder.Name = "TutorialRuntime"
-		folder.Parent = workspace
-	end
-	return folder
-end
+	tutorialEvent:FireClient(player, {
+		Action = "StageComplete",
+		GoalId = goalId,
+		GoalLabel = definition.Label,
+		CompletedCount = count,
+		TotalGoals = #GOALS,
+	})
 
-local function createTrainingTarget(player, surfacePosition, token, onProgress, onDefeated)
-	local model = Instance.new("Model")
-	model.Name = "TutorialTarget_" .. player.UserId
-	model:SetAttribute("RuntimeMonster", true)
-	model:SetAttribute("MonsterId", "TrainingSlime")
-	model:SetAttribute("DisplayName", "Alvo de " .. player.DisplayName)
-	model:SetAttribute("TutorialTargetUserId", player.UserId)
-	model:SetAttribute("TutorialTrainingTarget", true)
-	model:SetAttribute("TutorialHitsRemaining", TRAINING_HIT_GOAL)
-	model:SetAttribute("UseCentralAI", false)
-	model:SetAttribute("UseCustomAI", true)
-	model:SetAttribute("AIController", "TrainingTarget")
-	model:SetAttribute("CanBecomeCompanion", false)
-	model:SetAttribute("Peaceful", true)
-	model:SetAttribute("NoKnockback", true)
-	model:SetAttribute("CanBeKnockedBack", false)
-	model:SetAttribute("CanBeStunned", false)
-
-	local root = Instance.new("Part")
-	root.Name = "HumanoidRootPart"
-	root.Shape = Enum.PartType.Ball
-	root.Size = Vector3.new(3.6, 3.2, 3.6)
-	root.CFrame = CFrame.new(surfacePosition + Vector3.new(0, 2.05, 0))
-	root.Anchored = true
-	root.CanCollide = false
-	root.CanTouch = false
-	root.CanQuery = true
-	root.CastShadow = false
-	root.Material = Enum.Material.SmoothPlastic
-	root.Color = Color3.fromRGB(255, 171, 55)
-	root.Parent = model
-	model.PrimaryPart = root
-
-	local face = Instance.new("Decal")
-	face.Name = "Face"
-	face.Face = Enum.NormalId.Front
-	face.Texture = "rbxasset://textures/face.png"
-	face.Parent = root
-
-	local light = Instance.new("PointLight")
-	light.Color = Color3.fromRGB(255, 207, 90)
-	light.Brightness = 1.6
-	light.Range = 12
-	light.Parent = root
-
-	local particles = Instance.new("ParticleEmitter")
-	particles.Name = "TrainingSparkles"
-	particles.Color = ColorSequence.new(Color3.fromRGB(255, 205, 85))
-	particles.LightEmission = 0.8
-	particles.Lifetime = NumberRange.new(0.35, 0.7)
-	particles.Speed = NumberRange.new(0.4, 1.4)
-	particles.SpreadAngle = Vector2.new(180, 180)
-	particles.Rate = 7
-	particles.Parent = root
-
-	local humanoid = Instance.new("Humanoid")
-	humanoid.MaxHealth = 1_000_000_000
-	humanoid.Health = humanoid.MaxHealth
-	humanoid.DisplayName = ""
-	humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
-	humanoid.NameDisplayDistance = 0
-	humanoid.BreakJointsOnDeath = false
-	humanoid.WalkSpeed = 0
-	humanoid.Parent = model
-
-	local billboard = Instance.new("BillboardGui")
-	billboard.Name = "TrainingLabel"
-	billboard.Adornee = root
-	billboard.Size = UDim2.fromOffset(220, 52)
-	billboard.StudsOffsetWorldSpace = Vector3.new(0, 3.2, 0)
-	billboard.AlwaysOnTop = true
-	billboard.LightInfluence = 0
-	billboard.MaxDistance = 90
-	billboard.Parent = model
-
-	local label = Instance.new("TextLabel")
-	label.Name = "Text"
-	label.Size = UDim2.fromScale(1, 1)
-	label.BackgroundTransparency = 1
-	label.Text = string.format("ALVO DE %s  •  %d GOLPES", string.upper(player.DisplayName), TRAINING_HIT_GOAL)
-	label.TextColor3 = Color3.fromRGB(255, 240, 190)
-	label.TextStrokeColor3 = Color3.fromRGB(25, 13, 4)
-	label.TextStrokeTransparency = 0.15
-	label.Font = Enum.Font.GothamBold
-	label.TextSize = 14
-	label.TextWrapped = true
-	label.Parent = billboard
-
-	model.Parent = ensureRuntimeFolder()
-	CollectionService:AddTag(model, "CombatTarget")
-
-	local hitsRemaining = TRAINING_HIT_GOAL
-	local lastAcceptedHitAt = tonumber(model:GetAttribute("LastSwordHitAt")) or 0
-	local completed = false
-
-	model:GetAttributeChangedSignal("LastSwordHitAt"):Connect(function()
-		if completed or not model.Parent then
-			return
-		end
-		local hitAt = tonumber(model:GetAttribute("LastSwordHitAt")) or 0
-		if hitAt <= lastAcceptedHitAt then
-			return
-		end
-		lastAcceptedHitAt = hitAt
-		if tonumber(model:GetAttribute("LastDamagedByUserId")) ~= player.UserId then
-			return
-		end
-
-		hitsRemaining -= 1
-		model:SetAttribute("TutorialHitsRemaining", hitsRemaining)
-		label.Text = hitsRemaining > 0
-			and string.format("ALVO DE %s  •  %d GOLPES", string.upper(player.DisplayName), hitsRemaining)
-			or "ALVO DERROTADO"
-		onProgress(token, TRAINING_HIT_GOAL - hitsRemaining, TRAINING_HIT_GOAL)
-
-		root.Color = Color3.fromRGB(255, 238, 155)
-		task.delay(0.1, function()
-			if root.Parent and not completed then
-				root.Color = Color3.fromRGB(255, 171, 55)
+	if count >= #GOALS then
+		state.Finishing = true
+		task.delay(0.35, function()
+			if player.Parent == Players and states[player] == state and state.Active then
+				finishTutorial(player, state, false)
 			end
 		end)
-
-		if hitsRemaining <= 0 then
-			completed = true
-			model:SetAttribute("TutorialTargetDefeated", true)
-			ScoreService.AwardRewards(player, 5, 5, "TutorialTarget", root.Position)
-			particles:Emit(28)
-			onDefeated(token)
-			Debris:AddItem(model, 0.45)
-		end
-	end)
-
-	local restoringHealth = false
-	humanoid.HealthChanged:Connect(function(health)
-		if completed or restoringHealth or health >= humanoid.MaxHealth then
-			return
-		end
-		restoringHealth = true
-		task.defer(function()
-			if humanoid.Parent and humanoid.Health > 0 and not completed then
-				humanoid.Health = humanoid.MaxHealth
+	else
+		task.delay(0.4, function()
+			if player.Parent == Players and states[player] == state and state.Active then
+				sendGuidance(player, state, true)
 			end
-			restoringHealth = false
 		end)
-	end)
-
-	return model, root
-end
-
-local function destroyStageAssets(player, state)
-	CollectibleService.RemoveTutorialCollectible(player)
-	if state.StageAsset and state.StageAsset.Parent then
-		state.StageAsset:Destroy()
 	end
-	state.StageAsset = nil
-	state.TargetPart = nil
-	state.TargetPosition = nil
-	state.TargetSurfaceY = nil
+	return true
 end
 
-local function stageProgress(state)
-	if state.Stage == 4 and state.StageAsset then
-		local remaining = math.max(0, tonumber(state.StageAsset:GetAttribute("TutorialHitsRemaining")) or TRAINING_HIT_GOAL)
-		return TRAINING_HIT_GOAL - remaining, TRAINING_HIT_GOAL
-	end
-	return 0, 1
-end
-
-local function sendStage(player, state)
-	local definition = STAGES[state.Stage]
-	if not definition or not state.Active then
+local function bindCombatHumanoid(model, humanoid)
+	if boundHumanoids[humanoid] then
 		return
 	end
-	local progress, goal = stageProgress(state)
+	boundHumanoids[humanoid] = true
+
+	humanoid.Died:Connect(function()
+		if not isNaturalEnemy(model) then
+			return
+		end
+		local player = creditedPlayer(model, humanoid)
+		local state = player and states[player]
+		if state and state.Active then
+			completeGoal(player, state, "Combat", tostring(model:GetAttribute("MonsterId") or model.Name))
+		end
+	end)
+end
+
+local function bindCombatTarget(instance)
+	if not instance or not instance:IsA("Model") or boundCombatTargets[instance] then
+		return
+	end
+	boundCombatTargets[instance] = true
+
+	local humanoid = instance:FindFirstChildWhichIsA("Humanoid", true)
+	if humanoid then
+		bindCombatHumanoid(instance, humanoid)
+	end
+	instance.DescendantAdded:Connect(function(descendant)
+		if descendant:IsA("Humanoid") then
+			bindCombatHumanoid(instance, descendant)
+		end
+	end)
+end
+
+local function bindChestPrompt(chest, prompt)
+	if boundPrompts[prompt] then
+		return
+	end
+	boundPrompts[prompt] = true
+	prompt.Triggered:Connect(function(player)
+		local state = states[player]
+		if state and state.Active and chest:IsDescendantOf(workspace) then
+			completeGoal(player, state, "Reward", "Chest:" .. tostring(chest.Name))
+		end
+	end)
+end
+
+local function bindChest(instance)
+	if not instance or not instance:IsA("Model") or boundChests[instance] then
+		return
+	end
+	boundChests[instance] = true
+	for _, descendant in ipairs(instance:GetDescendants()) do
+		if descendant:IsA("ProximityPrompt") then
+			bindChestPrompt(instance, descendant)
+		end
+	end
+	instance.DescendantAdded:Connect(function(descendant)
+		if descendant:IsA("ProximityPrompt") then
+			bindChestPrompt(instance, descendant)
+		end
+	end)
+end
+
+for _, target in ipairs(CollectionService:GetTagged("CombatTarget")) do
+	bindCombatTarget(target)
+end
+CollectionService:GetInstanceAddedSignal("CombatTarget"):Connect(bindCombatTarget)
+
+for _, chest in ipairs(CollectionService:GetTagged("AnalyticsChest")) do
+	bindChest(chest)
+end
+CollectionService:GetInstanceAddedSignal("AnalyticsChest"):Connect(bindChest)
+
+local function taggedAncestor(instance, tagName)
+	local current = instance
+	while current and current ~= workspace do
+		if CollectionService:HasTag(current, tagName) then
+			return current
+		end
+		current = current.Parent
+	end
+	return nil
+end
+
+local function scanNearbyContext(player, state, root)
+	state.EnemyNearby = false
+	state.ChestNearby = false
+
+	local params = OverlapParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = player.Character and { player.Character } or {}
+	params.MaxParts = 80
+
+	for _, part in ipairs(workspace:GetPartBoundsInRadius(root.Position, 34, params)) do
+		if not state.Completed.Combat and not state.EnemyNearby then
+			local enemy = taggedAncestor(part, "CombatTarget")
+			if enemy and isNaturalEnemy(enemy) then
+				local humanoid = enemy:FindFirstChildWhichIsA("Humanoid", true)
+				if humanoid and humanoid.Health > 0 then
+					state.EnemyNearby = true
+				end
+			end
+		end
+		if not state.Completed.Reward and not state.ChestNearby then
+			local chest = taggedAncestor(part, "AnalyticsChest")
+			if chest and chest:IsDescendantOf(workspace) and chest:GetAttribute("Opened") ~= true then
+				state.ChestNearby = true
+			end
+		end
+		if state.EnemyNearby and state.ChestNearby then
+			break
+		end
+	end
+end
+
+local function mobilityProgress(state)
+	local progress = 0
+	if state.MovedEnough then
+		progress += 1
+	end
+	if state.Jumped then
+		progress += 1
+	end
+	return progress, 2
+end
+
+local function currentGuidance(player, state)
+	local root = getLivingRoot(player)
+	local waterY = getWaterSurfaceY()
+	local waterGap = root and waterY and root.Position.Y - waterY or math.huge
+
+	if not state.Completed.Survival and waterGap <= WATER_DANGER_GAP then
+		return {
+			Key = "WaterDanger",
+			GoalId = "Survival",
+			ActionText = "A ÁGUA ESTÁ PRÓXIMA!",
+			Instruction = "Escolha rapidamente qualquer rota para uma área mais alta.",
+			Hint = "Não existe caminho obrigatório: continue subindo pela rota mais segura para você.",
+			ControlKind = "Climb",
+			Danger = true,
+			Progress = 0,
+			Goal = 1,
+		}
+	end
+
+	if not state.Completed.Reward and state.ChestNearby then
+		return {
+			Key = "ChestNearby",
+			GoalId = "Reward",
+			ActionText = "RECOMPENSA POR PERTO",
+			Instruction = "Abra qualquer baú que encontrar — você escolhe a rota.",
+			Hint = "Aproxime-se de um baú e use o botão de interação.",
+			ControlKind = "Interact",
+			Progress = 0,
+			Goal = 1,
+		}
+	end
+
+	if not state.Completed.Combat and state.EnemyNearby then
+		return {
+			Key = "EnemyNearby",
+			GoalId = "Combat",
+			ActionText = "COMBATE À FRENTE",
+			Instruction = "Derrote qualquer inimigo real que você preferir enfrentar.",
+			Hint = "Equipe sua espada e ataque. Qualquer inimigo válido conclui este objetivo.",
+			ControlKind = "Combat",
+			Progress = 0,
+			Goal = 1,
+		}
+	end
+
+	if not state.Completed.Mobility then
+		local progress, goal = mobilityProgress(state)
+		return {
+			Key = "Mobility:" .. tostring(progress),
+			GoalId = "Mobility",
+			ActionText = "CONHEÇA OS CONTROLES",
+			Instruction = "Mova-se e pule enquanto decide para onde quer avançar.",
+			Hint = "Explore livremente. O tutorial acompanha suas escolhas, sem definir um destino.",
+			ControlKind = "MoveJump",
+			Progress = progress,
+			Goal = goal,
+		}
+	end
+
+	if not state.Completed.Exploration then
+		return {
+			Key = "Exploration",
+			GoalId = "Exploration",
+			ActionText = "ESCOLHA SEU CAMINHO",
+			Instruction = "Continue subindo por qualquer rota e alcance uma nova ilha.",
+			Hint = "Você pode mudar de direção a qualquer momento. Toda progressão natural conta.",
+			ControlKind = "Explore",
+			Progress = 0,
+			Goal = 1,
+		}
+	end
+
+	if not state.Completed.Combat then
+		return {
+			Key = "SearchCombat",
+			GoalId = "Combat",
+			ActionText = "CONTINUE EXPLORANDO",
+			Instruction = "Quando encontrar inimigos, escolha qual deles deseja enfrentar.",
+			Hint = "Nenhum inimigo específico é obrigatório.",
+			ControlKind = "Combat",
+			Progress = 0,
+			Goal = 1,
+		}
+	end
+
+	if not state.Completed.Reward then
+		return {
+			Key = "SearchReward",
+			GoalId = "Reward",
+			ActionText = "DESCUBRA RECOMPENSAS",
+			Instruction = "Baús, moedas e companheiros encontrados durante sua jornada contam.",
+			Hint = "Continue explorando normalmente; use as oportunidades que surgirem no mapa.",
+			ControlKind = "Reward",
+			Progress = 0,
+			Goal = 1,
+		}
+	end
+
+	return {
+		Key = "WaterSafe",
+		GoalId = "Survival",
+		ActionText = "MANTENHA-SE NAS ALTURAS",
+		Instruction = "Continue avançando e permaneça acima da água enquanto ela sobe.",
+		Hint = "Escolha qualquer plataforma ou ilha que mantenha uma boa distância da água.",
+		ControlKind = "Climb",
+		Progress = 0,
+		Goal = 1,
+	}
+end
+
+sendGuidance = function(player, state, force)
+	if not state.Active or state.Finishing or player.Parent ~= Players then
+		return
+	end
+	local guidance = currentGuidance(player, state)
+	local count = completedCount(state)
+	local signature = table.concat({
+		guidance.Key,
+		tostring(count),
+		tostring(guidance.Progress or 0),
+		tostring(guidance.Danger == true),
+	}, "|")
+	local now = os.clock()
+	if not force
+		and signature == state.LastGuidanceSignature
+		and now - state.LastGuidanceSentAt < GUIDANCE_REFRESH_SECONDS
+	then
+		return
+	end
+	state.LastGuidanceSignature = signature
+	state.LastGuidanceSentAt = now
+
+	player:SetAttribute("TutorialCurrentRecommendation", guidance.GoalId)
 	tutorialEvent:FireClient(player, {
 		Action = "Show",
-		Stage = state.Stage,
-		TotalStages = TOTAL_STAGES,
-		StageId = definition.Id,
-		ActionText = definition.ActionText,
-		Instruction = definition.Instruction,
-		Hint = definition.Hint,
-		Danger = definition.Danger == true,
-		TargetPosition = state.TargetPosition,
-		TargetInstance = state.TargetPart,
-		WaitingForContext = state.WaitingForContext == true,
-		Progress = progress,
-		Goal = goal,
+		GoalId = guidance.GoalId,
+		ActionText = guidance.ActionText,
+		Instruction = guidance.Instruction,
+		Hint = guidance.Hint,
+		ControlKind = guidance.ControlKind,
+		Danger = guidance.Danger == true,
+		CompletedCount = count,
+		TotalGoals = #GOALS,
+		Progress = guidance.Progress,
+		Goal = guidance.Goal,
 		ShowHintAfterSeconds = (MVPConfig.Tutorial or {}).HelpDelaySeconds or 5,
 	})
 end
 
-local finishTutorial
-local setupStage
-
-local function advanceStage(player, state)
-	if not state.Active or state.Advancing then
-		return
-	end
-	state.Advancing = true
-	local completedStage = state.Stage
-	state.Token += 1
-	tutorialEvent:FireClient(player, {
-		Action = "StageComplete",
-		Stage = completedStage,
-		StageId = STAGES[completedStage].Id,
-	})
-	destroyStageAssets(player, state)
-
-	if completedStage >= TOTAL_STAGES then
-		task.delay(0.3, function()
-			if player.Parent == Players and state.Active then
-				finishTutorial(player, state, false)
-			end
-		end)
-		return
-	end
-
-	state.Stage += 1
-	player:SetAttribute("TutorialStage", state.Stage)
-	if not state.ForcedForTesting or (MVPConfig.Tutorial or {}).PersistForcedCompletion == true then
-		PlayerDataService.SetTutorialProgress(player, state.Stage, false)
-		task.spawn(PlayerDataService.Save, player, false)
-	end
-
-	task.delay(0.42, function()
-		if player.Parent == Players and state.Active then
-			state.Advancing = false
-			setupStage(player, state, false)
-		end
-	end)
-end
-
 finishTutorial = function(player, state, skipped)
+	if not state.Active then
+		return
+	end
 	state.Active = false
-	state.Advancing = false
-	state.Token += 1
-	destroyStageAssets(player, state)
+	state.Finishing = false
+	state.CharacterToken += 1
+	state.CompletionSerial += 1
+
 	player:SetAttribute("TutorialActive", false)
 	player:SetAttribute("TutorialCompleted", true)
-	player:SetAttribute("TutorialStage", TOTAL_STAGES)
+	player:SetAttribute("TutorialSkipped", skipped == true)
+	player:SetAttribute("TutorialCompletionOutcome", skipped and "Skipped" or "Completed")
+	player:SetAttribute("TutorialFinishedAt", serverTime())
+	player:SetAttribute("TutorialStage", #GOALS)
+	player:SetAttribute("TutorialCompletedGoalCount", completedCount(state))
 	player:SetAttribute("TutorialEnemyProtectionExpiresAt", nil)
 	setTutorialEnemyProtection(player, false)
 
 	local persistCompletion = not state.ForcedForTesting
 		or (MVPConfig.Tutorial or {}).PersistForcedCompletion == true
 	if persistCompletion then
-		PlayerDataService.SetTutorialProgress(player, TOTAL_STAGES, true)
+		PlayerDataService.SetTutorialProgress(player, #GOALS, true)
 	end
 
 	local rewardEligible = not skipped and persistCompletion
@@ -525,30 +525,24 @@ finishTutorial = function(player, state, skipped)
 		Action = skipped and "Skipped" or "Complete",
 		ActionText = skipped and "TUTORIAL ENCERRADO" or "TUTORIAL CONCLUÍDO!",
 		Instruction = skipped
-			and "Você pode aprender enquanto joga."
-			or "Uma roleta especial será aberta como prêmio.",
+			and "Você continuará aprendendo enquanto joga."
+			or "Você aprendeu o ciclo principal jogando do seu próprio jeito.",
 		RewardPending = rewardEligible,
+		CompletedCount = completedCount(state),
+		TotalGoals = #GOALS,
 	})
 
 	if rewardEligible then
-		local completionToken = state.Token
+		local completionToken = state.CompletionSerial
 		task.delay(COMPLETION_WHEEL_DELAY_SECONDS, function()
-			if player.Parent ~= Players or state.Token ~= completionToken then
+			if player.Parent ~= Players or states[player] ~= state or state.CompletionSerial ~= completionToken then
 				return
 			end
-
-			local level = math.max(
-				1,
-				math.floor(tonumber(player:GetAttribute("RunLevel")) or 1)
-			)
-			local success, resultOrMessage = RewardWheelService.Spin(
-				player,
-				COMPLETION_WHEEL_SOURCE,
-				{
-					Level = level,
-					DeferSave = true,
-				}
-			)
+			local level = math.max(1, math.floor(tonumber(player:GetAttribute("RunLevel")) or 1))
+			local success, resultOrMessage = RewardWheelService.Spin(player, COMPLETION_WHEEL_SOURCE, {
+				Level = level,
+				DeferSave = true,
+			})
 			player:SetAttribute("TutorialCompletionRewardPending", false)
 			player:SetAttribute("TutorialCompletionRewardGranted", success == true)
 			player:SetAttribute("TutorialCompletionRewardGrantedAt", serverTime())
@@ -560,10 +554,7 @@ finishTutorial = function(player, state, skipped)
 			else
 				tutorialEvent:FireClient(player, {
 					Action = "RewardError",
-					Instruction = tostring(
-						resultOrMessage
-							or "Não foi possível abrir a recompensa."
-					),
+					Instruction = tostring(resultOrMessage or "Não foi possível abrir a recompensa."),
 				})
 			end
 			task.spawn(PlayerDataService.Save, player, false)
@@ -573,126 +564,46 @@ finishTutorial = function(player, state, skipped)
 	end
 end
 
-setupStage = function(player, state, preserveBaselines)
-	if not state.Active or state.Advancing then
-		return
-	end
-	local root, humanoid = getLivingRoot(player)
-	if not root then
-		state.StageReady = false
-		return
-	end
-
-	state.Token += 1
-	local token = state.Token
-	destroyStageAssets(player, state)
-	state.StageReady = true
-	state.WaitingForContext = false
-	state.Jumped = false
-	state.LandedAfterJump = false
-	state.ContextRound = getCurrentRound(root.Position.Y)
-	state.LastContextSetupAt = os.clock()
-	state.LastContextCheckAt = os.clock()
-	if not preserveBaselines then
-		state.StartPosition = root.Position
-	end
-
-	local candidate = findContextTarget(root, state.Stage)
-	if not candidate or not candidate.IsLocal then
-		state.WaitingForContext = true
-		sendStage(player, state)
-		return
-	end
-
-	state.TargetPart = candidate.SourcePart
-	state.TargetPosition = candidate.TargetPosition
-	state.TargetSurfaceY = candidate.SurfacePosition.Y
-	state.ContextRound = candidate.RoundIndex ~= 0 and candidate.RoundIndex or state.ContextRound
-
-	if state.Stage == 3 then
-		local hitbox, runtime = CollectibleService.EnsureTutorialCollectible(player, candidate.SurfacePosition)
-		if hitbox then
-			state.TargetPart = hitbox
-			state.TargetPosition = hitbox.Position
-			state.StageAsset = runtime
-		else
-			state.WaitingForContext = true
-		end
-	elseif state.Stage == 4 then
-		local target, targetRoot = createTrainingTarget(
-			player,
-			candidate.SurfacePosition,
-			token,
-			function(progressToken, progress, goal)
-				local current = states[player]
-				if current == state and current.Active and current.Stage == 4 and current.Token == progressToken then
-					tutorialEvent:FireClient(player, {
-						Action = "Progress",
-						Stage = 4,
-						StageId = "Combat",
-						Progress = progress,
-						Goal = goal,
-					})
-				end
-			end,
-			function(defeatedToken)
-				local current = states[player]
-				if current == state and current.Active and current.Stage == 4 and current.Token == defeatedToken then
-					advanceStage(player, current)
-				end
-			end
-		)
-		state.StageAsset = target
-		state.TargetPart = targetRoot
-		state.TargetPosition = targetRoot.Position
-	end
-
-	if humanoid then
-		state.Jumped = humanoid:GetState() == Enum.HumanoidStateType.Jumping
-	end
-	sendStage(player, state)
-end
-
 local function bindCharacter(player, state, character)
-	state.StageReady = false
-	state.Token += 1
-	destroyStageAssets(player, state)
+	state.CharacterToken += 1
+	local token = state.CharacterToken
+	state.LastRootPosition = nil
 
 	local humanoid = character:WaitForChild("Humanoid", 10)
 	local root = character:WaitForChild("HumanoidRootPart", 10)
-	if not humanoid or not root or not state.Active then
+	if not humanoid or not root or not state.Active or token ~= state.CharacterToken then
 		return
 	end
 
 	character:SetAttribute("TutorialEnemyProtected", player:GetAttribute("TutorialEnemyProtection") == true)
-	character:SetAttribute("TutorialProtectionVersion", PROTECTION_VERSION)
+	character:SetAttribute("TutorialProtectionVersion", SYSTEM_VERSION)
+	state.LastRootPosition = root.Position
+	state.InitialY = state.InitialY or root.Position.Y
+	state.MaxY = math.max(state.MaxY or root.Position.Y, root.Position.Y)
 
 	humanoid.StateChanged:Connect(function(_, nextState)
-		if states[player] ~= state or not state.Active then
+		if states[player] ~= state or not state.Active or token ~= state.CharacterToken then
 			return
 		end
 		if nextState == Enum.HumanoidStateType.Jumping then
 			state.Jumped = true
-		elseif state.Jumped and (
-			nextState == Enum.HumanoidStateType.Landed
-			or nextState == Enum.HumanoidStateType.Running
-			or nextState == Enum.HumanoidStateType.RunningNoPhysics
-		) then
-			state.LandedAfterJump = true
+			if state.MovedEnough then
+				completeGoal(player, state, "Mobility", "NaturalMovementAndJump")
+			else
+				sendGuidance(player, state, true)
+			end
 		end
 	end)
 
 	humanoid.Died:Connect(function()
-		if states[player] == state and state.Active then
-			state.StageReady = false
-			state.Token += 1
-			destroyStageAssets(player, state)
+		if states[player] == state and state.Active and token == state.CharacterToken then
+			state.LastRootPosition = nil
 		end
 	end)
 
-	task.delay(0.75, function()
-		if player.Parent == Players and state.Active and player.Character == character then
-			setupStage(player, state, false)
+	task.delay(0.4, function()
+		if player.Parent == Players and states[player] == state and state.Active then
+			sendGuidance(player, state, true)
 		end
 	end)
 end
@@ -703,52 +614,107 @@ local function setupPlayer(player)
 	end
 	setupStarted[player] = true
 
-	setTutorialEnemyProtection(player, true)
 	local data = PlayerDataService.Load(player)
-	local stage, completed = PlayerDataService.GetTutorialProgress(player)
+	local _, completed = PlayerDataService.GetTutorialProgress(player)
 	local forcedForTesting = forceTutorialForTesting()
 
 	if completed and not forcedForTesting then
 		player:SetAttribute("TutorialActive", false)
 		player:SetAttribute("TutorialCompleted", true)
-		player:SetAttribute("TutorialStage", TOTAL_STAGES)
+		player:SetAttribute("TutorialSkipped", false)
+		player:SetAttribute("TutorialCompletionOutcome", "PreviouslyCompleted")
+		player:SetAttribute("TutorialStage", #GOALS)
+		player:SetAttribute("TutorialCompletedGoalCount", #GOALS)
 		setTutorialEnemyProtection(player, false)
 		return
 	end
 
+	local initialCoins = PlayerDataService.GetCoins(player)
 	local state = {
 		Active = true,
-		Advancing = false,
-		Stage = forcedForTesting and 1
-			or math.clamp(tonumber(stage) or data.TutorialStage or 1, 1, TOTAL_STAGES),
+		Finishing = false,
 		ForcedForTesting = forcedForTesting,
-		Token = 0,
-		StageReady = false,
+		Completed = {},
+		CharacterToken = 0,
+		CompletionSerial = 0,
+		AccumulatedDistance = 0,
+		MovedEnough = false,
 		Jumped = false,
-		LandedAfterJump = false,
-		LastContextCheckAt = 0,
-		LastContextSetupAt = 0,
+		InitialY = nil,
+		MaxY = nil,
+		InitialIslandKey = nil,
+		InitialLogicalLevel = nil,
+		InitialCoins = initialCoins,
+		InitialRewardWheelSerial = math.max(0, tonumber(player:GetAttribute("LastRewardWheelSerial")) or 0),
+		InitialCompanionInstanceId = player:GetAttribute("LastCapturedCompanionInstanceId"),
+		InitialWaterY = getWaterSurfaceY(),
+		WaterObserved = false,
+		WaterObservedY = nil,
+		WaterObservedDistance = 0,
+		WaterObservedLogicalLevel = nil,
+		WaterSafeFor = 0,
+		EnemyNearby = false,
+		ChestNearby = false,
+		LastContextScanAt = 0,
+		LastGuidanceSignature = nil,
+		LastGuidanceSentAt = 0,
 	}
 	states[player] = state
 
+	for _, definition in ipairs(GOALS) do
+		player:SetAttribute("TutorialGoal_" .. definition.Id, false)
+	end
 	player:SetAttribute("TutorialActive", true)
 	player:SetAttribute("TutorialCompleted", false)
-	player:SetAttribute("TutorialStage", state.Stage)
+	player:SetAttribute("TutorialSkipped", false)
+	player:SetAttribute("TutorialCompletionOutcome", "InProgress")
+	player:SetAttribute("TutorialStartedAt", serverTime())
+	player:SetAttribute("TutorialFinishedAt", nil)
+	player:SetAttribute("TutorialStage", 0)
+	player:SetAttribute("TutorialCompletedGoalCount", 0)
+	player:SetAttribute("TutorialDynamicGoalMask", 0)
+	player:SetAttribute("TutorialCurrentRecommendation", "Mobility")
 	player:SetAttribute("TutorialEnemyProtectionExpiresAt", serverTime() + ENEMY_PROTECTION_MAX_SECONDS)
+	player:SetAttribute("TutorialDataVersion", SYSTEM_VERSION)
 	setTutorialEnemyProtection(player, true)
 
-	local protectionToken = state.Token
+	-- Progresso parcial da versão antiga era sequencial e não representa as
+	-- conquistas independentes deste tutorial. Apenas a conclusão total persiste.
+	if data.TutorialCompleted ~= true and tonumber(data.TutorialStage) ~= 1 then
+		PlayerDataService.SetTutorialProgress(player, 1, false)
+		task.spawn(PlayerDataService.Save, player, false)
+	end
+
+	local protectionState = state
 	task.delay(ENEMY_PROTECTION_MAX_SECONDS, function()
-		local current = states[player]
-		if current == state and current.Active and player.Parent == Players then
+		if states[player] == protectionState and protectionState.Active and player.Parent == Players then
 			setTutorialEnemyProtection(player, false)
 			player:SetAttribute("TutorialEnemyProtectionExpired", true)
 			player:SetAttribute("TutorialEnemyProtectionExpiresAt", nil)
 			tutorialEvent:FireClient(player, {
 				Action = "ProtectionEnded",
-				Instruction = "A proteção inicial terminou. Continue seguindo os objetivos.",
-				Token = protectionToken,
+				Instruction = "A proteção inicial terminou. Continue explorando com cuidado.",
 			})
+		end
+	end)
+
+	player:GetAttributeChangedSignal("LastCapturedCompanionInstanceId"):Connect(function()
+		if states[player] ~= state or not state.Active then
+			return
+		end
+		local current = player:GetAttribute("LastCapturedCompanionInstanceId")
+		if current ~= nil and current ~= state.InitialCompanionInstanceId then
+			completeGoal(player, state, "Reward", "CompanionObtained")
+		end
+	end)
+
+	player:GetAttributeChangedSignal("LastRewardWheelSerial"):Connect(function()
+		if states[player] ~= state or not state.Active then
+			return
+		end
+		local serial = math.max(0, tonumber(player:GetAttribute("LastRewardWheelSerial")) or 0)
+		if serial > state.InitialRewardWheelSerial then
+			completeGoal(player, state, "Reward", "RewardWheel")
 		end
 	end)
 
@@ -767,7 +733,7 @@ tutorialEvent.OnServerEvent:Connect(function(player, request)
 	local state = states[player]
 	if request.Action == "Ready" then
 		if state and state.Active then
-			sendStage(player, state)
+			sendGuidance(player, state, true)
 		elseif player:GetAttribute("TutorialCompleted") == true then
 			tutorialEvent:FireClient(player, { Action = "Hide" })
 		end
@@ -784,7 +750,7 @@ Players.PlayerRemoving:Connect(function(player)
 	local state = states[player]
 	if state then
 		state.Active = false
-		destroyStageAssets(player, state)
+		state.CharacterToken += 1
 		states[player] = nil
 	end
 	setupStarted[player] = nil
@@ -796,64 +762,116 @@ end
 
 task.spawn(function()
 	while true do
-		task.wait(CHECK_INTERVAL)
+		local deltaTime = task.wait(CHECK_INTERVAL)
 		for player, state in pairs(states) do
-			if not state.Active or not state.StageReady or state.Advancing then
+			if not state.Active or state.Finishing then
 				continue
 			end
 
-			local root, humanoid = getLivingRoot(player)
+			local root = getLivingRoot(player)
 			if not root then
 				continue
 			end
 
-			local reached = state.TargetPosition
-				and (root.Position - state.TargetPosition).Magnitude <= TARGET_RADIUS
+			local position = root.Position
+			state.InitialY = state.InitialY or position.Y
+			state.MaxY = math.max(state.MaxY or position.Y, position.Y)
 
-			if state.Stage == 1 and reached then
-				advanceStage(player, state)
-				continue
-			elseif state.Stage == 2 then
-				local grounded = humanoid and humanoid.FloorMaterial ~= Enum.Material.Air
-				if reached and state.Jumped and state.LandedAfterJump and grounded then
-					advanceStage(player, state)
-					continue
+			if state.LastRootPosition then
+				local offset = position - state.LastRootPosition
+				local horizontal = Vector2.new(offset.X, offset.Z).Magnitude
+				if horizontal <= 35 then
+					state.AccumulatedDistance += horizontal
 				end
-			elseif state.Stage == 3 then
-				if state.StageAsset and state.StageAsset:GetAttribute("Claimed") == true then
-					advanceStage(player, state)
-					continue
+			end
+			state.LastRootPosition = position
+
+			if not state.MovedEnough and state.AccumulatedDistance >= MOVEMENT_DISTANCE_GOAL then
+				state.MovedEnough = true
+				sendGuidance(player, state, true)
+			end
+			if state.MovedEnough and state.Jumped then
+				completeGoal(player, state, "Mobility", "NaturalMovementAndJump")
+			end
+
+			local islandKey = tostring(player:GetAttribute("CurrentIslandKey") or "")
+			if islandKey ~= "" and not state.InitialIslandKey then
+				state.InitialIslandKey = islandKey
+			elseif not state.Completed.Exploration
+				and islandKey ~= ""
+				and state.InitialIslandKey
+				and islandKey ~= state.InitialIslandKey
+			then
+				completeGoal(player, state, "Exploration", "VisitedAnotherIsland")
+			end
+
+			local logicalLevel = tonumber(player:GetAttribute("CurrentLogicalLevel"))
+			if logicalLevel and not state.InitialLogicalLevel then
+				state.InitialLogicalLevel = logicalLevel
+			elseif not state.Completed.Exploration
+				and logicalLevel
+				and state.InitialLogicalLevel
+				and logicalLevel > state.InitialLogicalLevel
+			then
+				completeGoal(player, state, "Exploration", "LogicalLevelAdvanced")
+			end
+
+			if not state.Completed.Exploration
+				and state.InitialY
+				and state.MaxY - state.InitialY >= EXPLORATION_HEIGHT_GOAL
+				and state.AccumulatedDistance >= 6
+			then
+				completeGoal(player, state, "Exploration", "NaturalHeightProgress")
+			end
+
+			if not state.Completed.Reward then
+				local coins = PlayerDataService.GetCoins(player)
+				if coins >= state.InitialCoins + 10 then
+					completeGoal(player, state, "Reward", "CoinsEarned")
 				end
-			elseif state.Stage == 5 then
-				local climbed = state.StartPosition and root.Position.Y >= state.StartPosition.Y + 9
-				if reached or climbed then
-					advanceStage(player, state)
-					continue
+			end
+
+			local waterY = getWaterSurfaceY()
+			if waterY then
+				state.InitialWaterY = state.InitialWaterY or waterY
+				local waterGap = position.Y - waterY
+				if not state.WaterObserved
+					and (
+						waterY >= state.InitialWaterY + WATER_RISE_TO_OBSERVE
+						or waterGap <= WATER_DANGER_GAP
+					)
+				then
+					state.WaterObserved = true
+					state.WaterObservedY = position.Y
+					state.WaterObservedDistance = state.AccumulatedDistance
+					state.WaterObservedLogicalLevel = logicalLevel
+					sendGuidance(player, state, true)
+				end
+
+				if state.WaterObserved and not state.Completed.Survival then
+					local rose = position.Y >= (state.WaterObservedY or position.Y) + 6
+					local traveled = state.AccumulatedDistance
+						>= (state.WaterObservedDistance or state.AccumulatedDistance) + WATER_RESPONSE_DISTANCE
+					local advanced = logicalLevel
+						and state.WaterObservedLogicalLevel
+						and logicalLevel > state.WaterObservedLogicalLevel
+					if waterGap >= WATER_SAFE_GAP and (rose or traveled or advanced) then
+						state.WaterSafeFor += deltaTime
+					else
+						state.WaterSafeFor = 0
+					end
+					if state.WaterSafeFor >= WATER_SAFE_SECONDS then
+						completeGoal(player, state, "Survival", "StayedAheadOfRisingWater")
+					end
 				end
 			end
 
 			local now = os.clock()
-			if now - state.LastContextCheckAt < CONTEXT_RECHECK_SECONDS then
-				continue
+			if now - state.LastContextScanAt >= CONTEXT_SCAN_INTERVAL then
+				state.LastContextScanAt = now
+				scanNearbyContext(player, state, root)
 			end
-			state.LastContextCheckAt = now
-
-			local waterSurfaceY = getWaterSurfaceY()
-			local targetInvalid = not state.TargetPart
-				or not state.TargetPart.Parent
-				or (state.TargetSurfaceY and state.TargetSurfaceY <= waterSurfaceY + SAFE_WATER_CLEARANCE)
-			local unsafePlayerSituation = root.Position.Y <= waterSurfaceY + 1
-			local currentRound = getCurrentRound(root.Position.Y)
-			local changedRound = currentRound > 0 and state.ContextRound > 0 and currentRound ~= state.ContextRound
-
-			if (
-				targetInvalid
-				or unsafePlayerSituation
-				or changedRound
-				or state.WaitingForContext
-			) and now - state.LastContextSetupAt >= CONTEXT_CHANGE_GRACE_SECONDS then
-				setupStage(player, state, true)
-			end
+			sendGuidance(player, state, false)
 		end
 	end
 end)

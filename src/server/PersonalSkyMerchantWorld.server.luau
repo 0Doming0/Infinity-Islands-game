@@ -1,8 +1,9 @@
 -- Representacao compartilhada dos Mercadores do Ceu pessoais.
 --
--- V9 mantem o Mercador totalmente estatico na ilha e fora de qualquer IA:
--- - marca o modelo raiz e rigs internos com AIEnabled = false antes do Parent;
--- - ancora todas as BaseParts e zera velocidades fisicas;
+-- V10 converte o Mercador em objeto estatico, sem vida, dano ou fisica:
+-- - remove completamente Humanoids e qualquer controlador de entidade;
+-- - exclui o modelo de IA, combate, stun, dano e knockback;
+-- - ancora todas as BaseParts e restaura o pivot relativo da ilha;
 -- - remove scripts, animadores e forcas herdados do asset publicado;
 -- - remove modelos antigos quando a oferta termina;
 -- - preserva ofertas ainda nao abertas quando a ilha e reciclada;
@@ -33,7 +34,7 @@ local TEMPLATE_MAX_HEIGHT = math.max(
 	tonumber(MVPConfig.Village.PersonalSkyMerchantPublishedTemplateMaxHeight) or 36
 )
 local WATER_CLEARANCE_STUDS = 8
-local VERSION = "StaticIslandMerchantV9"
+local VERSION = "StaticNonEntityMerchantV10"
 
 local modelsByPlayer = setmetatable({}, { __mode = "k" })
 local lifecycleByPlayer = setmetatable({}, { __mode = "k" })
@@ -239,25 +240,75 @@ local function cloneTemplate()
 	return fallbackTemplate(), false, "SkyMerchantFallback"
 end
 
+local EXCLUDED_TAGS = table.freeze({
+	"CombatTarget",
+	"NPC",
+	"VillagerNPC",
+	"SanctuaryNPC",
+})
+
+local function removeExcludedTags(instance)
+	for _, tag in ipairs(EXCLUDED_TAGS) do
+		if CollectionService:HasTag(instance, tag) then
+			CollectionService:RemoveTag(instance, tag)
+		end
+	end
+end
+
 local function markAsStaticMerchantModel(target)
 	if not target or not target:IsA("Model") then
 		return
 	end
 
-	-- VillagerAI verifica AIEnabled antes de nomes, tags ou Humanoids. A marca
-	-- tambem e aplicada aos Models internos porque alguns assets publicados
-	-- trazem o rig dentro de um container com outro nome.
+	-- O Mercador nao e uma entidade. Estes atributos bloqueiam tanto a IA
+	-- generica quanto qualquer sistema de combate que receba o modelo por engano.
 	target:SetAttribute("AIEnabled", false)
 	target:SetAttribute("NPCMovementAIExcluded", true)
 	target:SetAttribute("IsNPC", false)
 	target:SetAttribute("IsVillager", false)
+	target:SetAttribute("RuntimeMonster", false)
+	target:SetAttribute("IsMonster", false)
+	target:SetAttribute("IsEnemy", false)
+	target:SetAttribute("Invulnerable", true)
+	target:SetAttribute("NoSwordDamage", true)
+	target:SetAttribute("NoKnockback", true)
+	target:SetAttribute("CanBeKnockedBack", false)
+	target:SetAttribute("CanBeStunned", false)
+	target:SetAttribute("Targetable", false)
+	target:SetAttribute("NonCombatObject", true)
+	target:SetAttribute("EntityType", "StaticObject")
 	target:SetAttribute("StaticStore", true)
 	target:SetAttribute("MovementLocked", true)
 	target:SetAttribute("RotationLocked", true)
 	target:SetAttribute("FixedToIsland", true)
 	target:SetAttribute("WanderRadius", 0)
 	target:SetAttribute("NPCMoveSpeed", 0)
-	target:SetAttribute("AIState", "DisabledStaticMerchant")
+	target:SetAttribute("AIState", "DisabledStaticObject")
+	removeExcludedTags(target)
+end
+
+local function isEntityController(instance)
+	return instance:IsA("Humanoid")
+		or instance:IsA("ControllerManager")
+		or instance:IsA("Animator")
+		or instance:IsA("AnimationController")
+		or instance:IsA("BodyMover")
+		or instance:IsA("LinearVelocity")
+		or instance:IsA("AngularVelocity")
+		or instance:IsA("AlignPosition")
+		or instance:IsA("AlignOrientation")
+		or instance:IsA("VectorForce")
+		or instance:IsA("Torque")
+end
+
+local function freezePart(part, preserveQuery)
+	part.Anchored = true
+	part.AssemblyLinearVelocity = Vector3.zero
+	part.AssemblyAngularVelocity = Vector3.zero
+	part.CanCollide = false
+	part.CanTouch = false
+	part.CanQuery = preserveQuery == true
+	part.Massless = true
 end
 
 local function sanitize(model)
@@ -267,40 +318,72 @@ local function sanitize(model)
 		if descendant:IsA("BaseScript")
 			or descendant:IsA("ProximityPrompt")
 			or descendant:IsA("BillboardGui")
-			or descendant:IsA("Animator")
-			or descendant:IsA("AnimationController")
-			or descendant:IsA("BodyMover")
-			or descendant:IsA("LinearVelocity")
-			or descendant:IsA("AngularVelocity")
-			or descendant:IsA("AlignPosition")
-			or descendant:IsA("AlignOrientation")
-			or descendant:IsA("VectorForce")
-			or descendant:IsA("Torque")
+			or isEntityController(descendant)
 		then
 			descendant:Destroy()
 		elseif descendant:IsA("Model") then
 			markAsStaticMerchantModel(descendant)
-		elseif descendant:IsA("Humanoid") then
-			descendant.AutoRotate = false
-			descendant.WalkSpeed = 0
-			descendant.JumpPower = 0
-			descendant.JumpHeight = 0
-			descendant.PlatformStand = true
-			pcall(function()
-				descendant.EvaluateStateMachine = false
-			end)
 		elseif descendant:IsA("BasePart") then
-			descendant.Anchored = true
-			descendant.AssemblyLinearVelocity = Vector3.zero
-			descendant.AssemblyAngularVelocity = Vector3.zero
-			descendant.CanCollide = false
-			descendant.CanTouch = false
-			descendant.CanQuery = false
+			freezePart(descendant, false)
+		else
+			removeExcludedTags(descendant)
 		end
 	end
-	-- Reaplica no modelo raiz depois da limpeza para deixar o estado final
-	-- explicito em diagnosticos e impedir qualquer controlador de reativar IA.
+
 	markAsStaticMerchantModel(model)
+	model:SetAttribute("ContainsHumanoid", false)
+end
+
+local function enforceStaticObject(model, island)
+	if not model or not model.Parent or not island or not island.Parent then
+		return
+	end
+
+	markAsStaticMerchantModel(model)
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if isEntityController(descendant) or descendant:IsA("BaseScript") then
+			descendant:Destroy()
+		elseif descendant:IsA("Model") then
+			markAsStaticMerchantModel(descendant)
+		elseif descendant:IsA("BasePart") then
+			freezePart(descendant, descendant.Name == "MerchantInteractionAnchor")
+		else
+			removeExcludedTags(descendant)
+		end
+	end
+
+	local relativePivot = model:GetAttribute("IslandRelativePivot")
+	if typeof(relativePivot) == "CFrame" then
+		local expected = island:GetPivot() * relativePivot
+		local current = model:GetPivot()
+		local positionError = (current.Position - expected.Position).Magnitude
+		local lookError = 1 - math.clamp(current.LookVector:Dot(expected.LookVector), -1, 1)
+		local upError = 1 - math.clamp(current.UpVector:Dot(expected.UpVector), -1, 1)
+		if positionError > 0.001 or lookError > 0.00001 or upError > 0.00001 then
+			model:PivotTo(expected)
+		end
+	end
+end
+
+local function bindStaticObjectGuard(model, island)
+	model:SetAttribute("IslandRelativePivot", island:GetPivot():ToObjectSpace(model:GetPivot()))
+	model.DescendantAdded:Connect(function(descendant)
+		task.defer(function()
+			if not model.Parent then
+				return
+			end
+			if isEntityController(descendant) or descendant:IsA("BaseScript") then
+				descendant:Destroy()
+			elseif descendant:IsA("Model") then
+				markAsStaticMerchantModel(descendant)
+			elseif descendant:IsA("BasePart") then
+				freezePart(descendant, descendant.Name == "MerchantInteractionAnchor")
+			else
+				removeExcludedTags(descendant)
+			end
+		end)
+	end)
+	enforceStaticObject(model, island)
 end
 
 local function templateFitsFloor(size, floor)
@@ -547,6 +630,10 @@ local function spawnFor(player, island)
 	model:SetAttribute("TemplateName", templateName)
 	model:SetAttribute("TemplateFallbackReason", fallbackReason)
 	markAsStaticMerchantModel(model)
+	model:SetAttribute("ObjectMode", "DecorativeStatic")
+	model:SetAttribute("HasHealth", false)
+	model:SetAttribute("ReceivesDamage", false)
+	model:SetAttribute("ReceivesKnockback", false)
 	model:SetAttribute("StaticAnchorPolicy", VERSION)
 	model:SetAttribute("SpawnPolicy", VERSION)
 	addSharedPresentation(model, player, interactionPosition, math.max(4, boundsSize.Y + 0.8))
@@ -556,6 +643,7 @@ local function spawnFor(player, island)
 		return nil, "IslandRemovedBeforeParent"
 	end
 	model.Parent = island
+	bindStaticObjectGuard(model, island)
 	local streamingPersistent = pcall(function()
 		model.ModelStreamingMode = Enum.ModelStreamingMode.Persistent
 	end)
@@ -616,6 +704,7 @@ local function updatePlayer(player)
 				)
 				existing:SetAttribute("OfferSerial", serial)
 				state.OfferSerial = serial
+				enforceStaticObject(existing, island)
 				player:SetAttribute("PersonalSkyMerchantWorldState", "AttachedToIsland")
 				return
 			end
