@@ -147,6 +147,34 @@ local Config = {
 		VerticalPaddingStuds = 12,
 		WaterContactFootOffsetStuds = 0.5,
 		ShieldVisible = true,
+		-- O resgate sempre procura primeiro outro santuario procedural. Uma ilha
+		-- emergencial nasce com esta folga, dentro da faixa de 40-60 studs.
+		EmergencyWaterClearanceStuds = 50,
+		ExistingSanctuaryClearanceStuds = 4,
+		PostRescueProtectionSeconds = 4,
+		TransitionMinimumSeconds = 1.25,
+		DestinationReadyTimeoutSeconds = 2.5,
+		GenerationTimeoutSeconds = 12,
+		GenerationPollSeconds = 0.25,
+		TeleportRetryCount = 3,
+		TeleportRetrySeconds = 0.15,
+		DeathCauseWindowSeconds = 9,
+		IdleEventSeconds = 60,
+		NonEssentialAnalyticsCooldownSeconds = 5,
+		DebugLogs = false,
+		TitleText = "SANTUÁRIO — ÁREA SEGURA",
+		SubtitleText = "Descanse e prepare-se antes de continuar a exploração.",
+		RescuePrimaryText = "O santuário foi alcançado pela água...",
+		RescueSecondaryText = "Procurando um novo refúgio nas alturas.",
+	},
+
+	Analytics = {
+		Enabled = true,
+		DebugLogs = false,
+		EnemyEncounterDistanceStuds = 36,
+		ChestFoundDistanceStuds = 18,
+		ObservationIntervalSeconds = 0.5,
+		NonEssentialCooldownSeconds = 5,
 	},
 
 	Difficulty = {

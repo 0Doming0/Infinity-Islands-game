@@ -24,6 +24,7 @@ local SlimeAnimator = require(script.Parent.Parent.BlockParkour:WaitForChild("Sl
 local CompanionCombat = require(script.Parent.Parent.MonsterSystem.CompanionCombat)
 local MonsterConfig = require(script.Parent.Parent.MonsterSystem.MonsterConfig)
 local MonsterAnimationLoader = require(script.Parent.Parent.MonsterSystem.MonsterAnimationLoader)
+local GameplayAnalytics = require(script.Parent.Parent:WaitForChild("GameplayAnalyticsService"))
 
 local CompanionService = {}
 local THINK_INTERVAL = 0.15
@@ -747,6 +748,24 @@ local function spawnRoster(player)
 	end
 end
 
+function CompanionService.SynchronizeAfterTeleport(player)
+	local character, _, ownerRoot = ownerCharacter(player)
+	if not character or not ownerRoot then
+		return false, "OwnerUnavailable"
+	end
+	local synchronized = 0
+	for _, state in ipairs(active[player] or {}) do
+		if state.Model and state.Model.Parent and teleportToOwner(state, character, ownerRoot) then
+			synchronized += 1
+		end
+	end
+	player:SetAttribute(
+		"CompanionTeleportSerial",
+		(tonumber(player:GetAttribute("CompanionTeleportSerial")) or 0) + 1
+	)
+	return true, synchronized
+end
+
 local function setMovementMode(state, mode)
 	if state.LastMode == mode or state.Busy then
 		return
@@ -1104,6 +1123,9 @@ function CompanionService.SetEquipped(player, instanceId, shouldEquip)
 	if TradeService.IsCompanionLocked(player, instanceId) then
 		return false, "Esse companheiro está bloqueado em uma troca."
 	end
+	local companions = PlayerDataService.GetCompanions(player)
+	local record = companions[instanceId]
+	local wasEquipped = PlayerDataService.IsCompanionEquipped(player, instanceId)
 	local success, errorMessage = PlayerDataService.SetCompanionEquipped(player, instanceId, shouldEquip)
 	if not success then
 		return false, errorMessage
@@ -1111,6 +1133,11 @@ function CompanionService.SetEquipped(player, instanceId, shouldEquip)
 	spawnRoster(player)
 	task.spawn(PlayerDataService.Save, player, false)
 	local message = shouldEquip == false and "Companheiro desequipado!" or "Companheiro equipado!"
+	if shouldEquip == true and not wasEquipped then
+		GameplayAnalytics.RecordCompanionEquipped(player, record and record.SpeciesId)
+	elseif shouldEquip == false and wasEquipped then
+		GameplayAnalytics.RecordCompanionUnequipped(player, record and record.SpeciesId)
+	end
 	push(player, message, true)
 	return true, message
 end
@@ -1245,6 +1272,11 @@ function CompanionService.Upgrade(player, monsterId, statName)
 	end
 	task.spawn(PlayerDataService.Save, player, false)
 	local definition = CompanionCatalog.Upgrades[statName]
+	GameplayAnalytics.RecordCompanionUpgrade(
+		player,
+		record and record.SpeciesId or "OtherCompanion",
+		statName
+	)
 	message = string.format("%s melhorado!", definition.DisplayName)
 	push(player, message, true)
 	return true, message
@@ -1292,6 +1324,10 @@ function CompanionService.RecordDefeat(player, monster)
 		if unlocked then
 			player:SetAttribute("LastCapturedCompanionInstanceId", instanceId)
 			MarketingOfferService.Record(player, "CompanionCaptured", 1)
+			GameplayAnalytics.RecordCompanionObtained(player, monsterId, "Other")
+			if #equippedBefore == 0 then
+				GameplayAnalytics.RecordCompanionEquipped(player, monsterId)
+			end
 		end
 	end
 

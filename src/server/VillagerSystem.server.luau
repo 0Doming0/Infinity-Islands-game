@@ -20,6 +20,7 @@ local InventoryService = require(script.Parent.MVPSystems:WaitForChild("Inventor
 local RelicService = require(script.Parent.MVPSystems:WaitForChild("RelicService"))
 local RewardService = require(script.Parent.MVPSystems:WaitForChild("RewardService"))
 local ScoreService = require(script.Parent.BlockParkour:WaitForChild("ScoreService_SkyDungeon_V10"))
+local GameplayAnalytics = require(script.Parent:WaitForChild("GameplayAnalyticsService"))
 local CURRENCY_SYMBOL = MVPConfig.Currency.Symbol
 
 local SHOP_TAG = MVPConfig.Village.ShopTag
@@ -591,6 +592,10 @@ local function registerVillager(model)
 				"SkyMerchantRobuxOfferId",
 				isSkyMerchant and model:GetAttribute("RobuxOfferProductId") or nil
 			)
+			GameplayAnalytics.RecordMerchantOpened(
+				player,
+				isSkyMerchant and "SkyMerchant" or "VillageMerchant"
+			)
 			sendShop(player)
 		end
 	end)
@@ -643,6 +648,7 @@ villagerEvent.OnServerEvent:Connect(function(player, data)
 		local success, message = SwordProgressionService.Purchase(player, itemId)
 		if success then
 			consumeStock(playerSessions[player], "Sword", itemId)
+			GameplayAnalytics.RecordMerchantPurchase(player, "Sword", shop.ShopId)
 		end
 		sendShop(player, message, success)
 	elseif data.action == "equipSword" then
@@ -667,6 +673,7 @@ villagerEvent.OnServerEvent:Connect(function(player, data)
 		local success, message = RelicService.Purchase(player, itemId)
 		if success then
 			consumeStock(playerSessions[player], "Relic", itemId)
+			GameplayAnalytics.RecordMerchantPurchase(player, "Relic", shop.ShopId)
 		end
 		sendShop(player, message, success)
 	elseif data.action == "equipRelic" then
@@ -695,6 +702,7 @@ villagerEvent.OnServerEvent:Connect(function(player, data)
 		local success, message = purchaseService(player, itemId)
 		if success then
 			consumeStock(playerSessions[player], "Service", itemId)
+			GameplayAnalytics.RecordMerchantPurchase(player, "Service", shop.ShopId)
 		end
 		sendShop(player, message, success)
 	elseif data.action == "purchaseItem" then
@@ -706,6 +714,7 @@ villagerEvent.OnServerEvent:Connect(function(player, data)
 		local success, message = purchaseItem(player, itemId)
 		if success then
 			consumeStock(playerSessions[player], "Item", itemId)
+			GameplayAnalytics.RecordMerchantPurchase(player, "Item", shop.ShopId)
 		end
 		sendShop(player, message, success)
 	elseif data.action == "refreshShop" then

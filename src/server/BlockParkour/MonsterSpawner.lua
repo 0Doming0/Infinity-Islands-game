@@ -53,6 +53,7 @@ local MonsterConfig = require(MonsterSystem.MonsterConfig)
 local MonsterLoot = require(MonsterSystem.MonsterLoot)
 local MonsterValidator = require(MonsterSystem.MonsterValidator)
 local CombatDamageService = require(script.Parent.Parent.MVPSystems.CombatDamageService)
+local GameplayAnalytics = require(ServerScriptService:WaitForChild("GameplayAnalyticsService"))
 local CompanionService = require(script.Parent.Parent.MVPSystems.CompanionService)
 local RewardWheelService = require(script.Parent.Parent.MVPSystems.RewardWheelService)
 local MonetizationService = require(script.Parent.Parent.MVPSystems.MonetizationService)
@@ -763,6 +764,11 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 		local deathPosition = root.Position
 		local damager = getRecordedDamager(entry, clone, humanoid)
 		if damager then
+			GameplayAnalytics.RecordEnemyDefeated(
+				damager,
+				clone,
+				damager:GetAttribute("EquippedSword") or "OtherWeapon"
+			)
 			local monetizationRewardMultiplier = 1
 			if
 				clone:GetAttribute("IsElite") == true

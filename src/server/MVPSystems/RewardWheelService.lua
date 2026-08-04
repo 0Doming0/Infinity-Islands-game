@@ -14,6 +14,7 @@ local PlayerDataService = require(BlockParkour:WaitForChild("PlayerDataService_S
 local ScoreService = require(BlockParkour:WaitForChild("ScoreService_SkyDungeon_V10"))
 local CompanionService = require(script.Parent:WaitForChild("CompanionService"))
 local MarketingOfferService = require(script.Parent:WaitForChild("MarketingOfferService"))
+local GameplayAnalytics = require(script.Parent.Parent:WaitForChild("GameplayAnalyticsService"))
 
 local RewardWheelService = {}
 local random = Random.new()
@@ -250,6 +251,12 @@ local function grantCompanion(player, sourceId)
 	)
 	if not success or not unlocked then
 		return nil
+	end
+	local origin = sourceId == "RareChest" and "Chest"
+		or (sourceId == "HeightLevel" and "Quest" or "Other")
+	GameplayAnalytics.RecordCompanionObtained(player, entry.Id, origin)
+	if #equippedBefore == 0 then
+		GameplayAnalytics.RecordCompanionEquipped(player, entry.Id)
 	end
 	-- O primeiro companheiro e equipado automaticamente pelo dado persistente;
 	-- esta chamada tambem cria seu modelo no mundo imediatamente.

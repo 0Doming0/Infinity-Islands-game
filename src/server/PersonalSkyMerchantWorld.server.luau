@@ -1,6 +1,9 @@
 -- Representacao compartilhada dos Mercadores do Ceu pessoais.
 --
--- V8 garante que um encontro pronto produza um modelo visivel:
+-- V9 mantem o Mercador totalmente estatico na ilha e fora de qualquer IA:
+-- - marca o modelo raiz e rigs internos com AIEnabled = false antes do Parent;
+-- - ancora todas as BaseParts e zera velocidades fisicas;
+-- - remove scripts, animadores e forcas herdados do asset publicado;
 -- - remove modelos antigos quando a oferta termina;
 -- - preserva ofertas ainda nao abertas quando a ilha e reciclada;
 -- - solicita outro alvo quando um spawn falha;
@@ -30,7 +33,7 @@ local TEMPLATE_MAX_HEIGHT = math.max(
 	tonumber(MVPConfig.Village.PersonalSkyMerchantPublishedTemplateMaxHeight) or 36
 )
 local WATER_CLEARANCE_STUDS = 8
-local VERSION = "GuaranteedVisibleLifecycleV8"
+local VERSION = "StaticIslandMerchantV9"
 
 local modelsByPlayer = setmetatable({}, { __mode = "k" })
 local lifecycleByPlayer = setmetatable({}, { __mode = "k" })
@@ -236,7 +239,30 @@ local function cloneTemplate()
 	return fallbackTemplate(), false, "SkyMerchantFallback"
 end
 
+local function markAsStaticMerchantModel(target)
+	if not target or not target:IsA("Model") then
+		return
+	end
+
+	-- VillagerAI verifica AIEnabled antes de nomes, tags ou Humanoids. A marca
+	-- tambem e aplicada aos Models internos porque alguns assets publicados
+	-- trazem o rig dentro de um container com outro nome.
+	target:SetAttribute("AIEnabled", false)
+	target:SetAttribute("NPCMovementAIExcluded", true)
+	target:SetAttribute("IsNPC", false)
+	target:SetAttribute("IsVillager", false)
+	target:SetAttribute("StaticStore", true)
+	target:SetAttribute("MovementLocked", true)
+	target:SetAttribute("RotationLocked", true)
+	target:SetAttribute("FixedToIsland", true)
+	target:SetAttribute("WanderRadius", 0)
+	target:SetAttribute("NPCMoveSpeed", 0)
+	target:SetAttribute("AIState", "DisabledStaticMerchant")
+end
+
 local function sanitize(model)
+	markAsStaticMerchantModel(model)
+
 	for _, descendant in ipairs(model:GetDescendants()) do
 		if descendant:IsA("BaseScript")
 			or descendant:IsA("ProximityPrompt")
@@ -252,6 +278,8 @@ local function sanitize(model)
 			or descendant:IsA("Torque")
 		then
 			descendant:Destroy()
+		elseif descendant:IsA("Model") then
+			markAsStaticMerchantModel(descendant)
 		elseif descendant:IsA("Humanoid") then
 			descendant.AutoRotate = false
 			descendant.WalkSpeed = 0
@@ -270,9 +298,9 @@ local function sanitize(model)
 			descendant.CanQuery = false
 		end
 	end
-	model:SetAttribute("StaticStore", true)
-	model:SetAttribute("MovementLocked", true)
-	model:SetAttribute("RotationLocked", true)
+	-- Reaplica no modelo raiz depois da limpeza para deixar o estado final
+	-- explicito em diagnosticos e impedir qualquer controlador de reativar IA.
+	markAsStaticMerchantModel(model)
 end
 
 local function templateFitsFloor(size, floor)
@@ -518,9 +546,8 @@ local function spawnFor(player, island)
 	model:SetAttribute("UsesPublishedTemplate", usesPublishedTemplate)
 	model:SetAttribute("TemplateName", templateName)
 	model:SetAttribute("TemplateFallbackReason", fallbackReason)
-	model:SetAttribute("StaticStore", true)
-	model:SetAttribute("MovementLocked", true)
-	model:SetAttribute("RotationLocked", true)
+	markAsStaticMerchantModel(model)
+	model:SetAttribute("StaticAnchorPolicy", VERSION)
 	model:SetAttribute("SpawnPolicy", VERSION)
 	addSharedPresentation(model, player, interactionPosition, math.max(4, boundsSize.Y + 0.8))
 

@@ -15,8 +15,10 @@
 ]]
 
 local ServerStorage = game:GetService("ServerStorage")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Config = require(script.Parent.Config_SkyDungeon_V10)
+local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 local MonsterSpawner = require(script.Parent.MonsterSpawner)
 local IslandTypeService = require(script.Parent.IslandTypeService)
 local ChestService = require(script.Parent.ChestService)
@@ -1625,7 +1627,7 @@ local function styleFrontierSanctuary(islandModel)
 	local billboard = Instance.new("BillboardGui")
 	billboard.Name = "SanctuaryLabel"
 	billboard.Adornee = floor
-	billboard.Size = UDim2.fromOffset(170, 34)
+	billboard.Size = UDim2.fromOffset(270, 58)
 	billboard.StudsOffset = Vector3.new(0, 5, 0)
 	billboard.AlwaysOnTop = false
 	billboard.MaxDistance = 42
@@ -1635,10 +1637,15 @@ local function styleFrontierSanctuary(islandModel)
 	label.BackgroundColor3 = Color3.fromRGB(20, 38, 43)
 	label.BackgroundTransparency = 0.25
 	label.BorderSizePixel = 0
-	label.Text = "SANTUARIO"
+	label.Text = string.format(
+		"%s\n%s",
+		tostring(MVPConfig.SafeZones.TitleText or "SANTUARIO — AREA SEGURA"),
+		tostring(MVPConfig.SafeZones.SubtitleText or "Descanse antes de continuar.")
+	)
 	label.TextColor3 = Color3.fromRGB(178, 255, 235)
 	label.Font = Enum.Font.GothamBold
-	label.TextSize = 15
+	label.TextSize = 14
+	label.TextWrapped = true
 	label.Parent = billboard
 	Instance.new("UICorner", label).CornerRadius = UDim.new(0, 8)
 end

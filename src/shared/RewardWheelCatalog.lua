@@ -55,6 +55,22 @@ Catalog.Sources = table.freeze({
 		CoinMaximum = 50,
 		CoinPerLevel = 5,
 	}),
+	TutorialCompletion = table.freeze({
+		DisplayName = "Prêmio de conclusão do tutorial",
+		-- Recompensa deliberadamente generosa para criar um primeiro momento
+		-- memoravel. Ha 75% de chance de receber um item permanente.
+		CategoryWeights = table.freeze({
+			Coins = 25,
+			Relic = 25,
+			Sword = 20,
+			Companion = 30,
+		}),
+		-- O multiplicador global de moedas da roleta tambem e aplicado aqui.
+		-- Resultado efetivo aproximado: 140 a 260 moedas no nivel inicial.
+		CoinMinimum = 350,
+		CoinMaximum = 650,
+		CoinPerLevel = 10,
+	}),
 	RareChest = table.freeze({
 		DisplayName = "Baú raro",
 		CategoryWeights = table.freeze({

@@ -2,6 +2,7 @@
 -- Baús comuns, Ilha do Tesouro e revelacao do Mimico.
 
 local Debris = game:GetService("Debris")
+local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
@@ -11,6 +12,7 @@ local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 local ScoreService = require(script.Parent.ScoreService_SkyDungeon_V10)
 local MimicAI = require(script.Parent.MimicAI)
 local AnimeOutline = require(ServerScriptService.MVPSystems:WaitForChild("AnimeOutline"))
+local GameplayAnalytics = require(ServerScriptService:WaitForChild("GameplayAnalyticsService"))
 
 local ChestService = {}
 local RewardWheelService = require(script.Parent.Parent.MVPSystems:WaitForChild("RewardWheelService"))
@@ -239,6 +241,7 @@ local function createDormantMimicDisguise(mimic, normalTemplate, island, pivot)
 	chest:SetAttribute("IsDormantMimicChest", true)
 	chest:SetAttribute("Opened", false)
 	chest.Parent = island:FindFirstChild("MVPChests") or island
+	CollectionService:AddTag(chest, "AnalyticsChest")
 	chest:PivotTo(pivot)
 	AnimeOutline.Apply(chest)
 
@@ -268,6 +271,8 @@ local function createDormantMimicDisguise(mimic, normalTemplate, island, pivot)
 		end
 		opening = true
 		prompt.Enabled = false
+		GameplayAnalytics.RecordChestOpened(player, "MimicChest", "CombatReward")
+		GameplayAnalytics.RecordMimicTriggered(player)
 		local revealPosition = root.Position
 		local success, reason = MimicAI.Wake(mimic)
 		if not success then
@@ -310,10 +315,18 @@ local function activateChest(chest, player)
 	-- Abrir um bau e uma interacao de recompensa e encerra a invisibilidade,
 	-- evitando saquear areas perigosas sem se expor novamente aos inimigos.
 	MonetizationService.CancelCape(player, "Chest")
+	local chestType = state.IsMimic and "MimicChest"
+		or (state.IsRare and "RareChest" or "NormalChest")
+	GameplayAnalytics.RecordChestOpened(
+		player,
+		chestType,
+		state.IsMimic and "CombatReward" or "Coins"
+	)
 
 	if not state.IsMimic then
 		MarketingOfferService.Record(player, "ChestOpened", 1)
 		ScoreService.AwardCoins(player, state.CoinReward, "TreasureChest")
+		GameplayAnalytics.RecordChestRewardCollected(player, state.IsRare and "RareWheelAndCoins" or "Coins")
 		if state.IsRare then
 			RewardWheelService.Spin(player, "RareChest", {
 				Level = state.DifficultyTier,
@@ -331,6 +344,7 @@ local function activateChest(chest, player)
 		Debris:AddItem(chest, 0.45)
 		return
 	end
+	GameplayAnalytics.RecordMimicTriggered(player)
 
 	local mimic = state.MimicTemplate:Clone()
 	local root = getRoot(mimic, true)
@@ -338,6 +352,7 @@ local function activateChest(chest, player)
 	if not root or not humanoidMimic then
 		warn("[ChestService] MimicChest invalido; recompensa normal entregue.")
 		ScoreService.AwardCoins(player, state.CoinReward, "InvalidMimicRefund")
+		GameplayAnalytics.RecordChestRewardCollected(player, "Coins")
 		chest:Destroy()
 		return
 	end
@@ -405,6 +420,7 @@ local function spawnChest(
 	chest:SetAttribute("SourceChestTemplate", chestTemplate.Name)
 	chest:SetAttribute("Opened", false)
 	chest.Parent = parent
+	CollectionService:AddTag(chest, "AnalyticsChest")
 	AnimeOutline.Apply(chest)
 	if isRare then
 		local rareGlow = Instance.new("Highlight")

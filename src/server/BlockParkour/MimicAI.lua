@@ -17,6 +17,7 @@ local InventoryService = require(script.Parent.Parent.MVPSystems:WaitForChild("I
 local PlayerDamageService = require(script.Parent.Parent.MVPSystems:WaitForChild("PlayerDamageService"))
 local CompanionService = require(script.Parent.Parent.MVPSystems:WaitForChild("CompanionService"))
 local AnimeOutline = require(ServerScriptService.MVPSystems:WaitForChild("AnimeOutline"))
+local GameplayAnalytics = require(ServerScriptService:WaitForChild("GameplayAnalyticsService"))
 ScoreService.Start()
 InventoryService.Start()
 CompanionService.Start()
@@ -1358,6 +1359,8 @@ function MimicAI.Activate(model, options)
 			)
 			if not rewarded then
 				warn("[MimicAI] Falha ao entregar recompensa: " .. tostring(rewardReason))
+			else
+				GameplayAnalytics.RecordChestRewardCollected(damager, "Coins")
 			end
 				if math.random() <= 0.15 then
 				local granted, grantReason = pcall(InventoryService.GrantItem, damager, "GreaterHealthPotion", 1)

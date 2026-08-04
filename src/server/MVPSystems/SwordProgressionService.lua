@@ -18,6 +18,7 @@ local PlayerDataService = require(BlockParkour:WaitForChild("PlayerDataService_S
 local ScoreService = require(BlockParkour:WaitForChild("ScoreService_SkyDungeon_V10"))
 
 local SwordProgressionService = {}
+local GameplayAnalytics = require(script.Parent.Parent:WaitForChild("GameplayAnalyticsService"))
 local started = false
 local deliveryTokens = setmetatable({}, { __mode = "k" })
 local initializedPlayers = setmetatable({}, { __mode = "k" })
@@ -245,6 +246,7 @@ local function publishSwordAttributes(player, swordId)
 	local definition = Catalog.Get(swordId)
 	player:SetAttribute("EquippedSword", swordId)
 	player:SetAttribute("EquippedSwordName", definition.DisplayName)
+	GameplayAnalytics.RecordWeaponEquipped(player, swordId)
 	ScoreService.SetSwordMultiplier(player, definition.ScoreMultiplier)
 	player:SetAttribute("SwordCoinMultiplier", definition.CoinMultiplier)
 end
@@ -394,6 +396,7 @@ function SwordProgressionService.Purchase(player, swordId)
 		return false, CURRENCY_SYMBOL .. " Moedas insuficientes.", remaining
 	end
 	PlayerDataService.GrantSword(player, swordId)
+	GameplayAnalytics.RecordUpgradePurchased(player, "Sword", "Merchant")
 	task.spawn(PlayerDataService.Save, player, false)
 	player:SetAttribute("OwnedSwordCount", (player:GetAttribute("OwnedSwordCount") or 1) + 1)
 	return true, "Espada comprada!", remaining

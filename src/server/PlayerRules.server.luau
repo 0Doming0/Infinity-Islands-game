@@ -6,6 +6,7 @@ local ScoreService = require(script.Parent.BlockParkour:WaitForChild("ScoreServi
 local RunLevelService = require(script.Parent.BlockParkour:WaitForChild("RunLevelService"))
 local DeathReviveService = require(script.Parent.MVPSystems:WaitForChild("DeathReviveService"))
 local DownedService = require(script.Parent.MVPSystems:WaitForChild("DownedService"))
+local GameplayAnalytics = require(script.Parent:WaitForChild("GameplayAnalyticsService"))
 ScoreService.Start()
 DeathReviveService.Start()
 DownedService.Start()
@@ -21,9 +22,16 @@ local function detectDeathCause(character)
 	local water = workspace:FindFirstChild("Water")
 	local surfaceY = water and water:GetAttribute("SurfaceY")
 	if root and typeof(surfaceY) == "number" and root.Position.Y <= surfaceY + 1 then
-		return "Water"
+		local waterBottom = water.Position.Y - water.Size.Y / 2
+		if root.Position.Y < waterBottom - 10 then
+			return "Void"
+		end
+		return "RisingWater"
 	end
-	return "CombatOrFall"
+	if root and root.AssemblyLinearVelocity.Y < -35 then
+		return "Fall"
+	end
+	return "Unknown"
 end
 
 local function bindCharacter(player, character)
@@ -51,6 +59,7 @@ local function bindCharacter(player, character)
 		end
 		processed = true
 		local cause = detectDeathCause(character)
+		GameplayAnalytics.RecordDeath(player, character, cause)
 		local runScore, lostCoins = ScoreService.HandleDeath(player, cause)
 		DeathReviveService.RecordDeath(player, runScore, lostCoins, cause)
 		RunLevelService.Reset(player, nil)

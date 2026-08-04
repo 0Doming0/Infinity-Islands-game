@@ -12,6 +12,7 @@ local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 local PlayerDataService = require(
 	script.Parent.Parent.BlockParkour:WaitForChild("PlayerDataService_SkyDungeon_V10")
 )
+local GameplayAnalytics = require(script.Parent.Parent:WaitForChild("GameplayAnalyticsService"))
 
 local TradeService = {}
 local CONFIG = MVPConfig.Social.Trade
@@ -482,6 +483,8 @@ local function finalizeSession(session, serial)
 		return
 	end
 
+	local companionsA = PlayerDataService.GetCompanions(session.A)
+	local companionsB = PlayerDataService.GetCompanions(session.B)
 	local transferred, transferError = PlayerDataService.TransferCompanions(
 		session.A,
 		session.B,
@@ -520,6 +523,28 @@ local function finalizeSession(session, serial)
 	sessionsByPlayer[session.B] = nil
 	refreshCompanionUI(session.A)
 	refreshCompanionUI(session.B)
+	for _, instanceId in ipairs(offerB) do
+		local record = companionsB[instanceId]
+		GameplayAnalytics.RecordCompanionObtained(
+			session.A,
+			record and record.SpeciesId,
+			"Trade"
+		)
+		if PlayerDataService.IsCompanionEquipped(session.A, instanceId) then
+			GameplayAnalytics.RecordCompanionEquipped(session.A, record and record.SpeciesId)
+		end
+	end
+	for _, instanceId in ipairs(offerA) do
+		local record = companionsA[instanceId]
+		GameplayAnalytics.RecordCompanionObtained(
+			session.B,
+			record and record.SpeciesId,
+			"Trade"
+		)
+		if PlayerDataService.IsCompanionEquipped(session.B, instanceId) then
+			GameplayAnalytics.RecordCompanionEquipped(session.B, record and record.SpeciesId)
+		end
+	end
 	local message = savedA and savedB
 		and "Troca concluída!"
 		or "Troca concluída; a sincronização será verificada no próximo acesso."

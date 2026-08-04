@@ -11,6 +11,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 local PlayerDataService = require(script.Parent.PlayerDataService_SkyDungeon_V10)
 local PartyService = require(script.Parent.PartyService)
+local GameplayAnalytics = require(script.Parent.Parent:WaitForChild("GameplayAnalyticsService"))
 
 local coinRewardRemote = ReplicatedStorage:FindFirstChild("CoinReward")
 if coinRewardRemote and not coinRewardRemote:IsA("RemoteEvent") then
@@ -164,6 +165,7 @@ function ScoreService.AwardCoins(player, baseAmount, source, worldPosition)
 	player:SetAttribute("LastCoinSource", tostring(source or "Unknown"))
 	player:SetAttribute("LastCoinAward", awarded)
 	player:SetAttribute("LastCoinSerial", (player:GetAttribute("LastCoinSerial") or 0) + 1)
+	GameplayAnalytics.RecordCoinsEarned(player, source, awarded)
 	coinRewardRemote:FireClient(player, {
 		Amount = awarded,
 		Balance = balance,
@@ -239,10 +241,27 @@ function ScoreService.HandleDeath(player, cause)
 	end
 	local runScore = ScoreService.GetRunScore(player)
 	ScoreService.CommitBest(player)
-	local lostCoins, remainingCoins = PlayerDataService.RemoveCoinsPercent(
-		player,
-		MVPConfig.Progression.DeathCoinLossPercent
-	)
+	local rescueState = tostring(player:GetAttribute("SanctuaryRescueState") or "Idle")
+	local sanctuaryProtected = player:GetAttribute("InSafeZone") == true
+		and player:GetAttribute("SanctuaryProtected") == true
+	local rescueProtected = rescueState == "Searching"
+		or rescueState == "Teleporting"
+		or rescueState == "Stabilizing"
+		or workspace:GetServerTimeNow()
+			< (tonumber(player:GetAttribute("SanctuaryRescueProtectionUntil")) or 0)
+	local lostCoins
+	local remainingCoins
+	if sanctuaryProtected or rescueProtected then
+		lostCoins = 0
+		remainingCoins = PlayerDataService.GetCoins(player)
+		player:SetAttribute("LastDeathPenaltySuppressed", "SanctuaryProtection")
+	else
+		lostCoins, remainingCoins = PlayerDataService.RemoveCoinsPercent(
+			player,
+			MVPConfig.Progression.DeathCoinLossPercent
+		)
+		player:SetAttribute("LastDeathPenaltySuppressed", nil)
+	end
 	syncCoins(player, remainingCoins)
 	player:SetAttribute("LastDeathRunScore", runScore)
 	player:SetAttribute("LastDeathCoinsLost", lostCoins)

@@ -54,6 +54,7 @@ local function defaultData()
 		LegacyMVPMigrated = false,
 		TutorialStage = 1,
 		TutorialCompleted = false,
+		AnalyticsOnboardingCompleted = false,
 		DailyLastClaimDay = 0,
 		DailyStreak = 0,
 		Monetization = {
@@ -311,6 +312,7 @@ local function sanitize(raw)
 	if data.TutorialCompleted then
 		data.TutorialStage = 5
 	end
+	data.AnalyticsOnboardingCompleted = raw.AnalyticsOnboardingCompleted == true
 
 	local equipped = type(raw.EquippedSword) == "string" and raw.EquippedSword or STARTER_SWORD_ID
 	if data.OwnedSwords[equipped] then
@@ -412,6 +414,7 @@ local function cloneData(data)
 		LegacyMVPMigrated = data.LegacyMVPMigrated == true,
 		TutorialStage = data.TutorialStage,
 		TutorialCompleted = data.TutorialCompleted == true,
+		AnalyticsOnboardingCompleted = data.AnalyticsOnboardingCompleted == true,
 		DailyLastClaimDay = data.DailyLastClaimDay,
 		DailyStreak = data.DailyStreak,
 		Monetization = cloneMonetization(data.Monetization),
@@ -556,6 +559,23 @@ function PlayerDataService.SetTutorialProgress(player, stage, completed)
 	then
 		session.Data.TutorialStage = nextStage
 		session.Data.TutorialCompleted = nextCompleted
+		markDirty(session)
+	end
+	return true
+end
+
+function PlayerDataService.GetAnalyticsOnboardingCompleted(player)
+	local data = PlayerDataService.Get(player)
+	return data and data.AnalyticsOnboardingCompleted == true or false
+end
+
+function PlayerDataService.SetAnalyticsOnboardingCompleted(player)
+	local session = sessions[player]
+	if not session then
+		return false
+	end
+	if session.Data.AnalyticsOnboardingCompleted ~= true then
+		session.Data.AnalyticsOnboardingCompleted = true
 		markDirty(session)
 	end
 	return true
@@ -1318,6 +1338,8 @@ function PlayerDataService.Save(player, force)
 				previousData.CompanionEquipSlots
 			)
 			snapshot.TutorialCompleted = snapshot.TutorialCompleted or previousData.TutorialCompleted
+			snapshot.AnalyticsOnboardingCompleted = snapshot.AnalyticsOnboardingCompleted
+				or previousData.AnalyticsOnboardingCompleted
 			snapshot.TutorialStage = snapshot.TutorialCompleted
 				and 5
 				or math.max(snapshot.TutorialStage, previousData.TutorialStage)

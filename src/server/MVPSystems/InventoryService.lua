@@ -8,6 +8,7 @@ local PlayerDataService = require(
 	script.Parent.Parent.BlockParkour:WaitForChild("PlayerDataService_SkyDungeon_V10")
 )
 local MarketingOfferService = require(script.Parent:WaitForChild("MarketingOfferService"))
+local GameplayAnalytics = require(script.Parent.Parent:WaitForChild("GameplayAnalyticsService"))
 
 local InventoryService = {}
 local started = false
@@ -60,7 +61,7 @@ function InventoryService.Push(player, message, success)
 	end
 end
 
-function InventoryService.GrantItem(player, itemId, amount)
+function InventoryService.GrantItem(player, itemId, amount, source)
 	local definition = ItemCatalog.Get(itemId)
 	if not definition then
 		return false, "Item invalido."
@@ -69,6 +70,7 @@ function InventoryService.GrantItem(player, itemId, amount)
 	if not success then
 		return false, "Voce atingiu o limite deste item."
 	end
+	GameplayAnalytics.RecordItemObtained(player, itemId, source or "Gameplay")
 	InventoryService.Push(player, definition.DisplayName .. " adicionado!", true)
 	return true
 end

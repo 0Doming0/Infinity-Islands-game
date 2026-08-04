@@ -11,6 +11,8 @@ local ChunkManager = require(script.Parent.ChunkManager_SkyDungeon_V10)
 local ScoreService = require(script.Parent.ScoreService_SkyDungeon_V10)
 local RunLevelService = require(script.Parent.RunLevelService)
 local CollectibleService = require(script.Parent.Parent:FindFirstChild("MVPSystems"):FindFirstChild("CollectibleService"))
+local SanctuaryService = require(script.Parent.Parent:WaitForChild("SanctuaryService"))
+local GameplayAnalytics = require(script.Parent.Parent:WaitForChild("GameplayAnalyticsService"))
 
 workspace:SetAttribute("WaterTutorialDangerVersion", "TutorialWaterAlwaysDangerousV1")
 
@@ -97,7 +99,11 @@ local CONFIG = {
 	RESCUE_ISLAND_WAIT_SECONDS = 12,
 	RESCUE_ISLAND_POLL_SECONDS = 0.25,
 	SAFE_RESPAWN_PROTECTION_SECONDS = 3,
-	SANCTUARY_FLOOD_GRACE_SECONDS = 5,
+	EMERGENCY_SANCTUARY_CLEARANCE = math.clamp(
+		tonumber(MVPConfig.SafeZones.EmergencyWaterClearanceStuds) or 50,
+		40,
+		60
+	),
 	TEMP_RESPAWN_PLATFORM_SIZE = Vector3.new(18, 1, 18),
 	TEMP_RESPAWN_EXTRA_CLEARANCE = 8,
 	TEMP_RESPAWN_RESCUE_RETRIES = 20,
@@ -113,6 +119,8 @@ if not ChunkManager.IsRunning() then
 	ChunkManager.Start()
 end
 CollectibleService.Start()
+SanctuaryService.Start()
+GameplayAnalytics.Start()
 
 
 local water = workspace:FindFirstChild("Water")
@@ -257,42 +265,6 @@ local function clearSanctuaryFloodState(player, data)
 	player:SetAttribute(FLOODED_ISLAND_ATTRIBUTE, nil)
 end
 
-local function hasSanctuaryFloodGrace(player, data, canStart)
-	local serverNow = workspace:GetServerTimeNow()
-	local deadline = data.sanctuaryFloodDeadline
-	if deadline then
-		if serverNow < deadline then
-			return true
-		end
-
-		player:SetAttribute(FLOODED_ISLAND_ATTRIBUTE, data.sanctuaryFloodIslandKey)
-		player:SetAttribute(FLOOD_COUNTDOWN_ATTRIBUTE, nil)
-		data.sanctuaryFloodDeadline = nil
-		return false
-	end
-
-	if not canStart then
-		return false
-	end
-
-	if player:GetAttribute("InSafeZone") ~= true
-		or player:GetAttribute("SafeZoneType") ~= "Sanctuary"
-	then
-		return false
-	end
-
-	local islandKey = player:GetAttribute("SafeZoneIslandKey")
-	if islandKey == nil or player:GetAttribute(FLOODED_ISLAND_ATTRIBUTE) == islandKey then
-		return false
-	end
-
-	deadline = serverNow + CONFIG.SANCTUARY_FLOOD_GRACE_SECONDS
-	data.sanctuaryFloodDeadline = deadline
-	data.sanctuaryFloodIslandKey = islandKey
-	player:SetAttribute(FLOOD_COUNTDOWN_ATTRIBUTE, deadline)
-	return true
-end
-
 local function calculateTargetWaterSpeed()
 	local playingCount = 0
 	for _, player in ipairs(Players:GetPlayers()) do
@@ -365,30 +337,6 @@ local function calculateTargetWaterSpeed()
 		collective.Count
 end
 
-local function findSafeRoutePart()
-	local worldModel = ChunkManager.GetWorldModel() or workspace:FindFirstChild(MapConfig.WORLD_MODEL_NAME)
-	if not worldModel then
-		return nil
-	end
-	local minimumSurfaceY = currentWaterY + CONFIG.SAFE_RESPAWN_CLEARANCE
-	local bestPart
-	local bestSurfaceY = math.huge
-	for _, descendant in ipairs(worldModel:GetDescendants()) do
-		if descendant:IsA("BasePart")
-			and descendant.Anchored
-			and descendant.CanCollide
-			and descendant:GetAttribute("IsMainRoute") == true
-		then
-			local surfaceY = descendant.Position.Y + descendant.Size.Y / 2
-			if surfaceY >= minimumSurfaceY and surfaceY < bestSurfaceY then
-				bestPart = descendant
-				bestSurfaceY = surfaceY
-			end
-		end
-	end
-	return bestPart
-end
-
 local function validateSpawnCFrame(candidateCFrame, character, allowTemporaryPlatform)
 	if not candidateCFrame then
 		return nil
@@ -450,14 +398,14 @@ local function findPermanentSafeRespawn(character, allowRetries)
 	ChunkManager.EnsureRoundsAheadOfWater(currentWaterY, CONFIG.SAFE_ROUND_BUFFER, CONFIG.MAX_ROUNDS_PER_REQUEST)
 	local attempts = allowRetries and CONFIG.SAFE_RESPAWN_SEARCH_RETRIES or 1
 	for attempt = 1, attempts do
-		local routePart = findSafeRoutePart()
-		if routePart then
-			local position = routePart.Position
-				+ Vector3.new(0, routePart.Size.Y / 2 + CONFIG.SAFE_RESPAWN_HRP_OFFSET, 0)
-			local validatedRoute = validateSpawnCFrame(CFrame.new(position), character)
-			if validatedRoute then
-				return validatedRoute
-			end
+		local retrySanctuary = ChunkManager.GetSafeRespawnCFrame(
+			currentWaterY,
+			CONFIG.SAFE_RESPAWN_CLEARANCE,
+			CONFIG.SAFE_RESPAWN_HRP_OFFSET
+		)
+		local validatedRetry = validateSpawnCFrame(retrySanctuary, character)
+		if validatedRetry then
+			return validatedRetry
 		end
 		if attempt < attempts then
 			task.wait(CONFIG.SAFE_RESPAWN_RETRY_DELAY)
@@ -509,7 +457,7 @@ local function getSafeRespawnCFrame(player, character)
 	repeat
 		local _, reason = ChunkManager.RequestSafeRespawnIsland(
 			currentWaterY,
-			CONFIG.SAFE_RESPAWN_CLEARANCE
+			CONFIG.EMERGENCY_SANCTUARY_CLEARANCE
 		)
 		lastRequestReason = reason
 		task.wait(CONFIG.RESCUE_ISLAND_POLL_SECONDS)
@@ -589,7 +537,7 @@ local function rescueFromTemporaryPlatform(player, character, platform)
 				return
 			end
 
-			ChunkManager.RequestSafeRespawnIsland(currentWaterY, CONFIG.SAFE_RESPAWN_CLEARANCE)
+			ChunkManager.RequestSafeRespawnIsland(currentWaterY, CONFIG.EMERGENCY_SANCTUARY_CLEARANCE)
 
 			attempts += 1
 			if attempts == CONFIG.TEMP_RESPAWN_RESCUE_RETRIES then
@@ -620,7 +568,7 @@ local function requestRescueIslandAfterPartyWipe()
 
 	local requested, reason = ChunkManager.RequestSafeRespawnIsland(
 		currentWaterY,
-		CONFIG.SAFE_RESPAWN_CLEARANCE
+		CONFIG.EMERGENCY_SANCTUARY_CLEARANCE
 	)
 	if requested then
 		print("[WaterRiseSystem] Party wipe: geracao antecipada da ilha de resgate (" .. tostring(reason) .. ")")
@@ -776,6 +724,7 @@ while true do
 	currentLowerGroupGap = lowerGroupGap
 	currentCollectiveCount = collectiveCount
 	currentWaterY += currentWaterSpeed * dt
+	SanctuaryService.UpdateWaterLevel(currentWaterY)
 	water.Position = Vector3.new(MapConfig.CENTER_WORLD.X, currentWaterY - waterHalfHeight, MapConfig.CENTER_WORLD.Z)
 	for _, tile in pairs(waterTiles) do
 		tile.Position = Vector3.new(tile.Position.X, currentWaterY - tile.Size.Y / 2, tile.Position.Z)
@@ -797,6 +746,12 @@ while true do
 	end
 
 	for player, data in pairs(playerData) do
+		if currentWaterSpeed > 0 then
+			GameplayAnalytics.RecordWaterStarted(player)
+		end
+		if currentProgressGap > 0 and currentProgressGap <= CONFIG.WATER_DANGER_GAP then
+			GameplayAnalytics.RecordWaterWarning(player)
+		end
 		if not data.alive or data.respawning then
 			setWaterDamageActive(player, false)
 			continue
@@ -813,7 +768,7 @@ while true do
 		local feetY = playerY - humanoid.HipHeight - rootPart.Size.Y / 2
 			+ math.max(0, tonumber(MVPConfig.SafeZones.WaterContactFootOffsetStuds) or 0.5)
 		local touchingWater = feetY <= currentWaterY
-		local sanctuaryGraceActive = hasSanctuaryFloodGrace(player, data, touchingWater)
+		local sanctuaryProtected = SanctuaryService.IsPlayerProtectedFromWater(player)
 		if touchingWater then
 			local enteredWater = data.inWater ~= true
 			data.inWater = true
@@ -824,13 +779,14 @@ while true do
 				player:SetAttribute("TutorialWaterDangerSeen", true)
 				player:SetAttribute("TutorialWaterContactedAt", workspace:GetServerTimeNow())
 			end
-			if not sanctuaryGraceActive then
+			if not sanctuaryProtected then
 				removeSafeZoneProtection(player, character)
 			end
-			local waterCanDamage = not sanctuaryGraceActive
+			local waterCanDamage = not sanctuaryProtected
 				and character:FindFirstChildOfClass("ForceField") == nil
 			setWaterDamageActive(player, waterCanDamage)
 			if waterCanDamage then
+				GameplayAnalytics.RecordWaterDamage(player)
 				humanoid:TakeDamage(CONFIG.DAMAGE_PER_SECOND * dt)
 			end
 		else

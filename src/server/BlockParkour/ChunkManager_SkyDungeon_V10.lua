@@ -13,6 +13,7 @@
 local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local ServerScriptService = game:GetService("ServerScriptService")
 local ServerStorage = game:GetService("ServerStorage")
 
 local Config = require(script.Parent.Config_SkyDungeon_V10)
@@ -21,6 +22,7 @@ local IslandGraphPlanner = require(script.Parent.IslandGraphPlanner)
 local PartyService = require(script.Parent.PartyService)
 local CollectiveProgressService = require(script.Parent.CollectiveProgressService)
 local SpatialHash = require(script.Parent.SpatialHash)
+local GameplayAnalytics = require(ServerScriptService:WaitForChild("GameplayAnalyticsService"))
 
 local ChunkManager = {}
 
@@ -83,6 +85,7 @@ local latestCollectiveSnapshot = {
 	MedianY = nil,
 	LowerGroupY = nil,
 }
+local emergencyGenerationInProgress = false
 
 local function countRecords(records)
 	local count = 0
@@ -483,6 +486,9 @@ local function createNode(spec, reason, generationOwnerUserId)
 	model:SetAttribute("GenerationReason", reason or "Unknown")
 	model:SetAttribute("GenerationOwnerUserId", generationOwnerUserId)
 	model:SetAttribute("NodeSerial", nodeSerial)
+	model:SetAttribute("SanctuarySubmerged", false)
+	model:SetAttribute("SanctuaryValid", spec.IsSanctuary == true)
+	model:SetAttribute("IsEmergencySanctuary", spec.IsEmergency == true)
 	CollectionService:AddTag(model, "BlockParkourChunk")
 	CollectionService:AddTag(model, "SkyDungeonIslandNode")
 	local record = {
@@ -505,6 +511,9 @@ local function createNode(spec, reason, generationOwnerUserId)
 		OutboundCount = 0,
 		CreatedAt = os.clock(),
 	}
+	record.IslandModel:SetAttribute("SanctuarySubmerged", false)
+	record.IslandModel:SetAttribute("SanctuaryValid", spec.IsSanctuary == true)
+	record.IslandModel:SetAttribute("IsEmergencySanctuary", spec.IsEmergency == true)
 	nodesByKey[spec.Key] = record
 	spatialIndex:Insert(spec.Key, record.Floor.Position, record)
 	activeNodeCount += 1
@@ -1151,7 +1160,10 @@ local function updateSimulationActivity(playerRoots)
 end
 
 local function visitNode(player, record)
-	if not record.Discovered then
+	local rescueDestinationKey = player:GetAttribute("SanctuaryRescueDestinationKey")
+	local rescueSuppressed = typeof(rescueDestinationKey) == "string"
+		and rescueDestinationKey == record.Key
+	if not rescueSuppressed and not record.Discovered then
 		record.Discovered = true
 		record.Model:SetAttribute("Discovered", true)
 		record.Model:SetAttribute("DiscoveredAt", os.clock())
@@ -1160,7 +1172,7 @@ local function visitNode(player, record)
 	end
 		-- A intencao de movimento e o gatilho normal. Este fallback cobre teleporte, lag ou
 	-- spawn direto sobre uma ilha de fronteira sem deixar o mundo terminar nela.
-	if not record.Expanded then
+	if not rescueSuppressed and not record.Expanded then
 		enqueueExpansion(
 			record,
 			"TouchFallback:" .. tostring(player.UserId),
@@ -1168,27 +1180,52 @@ local function visitNode(player, record)
 			player.UserId
 		)
 	end
-	enqueueDetail(record, true, 50000)
+	if not rescueSuppressed then
+		enqueueDetail(record, true, 50000)
+	end
 
 	local visited = playerVisitedNodes[player]
 	if not visited then
 		visited = {}
 		playerVisitedNodes[player] = visited
 	end
-	if not visited[record.Key] then
+	if not rescueSuppressed and not visited[record.Key] then
 		visited[record.Key] = true
 		player:SetAttribute("UniqueIslandsVisited", (player:GetAttribute("UniqueIslandsVisited") or 0) + 1)
 		PartyService.RecordMissionProgress(player, "IslandVisited", 1, record.Key)
 	end
 	player:SetAttribute("CurrentIslandKey", record.Key)
+	player:SetAttribute("CurrentIslandIndex", record.Spec.Level)
 	player:SetAttribute("CurrentLogicalLevel", record.Spec.Level)
 	player:SetAttribute("CurrentLaneX", record.Spec.LaneX)
 	player:SetAttribute("CurrentLaneZ", record.Spec.LaneZ)
 	player:SetAttribute("InSocialSanctuary", record.Spec.IsSanctuary)
-	player:SetAttribute("HighestLogicalLevel", math.max(
-		player:GetAttribute("HighestLogicalLevel") or 0,
-		record.Spec.Level
-	))
+	if record.Spec.IsSanctuary then
+		player:SetAttribute("CurrentSanctuaryIndex", record.Spec.Level)
+	end
+	if not rescueSuppressed then
+		local previousHighest = math.max(
+			0,
+			tonumber(player:GetAttribute("HighestLogicalLevel")) or 0
+		)
+		player:SetAttribute("HighestLogicalLevel", math.max(previousHighest, record.Spec.Level))
+		if record.Spec.Level > previousHighest and record.Spec.Level > 0 then
+			player:SetAttribute("LastObjectiveCompleted", "IslandExploration")
+		end
+		player:SetAttribute(
+			"HighestCompletedIslandIndex",
+			math.max(
+				tonumber(player:GetAttribute("HighestCompletedIslandIndex")) or 0,
+				math.max(0, record.Spec.Level - 1)
+			)
+		)
+		GameplayAnalytics.RecordIslandReached(
+			player,
+			record.Spec.Level,
+			record.Spec.IsSanctuary,
+			false
+		)
+	end
 end
 
 local function prepareApproachedFrontiers(playerRoots)
@@ -1656,6 +1693,19 @@ function ChunkManager.GetSafeZoneContext(position, horizontalPadding, verticalPa
 					IsSanctuary = isSanctuary,
 					IsVillage = isVillage,
 					ZoneType = isVillage and "Village" or "Sanctuary",
+					LogicalLevel = record.Spec.Level,
+					IsEmergency = record.Spec.IsEmergency == true
+						or record.Model:GetAttribute("IsEmergencySanctuary") == true,
+					IsSubmerged = record.Model:GetAttribute("SanctuarySubmerged") == true,
+					SurfaceY = record.Floor.Position.Y + record.Floor.Size.Y / 2,
+					CFrame = CFrame.new(record.Floor.Position + Vector3.new(
+						0,
+						record.Floor.Size.Y / 2 + 3,
+						0
+					)),
+					Floor = record.Floor,
+					Model = record.Model,
+					IslandModel = record.IslandModel,
 				}
 			end
 		end
@@ -1711,6 +1761,7 @@ function ChunkManager.Start()
 	lastWorldAttributeUpdateAt = -math.huge
 	playerVisitedNodes = setmetatable({}, { __mode = "k" })
 	playerApproachIntents = setmetatable({}, { __mode = "k" })
+	emergencyGenerationInProgress = false
 	for _, player in ipairs(Players:GetPlayers()) do
 		clearPublishedApproachTarget(player)
 	end
@@ -1892,99 +1943,215 @@ function ChunkManager.GetCollectiveProgress()
 	return table.clone(latestCollectiveSnapshot)
 end
 
-function ChunkManager.GetSafeRespawnCFrame(waterSurfaceY, clearanceStuds, rootOffsetStuds)
-	local minimumY = waterSurfaceY + math.max(0, clearanceStuds or 0)
+local function sanctuaryContext(record, rootOffsetStuds)
+	if not record
+		or not record.Spec.IsSanctuary
+		or not record.Model
+		or not record.Model.Parent
+		or not record.Floor
+		or not record.Floor.Parent
+	then
+		return nil
+	end
+	local surfaceY = record.Floor.Position.Y + record.Floor.Size.Y / 2
+	return {
+		IslandKey = record.Key,
+		LogicalLevel = record.Spec.Level,
+		LaneX = record.Spec.LaneX,
+		LaneZ = record.Spec.LaneZ,
+		IsEmergency = record.Spec.IsEmergency == true
+			or record.Model:GetAttribute("IsEmergencySanctuary") == true,
+		IsSubmerged = record.Model:GetAttribute("SanctuarySubmerged") == true,
+		SurfaceY = surfaceY,
+		CFrame = CFrame.new(record.Floor.Position + Vector3.new(
+			0,
+			record.Floor.Size.Y / 2 + (rootOffsetStuds or 3),
+			0
+		)),
+		Floor = record.Floor,
+		Model = record.Model,
+		IslandModel = record.IslandModel,
+	}
+end
+
+function ChunkManager.GetSanctuaryContexts(rootOffsetStuds)
+	local result = {}
+	for _, record in pairs(nodesByKey) do
+		local context = sanctuaryContext(record, rootOffsetStuds)
+		if context then
+			table.insert(result, context)
+		end
+	end
+	table.sort(result, function(left, right)
+		if left.LogicalLevel ~= right.LogicalLevel then
+			return left.LogicalLevel < right.LogicalLevel
+		end
+		return left.IslandKey < right.IslandKey
+	end)
+	return result
+end
+
+function ChunkManager.GetSanctuaryByKey(islandKey, rootOffsetStuds)
+	if type(islandKey) ~= "string" then
+		return nil
+	end
+	return sanctuaryContext(nodesByKey[islandKey], rootOffsetStuds)
+end
+
+function ChunkManager.SetSanctuarySubmerged(islandKey, submerged, waterSurfaceY)
+	local record = type(islandKey) == "string" and nodesByKey[islandKey] or nil
+	if not record or not record.Spec.IsSanctuary then
+		return false
+	end
+	local value = submerged == true
+	for _, model in ipairs({ record.Model, record.IslandModel }) do
+		if model and model.Parent then
+			model:SetAttribute("SanctuarySubmerged", value)
+			model:SetAttribute("SanctuaryValid", not value)
+			if value then
+				model:SetAttribute("SanctuarySubmergedAtWaterY", waterSurfaceY)
+			end
+		end
+	end
+	return true
+end
+
+function ChunkManager.GetNextSafeSanctuary(originIslandKey, waterSurfaceY, clearanceStuds, rootOffsetStuds)
+	local minimumY = (tonumber(waterSurfaceY) or latestWaterY)
+		+ math.max(0, tonumber(clearanceStuds) or 0)
+	local origin = type(originIslandKey) == "string" and nodesByKey[originIslandKey] or nil
+	local originLevel = origin and origin.Spec.Level or -1
 	local targetY = latestCollectiveSnapshot.MeanY or minimumY
 	local best
 	local bestScore = math.huge
-	for _, sanctuaryOnly in ipairs({ true, false }) do
-		for _, record in pairs(nodesByKey) do
-			local surfaceY = record.Floor.Position.Y + record.Floor.Size.Y / 2
-			if surfaceY >= minimumY and (not sanctuaryOnly or record.Spec.IsSanctuary) then
-				local undiscoveredPenalty = record.Discovered and 0 or 5000
-				local score = math.abs(surfaceY - targetY) + undiscoveredPenalty
-				if score < bestScore then
-					best = record
-					bestScore = score
-				end
+	for _, record in pairs(nodesByKey) do
+		local context = sanctuaryContext(record, rootOffsetStuds)
+		if context
+			and context.IslandKey ~= originIslandKey
+			and not context.IsSubmerged
+			and context.SurfaceY >= minimumY
+		then
+			local isForward = context.LogicalLevel > originLevel
+			local forwardPenalty = isForward and 0 or 100000
+			local score = forwardPenalty
+				+ math.abs(context.SurfaceY - targetY)
+				+ math.max(0, context.LogicalLevel - originLevel) * 0.01
+			if score < bestScore then
+				best = context
+				bestScore = score
 			end
 		end
-		if best then
-			break
-		end
 	end
-	if not best then
-		return nil
-	end
-	local surfacePosition = best.Floor.Position + Vector3.new(0, best.Floor.Size.Y / 2 + (rootOffsetStuds or 3), 0)
-	return CFrame.new(surfacePosition)
+	return best
 end
 
--- A geracao normal depende da aproximacao de um jogador vivo. Em um party wipe
--- nao existe jogador para abrir a fronteira, portanto o respawn precisa poder
--- solicitar explicitamente o proximo round de ilhas.
-function ChunkManager.RequestSafeRespawnIsland(waterSurfaceY, clearanceStuds)
+function ChunkManager.GetSafeRespawnCFrame(waterSurfaceY, clearanceStuds, rootOffsetStuds)
+	local context = ChunkManager.GetNextSafeSanctuary(
+		nil,
+		waterSurfaceY,
+		clearanceStuds,
+		rootOffsetStuds
+	)
+	return context and context.CFrame or nil
+end
+
+function ChunkManager.RequestEmergencySanctuary(waterSurfaceY, clearanceStuds, generationOwnerUserId)
 	if not running or not worldModel then
 		return false, "ChunkManagerNotRunning"
 	end
-
 	latestWaterY = waterSurfaceY
-	if ChunkManager.GetSafeRespawnCFrame(waterSurfaceY, clearanceStuds, 3) then
+	if ChunkManager.GetNextSafeSanctuary(nil, waterSurfaceY, clearanceStuds, 3) then
 		return true, "AlreadyAvailable"
 	end
-
-	local bestFrontier
-	for _, record in pairs(nodesByKey) do
-		if record.Model and record.Model.Parent and not record.Expanded then
-			if not bestFrontier
-				or record.Spec.Level > bestFrontier.Spec.Level
-				or (record.Spec.Level == bestFrontier.Spec.Level and record.TopWorldY > bestFrontier.TopWorldY)
-			then
-				bestFrontier = record
-			end
-		end
+	if emergencyGenerationInProgress then
+		return true, "GenerationInProgress"
 	end
-
-	-- Se o cleanup removeu todos os filhos de uma ilha que ja havia sido
-	-- expandida, reabre a ilha mais alta para reconstruir a rota deterministica.
-	if not bestFrontier then
-		for _, record in pairs(nodesByKey) do
-			if record.Model and record.Model.Parent and record.OutboundCount <= 0 then
-				if not bestFrontier
-					or record.Spec.Level > bestFrontier.Spec.Level
-					or (record.Spec.Level == bestFrontier.Spec.Level and record.TopWorldY > bestFrontier.TopWorldY)
-				then
-					bestFrontier = record
+	emergencyGenerationInProgress = true
+	task.spawn(function()
+		local success, errorMessage = xpcall(function()
+			local source
+			for _, record in pairs(nodesByKey) do
+				if record.Model and record.Model.Parent and (
+					not source
+					or record.Spec.Level > source.Spec.Level
+					or (record.Spec.Level == source.Spec.Level and record.TopWorldY > source.TopWorldY)
+				) then
+					source = record
 				end
 			end
+			assert(source, "NoSourceIsland")
+			local requiredSurfaceY = (tonumber(waterSurfaceY) or latestWaterY)
+				+ math.max(0, tonumber(clearanceStuds) or 0)
+			local selectedSpec
+			for levelDelta = 1, 32 do
+				local level = source.Spec.Level + levelDelta
+				local coordinates = {
+					{ source.Spec.LaneX + levelDelta, source.Spec.LaneZ },
+					{ source.Spec.LaneX - levelDelta, source.Spec.LaneZ },
+					{ source.Spec.LaneX, source.Spec.LaneZ + levelDelta },
+					{ source.Spec.LaneX, source.Spec.LaneZ - levelDelta },
+				}
+				for _, coordinate in ipairs(coordinates) do
+					local spec = IslandGraphPlanner.GetNodeSpec(
+						baseSeed,
+						coordinate[1],
+						coordinate[2],
+						level
+					)
+					local estimatedSurfaceY = Config.CENTER_WORLD.Y
+						+ physicalWorldOffsetY
+						+ spec.Center.Y * Config.GRID_SIZE
+						+ Config.ISLAND_FLOOR_THICKNESS_STUDS / 2
+					if not nodesByKey[spec.Key] and estimatedSurfaceY >= requiredSurfaceY then
+						selectedSpec = table.clone(spec)
+						break
+					end
+				end
+				if selectedSpec then
+					break
+				end
+			end
+			assert(selectedSpec, "NoEmergencyCoordinate")
+			selectedSpec.IsSanctuary = true
+			selectedSpec.IsEmergency = true
+			selectedSpec.IsStart = false
+			selectedSpec.Role = "EmergencySanctuary"
+			selectedSpec.SizeName = Config.FRONTIER_SANCTUARY_SIZE
+			local record, created, creationError = createNode(
+				selectedSpec,
+				"EmergencySanctuary",
+				generationOwnerUserId
+			)
+			assert(record and created, creationError or "EmergencyNodeNotCreated")
+			record.Model:SetAttribute("EmergencyMinimumWaterY", requiredSurfaceY)
+			record.Model:SetAttribute("EmergencyCreatedAt", workspace:GetServerTimeNow())
+			record.IslandModel:SetAttribute("EmergencyMinimumWaterY", requiredSurfaceY)
+			record.IslandModel:SetAttribute("EmergencyCreatedAt", workspace:GetServerTimeNow())
+			enqueueDetail(record, true, 1000000)
+			enqueueExpansion(record, "EmergencyContinuation", 900000, generationOwnerUserId)
+			worldModel:SetAttribute(
+				"EmergencySanctuaryCreatedSerial",
+				(tonumber(worldModel:GetAttribute("EmergencySanctuaryCreatedSerial")) or 0) + 1
+			)
+			worldModel:SetAttribute("LastEmergencySanctuaryKey", record.Key)
+			worldModel:SetAttribute("LastEmergencySanctuaryError", nil)
+			updateWorldAttributes(true)
+		end, debug.traceback)
+		emergencyGenerationInProgress = false
+		if not success then
+			if worldModel and worldModel.Parent then
+				worldModel:SetAttribute("LastEmergencySanctuaryError", tostring(errorMessage))
+			end
+			warn("[SkyDungeon] Falha ao gerar santuario emergencial: " .. tostring(errorMessage))
 		end
-		if bestFrontier and bestFrontier.Expanded then
-			bestFrontier.Expanded = false
-			bestFrontier.Model:SetAttribute("Expanded", false)
-			bestFrontier.Model:SetAttribute("ExpansionState", "RescueReopened")
-		end
-	end
+	end)
+	return true, "GenerationRequested"
+end
 
-	if not bestFrontier then
-		return false, "NoFrontierAvailable"
-	end
-
-	-- A requisicao e idempotente. Se o no ja pertence a um round em andamento,
-	-- apenas eleva a prioridade desse round em vez de criar trabalho duplicado.
-	for _, job in ipairs(expansionQueue) do
-		if job.ScheduledKeys[bestFrontier.Key] then
-			job.Priority = math.max(job.Priority, 1000000)
-			return true, "GenerationInProgress"
-		end
-	end
-
-	local queued = enqueueExpansion(bestFrontier, "EmergencySafeRespawn", 1000000)
-	if queued then
-		bestFrontier.Model:SetAttribute("EmergencyRespawnExpansion", true)
-		return true, "GenerationRequested"
-	end
-
-	return false, "GenerationRequestRejected"
+-- Adaptador mantido para o fluxo antigo de respawn. Agora toda geracao de
+-- emergencia garante uma ilha que e de fato um santuario.
+function ChunkManager.RequestSafeRespawnIsland(waterSurfaceY, clearanceStuds)
+	return ChunkManager.RequestEmergencySanctuary(waterSurfaceY, clearanceStuds)
 end
 
 function ChunkManager.CleanupBelowWater(waterSurfaceY, marginStuds, minimumActiveIslands)

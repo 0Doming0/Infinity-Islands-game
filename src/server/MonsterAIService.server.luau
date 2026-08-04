@@ -306,7 +306,10 @@ local function beginAttack(state, config, targetPlayer, now)
 			hits = distance <= config.AttackRange and hasLineOfSight(state, targetCharacter, targetRoot)
 		end
 		if hits then
-			PlayerDamageService.ApplyToHumanoid(targetHumanoid, config.AttackDamage, "Monster")
+			local damageSource = state.Model:GetAttribute("IsElite") == true
+				and "EliteEnemy"
+				or "Monster"
+			PlayerDamageService.ApplyToHumanoid(targetHumanoid, config.AttackDamage, damageSource)
 		end
 	end)
 	task.delay(config.AttackWindup + config.AttackRecovery, function()

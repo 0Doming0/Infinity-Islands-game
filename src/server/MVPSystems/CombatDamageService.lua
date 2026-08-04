@@ -3,6 +3,7 @@
 
 local Players = game:GetService("Players")
 local Debris = game:GetService("Debris")
+local GameplayAnalytics = require(script.Parent.Parent:WaitForChild("GameplayAnalyticsService"))
 
 local DamageService = {}
 
@@ -204,12 +205,17 @@ function DamageService.ApplyEffectDamage(attacker, target, amount, source)
 	model:SetAttribute("LastRelicDamageSource", tostring(source or "Relic"))
 	model:SetAttribute("LastRelicDamage", damage)
 	humanoid:TakeDamage(damage)
+	local defeated = healthBefore > 0 and humanoid.Health <= 0
+	GameplayAnalytics.RecordEnemyAttacked(attacker, model, source or "Relic")
+	if defeated then
+		GameplayAnalytics.RecordEnemyDefeated(attacker, model, source or "Relic")
+	end
 	createImpact(
 		effectPosition,
 		RELIC_IMPACT_COLORS[source] or Color3.fromRGB(190, 130, 255),
 		false
 	)
-	return true, healthBefore > 0 and humanoid.Health <= 0
+	return true, defeated
 end
 
 local function applyKnockback(attackerRoot, model, humanoid, root, attack)
@@ -349,6 +355,12 @@ function DamageService.ApplySwordHit(attacker, attackerRoot, target, attack)
 	model:SetAttribute("LastSwordHitAt", workspace:GetServerTimeNow())
 
 	humanoid:TakeDamage(damage)
+	local defeated = healthBefore > 0 and humanoid.Health <= 0
+	local swordId = attacker:GetAttribute("EquippedSword") or "Sword"
+	GameplayAnalytics.RecordEnemyAttacked(attacker, model, swordId)
+	if defeated then
+		GameplayAnalytics.RecordEnemyDefeated(attacker, model, swordId)
+	end
 	if humanoid.Health > 0 then
 		-- Stun e knockback sao independentes. Assim bosses ou modelos marcados
 		-- com NoKnockback ainda têm o ataque interrompido durante o combo.
@@ -364,7 +376,7 @@ function DamageService.ApplySwordHit(attacker, attackerRoot, target, attack)
 	)
 	playHitSound(model)
 
-	return true, healthBefore > 0 and humanoid.Health <= 0
+	return true, defeated
 end
 
 function DamageService.ApplyDirectHit(attacker, target, amount, source, alreadyRunScaled)
@@ -398,7 +410,12 @@ function DamageService.ApplyDirectHit(attacker, target, amount, source, alreadyR
 	model:SetAttribute("LastDamagedByUserId", attacker.UserId)
 	model:SetAttribute("LastDamageSource", tostring(source or "Direct"))
 	humanoid:TakeDamage(damage)
-	return true, healthBefore > 0 and humanoid.Health <= 0
+	local defeated = healthBefore > 0 and humanoid.Health <= 0
+	GameplayAnalytics.RecordEnemyAttacked(attacker, model, source or "Direct")
+	if defeated then
+		GameplayAnalytics.RecordEnemyDefeated(attacker, model, source or "Direct")
+	end
+	return true, defeated
 end
 
 function DamageService.ApplyCompanionHit(owner, target, amount, source)
