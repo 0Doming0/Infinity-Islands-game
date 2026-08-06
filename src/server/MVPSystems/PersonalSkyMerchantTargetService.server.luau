@@ -1,38 +1,3 @@
--- SkyDungeon legacy entrypoint guard V1
--- O Place de Dungeon possui um bootstrap canonico. Sistemas antigos aguardam a
--- identificacao do Place e encerram antes de registrar eventos ou criar mundo.
-do
-	local ReplicatedStorage = game:GetService("ReplicatedStorage")
-	local isDungeonPlace = false
-	local shared = ReplicatedStorage:FindFirstChild("Shared")
-	local configs = shared and shared:FindFirstChild("Configs")
-	local placeConfigModule = configs and configs:FindFirstChild("PlaceConfig")
-	if placeConfigModule then
-		local ok, placeConfig = pcall(require, placeConfigModule)
-		isDungeonPlace = ok
-			and type(placeConfig) == "table"
-			and tonumber(placeConfig.DungeonPlaceId) ~= nil
-			and tonumber(placeConfig.DungeonPlaceId) > 0
-			and game.PlaceId == tonumber(placeConfig.DungeonPlaceId)
-	end
-	local placeType = workspace:GetAttribute("GamePlaceType")
-	if not isDungeonPlace and placeType == nil then
-		local deadline = os.clock() + 8
-		repeat
-			task.wait(0.05)
-			placeType = workspace:GetAttribute("GamePlaceType")
-		until placeType ~= nil
-			or workspace:GetAttribute("DungeonRuntimeManaged") == true
-			or os.clock() >= deadline
-	end
-	if isDungeonPlace
-		or placeType == "Dungeon"
-		or workspace:GetAttribute("DungeonRuntimeManaged") == true
-	then
-		return
-	end
-end
-
 -- Escolhe uma ilha alcançável para cada encontro pessoal do Mercador do Céu.
 --
 -- Prioridade V8:
@@ -61,7 +26,11 @@ local SAFE_FALLBACK_SECONDS = math.max(
 	INTENT_GRACE_SECONDS,
 	tonumber(MVPConfig.Village.PersonalSkyMerchantSafeFallbackSeconds) or 11
 )
-local VERSION = "GuaranteedReachableFallbackV8"
+local MINIMUM_SESSION_SECONDS = math.max(
+	0,
+	tonumber(MVPConfig.Village.PersonalSkyMerchantMinimumSessionMinutes) or 3
+) * 60
+local VERSION = "PerPlayerSessionDelayV9"
 
 local states = setmetatable({}, { __mode = "k" })
 
@@ -402,6 +371,34 @@ local function updatePlayer(player)
 	end
 	rememberCurrentIsland(player, state)
 
+	-- O tempo pertence a sessao individual do jogador. Respawn nao reinicia o
+	-- contador e uma recarga do script no Studio reutiliza o timestamp salvo no
+	-- proprio Player. Antes do limite, nenhum alvo pode permanecer selecionado.
+	local timestamp = workspace:GetServerTimeNow()
+	local elapsed = math.max(0, timestamp - state.JoinedAt)
+	local remaining = math.max(0, MINIMUM_SESSION_SECONDS - elapsed)
+	player:SetAttribute("PersonalSkyMerchantSessionElapsedSeconds", math.floor(elapsed))
+	player:SetAttribute("PersonalSkyMerchantMinimumSessionSeconds", MINIMUM_SESSION_SECONDS)
+	player:SetAttribute("PersonalSkyMerchantSessionGatePassed", remaining <= 0)
+
+	if remaining > 0 then
+		local targetValue = getOrCreateTargetValue(player)
+		if state.Target or targetValue.Value ~= nil
+			or player:GetAttribute("PersonalSkyMerchantTargetIslandKey") ~= nil
+		then
+			clearTarget(player, state, "WaitingForMinimumSessionTime")
+		else
+			player:SetAttribute(
+				"PersonalSkyMerchantTargetAssignmentState",
+				"WaitingForMinimumSessionTime"
+			)
+		end
+		player:SetAttribute("PersonalSkyMerchantTargetSource", nil)
+		player:SetAttribute("PersonalSkyMerchantTargetWaitSeconds", math.ceil(remaining))
+		return
+	end
+	player:SetAttribute("PersonalSkyMerchantTargetWaitSeconds", nil)
+
 	if player:GetAttribute("MerchantOfferReady") ~= true then
 		state.OfferReadyAt = nil
 		state.OfferSerial = nil
@@ -536,7 +533,13 @@ local function setupPlayer(player)
 	if states[player] then
 		return
 	end
+	local joinedAt = tonumber(player:GetAttribute("PersonalSkyMerchantSessionStartedAt"))
+	if not joinedAt then
+		joinedAt = workspace:GetServerTimeNow()
+		player:SetAttribute("PersonalSkyMerchantSessionStartedAt", joinedAt)
+	end
 	local state = {
+		JoinedAt = joinedAt,
 		VisitedKeys = {},
 		RejectedKeys = {},
 		Target = nil,
@@ -551,7 +554,10 @@ local function setupPlayer(player)
 	states[player] = state
 	getOrCreateTargetValue(player)
 	player:SetAttribute("PersonalSkyMerchantSpawnPolicy", VERSION)
-	player:SetAttribute("PersonalSkyMerchantTargetAssignmentState", "WaitingForRecommendation")
+	player:SetAttribute("PersonalSkyMerchantMinimumSessionSeconds", MINIMUM_SESSION_SECONDS)
+	player:SetAttribute("PersonalSkyMerchantSessionElapsedSeconds", 0)
+	player:SetAttribute("PersonalSkyMerchantSessionGatePassed", MINIMUM_SESSION_SECONDS <= 0)
+	player:SetAttribute("PersonalSkyMerchantTargetAssignmentState", "WaitingForMinimumSessionTime")
 	player:SetAttribute("PersonalSkyMerchantFutureCandidateCount", 0)
 	player:SetAttribute("PersonalSkyMerchantFallbackCandidateCount", 0)
 	rememberCurrentIsland(player, state)
