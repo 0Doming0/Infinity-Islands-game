@@ -90,6 +90,10 @@ local emergencyGenerationInProgress = false
 local runtimeOptions = {}
 local maximumIslandCount = math.huge
 local phaseReadySignaled = false
+local routePlan
+local fixedRouteState
+local routeNodeByGlobalIndex = {}
+local bossSanctuaryRecord
 
 local function countRecords(records)
 	local count = 0
@@ -474,6 +478,34 @@ local function recycleEdgeModel(model)
 	return true
 end
 
+local ROUTE_SPEC_ATTRIBUTES = {
+	"RouteSeed",
+	"RoundIndex",
+	"IslandIndex",
+	"GlobalIslandIndex",
+	"IncomingDirectionId",
+	"NextDirectionId",
+	"IsMandatoryRoute",
+	"IsRewardIsland",
+	"IsBossSanctuary",
+	"RouteExitLeadsToBoss",
+}
+
+local function applyRouteSpecAttributes(instance, spec)
+	if not instance or not spec then
+		return
+	end
+	for _, attributeName in ipairs(ROUTE_SPEC_ATTRIBUTES) do
+		local value = spec[attributeName]
+		if value ~= nil then
+			instance:SetAttribute(attributeName, value)
+		end
+	end
+	if spec.IsMandatoryRoute == true then
+		instance:SetAttribute("SpecialIslandChanceMultiplier", 0)
+	end
+end
+
 local function createNode(spec, reason, generationOwnerUserId)
 	local existing = nodesByKey[spec.Key]
 	if existing then
@@ -496,6 +528,7 @@ local function createNode(spec, reason, generationOwnerUserId)
 		GenerationOwnerUserId = generationOwnerUserId,
 		PhaseId = runtimeOptions.PhaseId or "Phase01",
 	})
+	applyRouteSpecAttributes(model, spec)
 	model:SetAttribute("GenerationReason", reason or "Unknown")
 	model:SetAttribute("GenerationOwnerUserId", generationOwnerUserId)
 	model:SetAttribute("NodeSerial", nodeSerial)
@@ -524,10 +557,15 @@ local function createNode(spec, reason, generationOwnerUserId)
 		OutboundCount = 0,
 		CreatedAt = os.clock(),
 	}
+	applyRouteSpecAttributes(record.IslandModel, spec)
+	applyRouteSpecAttributes(record.Floor, spec)
 	record.IslandModel:SetAttribute("SanctuarySubmerged", false)
 	record.IslandModel:SetAttribute("SanctuaryValid", spec.IsSanctuary == true)
 	record.IslandModel:SetAttribute("IsEmergencySanctuary", spec.IsEmergency == true)
 	nodesByKey[spec.Key] = record
+	if spec.GlobalIslandIndex then
+		routeNodeByGlobalIndex[spec.GlobalIslandIndex] = record
+	end
 	spatialIndex:Insert(spec.Key, record.Floor.Position, record)
 	activeNodeCount += 1
 	totalNodeCount += 1
@@ -538,7 +576,7 @@ local function createNode(spec, reason, generationOwnerUserId)
 		CollectionService:AddTag(model, "SkyDungeonSanctuary")
 	end
 	updateWorldAttributes()
-	if totalNodeCount >= maximumIslandCount and not phaseReadySignaled then
+	if not routePlan and totalNodeCount >= maximumIslandCount and not phaseReadySignaled then
 		phaseReadySignaled = true
 		worldModel:SetAttribute("PhaseIslandLimitReached", true)
 		local callback = runtimeOptions.OnPhaseReady
@@ -645,6 +683,119 @@ local function createEdge(source, target, directionId)
 	activeEdgeCount += 1
 	totalEdgeCount += 1
 	return record, true
+end
+
+local function routeRecordContext(record)
+	if not record then
+		return nil
+	end
+	local markers = record.IslandModel and record.IslandModel:FindFirstChild("GameplayMarkers")
+	return {
+		Key = record.Key,
+		Model = record.Model,
+		IslandModel = record.IslandModel,
+		Floor = record.Floor,
+		LogicalLevel = record.Spec.Level,
+		RoundIndex = record.Spec.RoundIndex,
+		IslandIndex = record.Spec.IslandIndex,
+		GlobalIslandIndex = record.Spec.GlobalIslandIndex,
+		IsRewardIsland = record.Spec.IsRewardIsland == true,
+		IsBossSanctuary = record.Spec.IsBossSanctuary == true,
+		IncomingDirectionId = record.Spec.IncomingDirectionId,
+		NextDirectionId = record.Spec.NextDirectionId,
+		Spec = record.Spec,
+		GameplayMarkers = markers,
+		SafeSpawn = markers and markers:FindFirstChild("SafeSpawn"),
+		ObjectiveAnchor = markers and markers:FindFirstChild("ObjectiveAnchor"),
+		EnemySpawns = markers and markers:FindFirstChild("EnemySpawns"),
+		ChestSpawns = markers and markers:FindFirstChild("ChestSpawns"),
+		Entry = markers and markers:FindFirstChild("Entry"),
+		Exit = markers and markers:FindFirstChild("Exit"),
+	}
+end
+
+local function markInitialFixedRouteReady()
+	if not fixedRouteState or fixedRouteState.InitialReady then
+		return
+	end
+	if fixedRouteState.MaterializedThrough < fixedRouteState.InitialTargetIndex then
+		return
+	end
+	fixedRouteState.InitialReady = true
+	worldModel:SetAttribute("FixedRouteInitialWindowReady", true)
+	worldModel:SetAttribute("InitialGenerationSuccessful", true)
+	worldModel:SetAttribute("InitialGenerationComplete", true)
+end
+
+local function signalFixedRouteReady(record)
+	if phaseReadySignaled then
+		return
+	end
+	phaseReadySignaled = true
+	worldModel:SetAttribute("FixedRouteReady", true)
+	worldModel:SetAttribute("FixedRouteMaterializedThrough", routePlan.TotalIslandCount)
+	workspace:SetAttribute("DungeonRouteReady", true)
+	local callback = runtimeOptions.OnPhaseReady
+	if type(callback) == "function" then
+		task.defer(callback, routeRecordContext(record))
+	end
+end
+
+local function processFixedRoute()
+	if not routePlan or not fixedRouteState or fixedRouteState.FullRouteReady then
+		return 0
+	end
+	if fixedRouteState.RetryAt and os.clock() < fixedRouteState.RetryAt then
+		return 0
+	end
+	if fixedRouteState.PendingRecord then
+		local pending = fixedRouteState.PendingRecord
+		local previous = fixedRouteState.PreviousRecord
+		local success, edgeOrError = pcall(
+			createEdge,
+			previous,
+			pending,
+			pending.Spec.IncomingDirectionId
+		)
+		if not success then
+			warn("[SkyDungeon] Falha na aresta da rota fixa: " .. tostring(edgeOrError))
+			fixedRouteState.RetryAt = os.clock() + 1
+			return 0
+		end
+		fixedRouteState.RetryAt = nil
+		previous.Expanded = true
+		previous.Model:SetAttribute("Expanded", true)
+		previous.Model:SetAttribute("ExpansionState", "FixedRouteLinked")
+		fixedRouteState.PreviousRecord = pending
+		fixedRouteState.MaterializedThrough = fixedRouteState.NextIndex
+		fixedRouteState.NextIndex += 1
+		fixedRouteState.PendingRecord = nil
+		fixedRouteState.PendingCreated = nil
+		enqueueDetail(pending, false, math.max(1000, 12000 - pending.Spec.GlobalIslandIndex * 100))
+		worldModel:SetAttribute("FixedRouteMaterializedThrough", fixedRouteState.MaterializedThrough)
+		markInitialFixedRouteReady()
+		if fixedRouteState.MaterializedThrough >= routePlan.TotalIslandCount then
+			fixedRouteState.FullRouteReady = true
+			signalFixedRouteReady(pending)
+		end
+		return 1
+	end
+	if fixedRouteState.NextIndex > fixedRouteState.TargetIndex
+		or fixedRouteState.NextIndex > routePlan.TotalIslandCount
+	then
+		return 0
+	end
+	local spec = routePlan.Nodes[fixedRouteState.NextIndex]
+	local record, created, errorMessage = createNode(spec, "FixedRoute", nil)
+	if not record then
+		warn("[SkyDungeon] Falha ao criar ilha da rota fixa: " .. tostring(errorMessage))
+		fixedRouteState.RetryAt = os.clock() + 1
+		return 0
+	end
+	fixedRouteState.RetryAt = nil
+	fixedRouteState.PendingRecord = record
+	fixedRouteState.PendingCreated = created
+	return 1
 end
 
 local function activateContent(record, yieldCallback)
@@ -1188,6 +1339,22 @@ local function updateSimulationActivity(playerRoots)
 end
 
 local function visitNode(player, record)
+	if routePlan and type(runtimeOptions.OnRouteIslandEntered) == "function" then
+		local callbackSuccess, allowed, rejectReason = pcall(
+			runtimeOptions.OnRouteIslandEntered,
+			player,
+			routeRecordContext(record)
+		)
+		if not callbackSuccess then
+			warn("[SkyDungeon] OnRouteIslandEntered falhou: " .. tostring(allowed))
+		elseif allowed == false then
+			record.Model:SetAttribute(
+				"LastRejectedEntryReason",
+				tostring(rejectReason or "ObjectiveLocked")
+			)
+			return
+		end
+	end
 	local rescueDestinationKey = player:GetAttribute("SanctuaryRescueDestinationKey")
 	local rescueSuppressed = typeof(rescueDestinationKey) == "string"
 		and rescueDestinationKey == record.Key
@@ -1200,7 +1367,7 @@ local function visitNode(player, record)
 	end
 		-- A intencao de movimento e o gatilho normal. Este fallback cobre teleporte, lag ou
 	-- spawn direto sobre uma ilha de fronteira sem deixar o mundo terminar nela.
-	if not rescueSuppressed and not record.Expanded then
+	if not rescueSuppressed and not routePlan and not record.Expanded then
 		enqueueExpansion(
 			record,
 			"TouchFallback:" .. tostring(player.UserId),
@@ -1223,6 +1390,18 @@ local function visitNode(player, record)
 		PartyService.RecordMissionProgress(player, "IslandVisited", 1, record.Key)
 	end
 	player:SetAttribute("CurrentIslandKey", record.Key)
+	if record.Spec.GlobalIslandIndex then
+		player:SetAttribute("CurrentRoundIndex", record.Spec.RoundIndex)
+		player:SetAttribute("CurrentRouteIslandIndex", record.Spec.IslandIndex)
+		player:SetAttribute("CurrentGlobalIslandIndex", record.Spec.GlobalIslandIndex)
+		player:SetAttribute("CurrentIslandIsReward", record.Spec.IsRewardIsland == true)
+		if fixedRouteState then
+			fixedRouteState.TargetIndex = math.max(
+				fixedRouteState.TargetIndex,
+				math.min(routePlan.TotalIslandCount, record.Spec.GlobalIslandIndex + routePlan.FutureWindowSize)
+			)
+		end
+	end
 	player:SetAttribute("CurrentIslandIndex", record.Spec.Level)
 	player:SetAttribute("CurrentLogicalLevel", record.Spec.Level)
 	player:SetAttribute("CurrentLaneX", record.Spec.LaneX)
@@ -1548,6 +1727,32 @@ local function tryRebaseWorld()
 	return true
 end
 
+local function isProtectedByFixedRouteWindow(record)
+	if not routePlan or not record.Spec.GlobalIslandIndex then
+		return false
+	end
+	if record.Spec.IsBossSanctuary then
+		return true
+	end
+	local minimumCurrent = math.huge
+	local maximumCurrent = -math.huge
+	for _, player in ipairs(Players:GetPlayers()) do
+		local current = tonumber(player:GetAttribute("CurrentGlobalIslandIndex"))
+		if current then
+			minimumCurrent = math.min(minimumCurrent, current)
+			maximumCurrent = math.max(maximumCurrent, current)
+		end
+	end
+	if minimumCurrent == math.huge then
+		minimumCurrent = 1
+		maximumCurrent = 1
+	end
+	local minimumProtected = math.max(1, minimumCurrent - routePlan.PreviousWindowSize)
+	local maximumProtected = math.min(routePlan.TotalIslandCount, maximumCurrent + routePlan.FutureWindowSize)
+	return record.Spec.GlobalIslandIndex >= minimumProtected
+		and record.Spec.GlobalIslandIndex <= maximumProtected
+end
+
 local function hasAlivePlayerNear(record)
 	for _, entry in ipairs(getAlivePlayerRoots()) do
 		if entry.Root.Position.Y >= record.BottomWorldY - Config.GRID_SIZE
@@ -1746,8 +1951,15 @@ function ChunkManager.Start(options)
 		return true
 	end
 	runtimeOptions = type(options) == "table" and options or {}
+	routePlan = type(runtimeOptions.RoutePlan) == "table" and runtimeOptions.RoutePlan or nil
 	maximumIslandCount = math.max(1, math.floor(tonumber(runtimeOptions.MaximumIslandCount) or math.huge))
+	if routePlan then
+		maximumIslandCount = math.max(maximumIslandCount, routePlan.TotalIslandCount + 1)
+	end
 	phaseReadySignaled = false
+	fixedRouteState = nil
+	routeNodeByGlobalIndex = {}
+	bossSanctuaryRecord = nil
 	validateConfig()
 	baseSeed = tonumber(runtimeOptions.Seed) or Config.SEED or (os.time() % 2147483647)
 	nodeSerial = 0
@@ -1798,7 +2010,8 @@ function ChunkManager.Start(options)
 	end
 	latestCollectiveSnapshot = CollectiveProgressService.GetSnapshot()
 	prepareWorld()
-	local startSpec = IslandGraphPlanner.GetNodeSpec(baseSeed, 0, 0, 0)
+	local startSpec = routePlan and routePlan.Nodes[1]
+		or IslandGraphPlanner.GetNodeSpec(baseSeed, 0, 0, 0)
 	local startNode, _, startError = createNode(startSpec, "WorldStart")
 	if not startNode then
 		if worldModel then
@@ -1814,9 +2027,34 @@ function ChunkManager.Start(options)
 	running = true
 	startNode.Model:SetAttribute("Discovered", false)
 	enqueueDetail(startNode, false, 2000)
-	-- O mapa inicial ja nasce com um round inteiro. O primeiro jogador nunca ve
-	-- apenas a ilha de spawn isolada no horizonte.
-	enqueueExpansion(startNode, "WorldBootstrap", 100000)
+	if routePlan then
+		fixedRouteState = {
+			NextIndex = 2,
+			MaterializedThrough = 1,
+			TargetIndex = routePlan.InitialWindowSize,
+			InitialTargetIndex = routePlan.InitialWindowSize,
+			PreviousRecord = startNode,
+			PendingRecord = nil,
+			PendingCreated = nil,
+			InitialReady = routePlan.InitialWindowSize <= 1,
+			FullRouteReady = routePlan.TotalIslandCount <= 1,
+		}
+		worldModel:SetAttribute("FixedRouteEnabled", true)
+		worldModel:SetAttribute("FixedRouteId", routePlan.RouteId)
+		worldModel:SetAttribute("FixedRouteIslandCount", routePlan.TotalIslandCount)
+		worldModel:SetAttribute("FixedRouteMaterializedThrough", 1)
+		workspace:SetAttribute("DungeonRouteId", routePlan.RouteId)
+		workspace:SetAttribute("DungeonRouteIslandCount", routePlan.TotalIslandCount)
+		if fixedRouteState.InitialReady then
+			markInitialFixedRouteReady()
+		end
+		if fixedRouteState.FullRouteReady then
+			signalFixedRouteReady(startNode)
+		end
+	else
+		-- O mapa inicial legado nasce com um round inteiro.
+		enqueueExpansion(startNode, "WorldBootstrap", 100000)
+	end
 	startDetailWorker()
 	updateWorldAttributes(true)
 
@@ -1848,17 +2086,23 @@ function ChunkManager.Start(options)
 		while running do
 			RunService.Heartbeat:Wait()
 			if not detailOperationActive then
-				local hasCleanup = getCleanupQueueLength() > 0
-				local hasExpansion = #expansionQueue > 0
-				local shouldClean = hasCleanup and (not hasExpansion or cleanupGetsNextSharedFrame)
-				local cleaned = shouldClean and processCleanupQueue() or 0
-				if hasCleanup and hasExpansion then
-					cleanupGetsNextSharedFrame = not shouldClean
+				if routePlan then
+					if processFixedRoute() > 0 then
+						lastGeometryOperationAt = os.clock()
+					end
 				else
-					cleanupGetsNextSharedFrame = true
-				end
-				if cleaned == 0 and processExpansionQueue() > 0 then
-					lastGeometryOperationAt = os.clock()
+					local hasCleanup = getCleanupQueueLength() > 0
+					local hasExpansion = #expansionQueue > 0
+					local shouldClean = hasCleanup and (not hasExpansion or cleanupGetsNextSharedFrame)
+					local cleaned = shouldClean and processCleanupQueue() or 0
+					if hasCleanup and hasExpansion then
+						cleanupGetsNextSharedFrame = not shouldClean
+					else
+						cleanupGetsNextSharedFrame = true
+					end
+					if cleaned == 0 and processExpansionQueue() > 0 then
+						lastGeometryOperationAt = os.clock()
+					end
 				end
 			end
 		end
@@ -2198,6 +2442,7 @@ function ChunkManager.CleanupBelowWater(waterSurfaceY, marginStuds, minimumActiv
 	local removable = {}
 	for _, record in pairs(nodesByKey) do
 		if not record.Spec.IsStart
+			and not isProtectedByFixedRouteWindow(record)
 			and record.TopWorldY + margin < waterSurfaceY
 			and not hasAlivePlayerNear(record)
 			and not record.Expanding
@@ -2258,6 +2503,12 @@ function ChunkManager.GetWorldModel()
 end
 
 function ChunkManager.GetEndContext()
+	if routePlan then
+		local planned = routeNodeByGlobalIndex[routePlan.TotalIslandCount]
+		if planned and planned.Model and planned.Model.Parent then
+			return routeRecordContext(planned)
+		end
+	end
 	local selected
 	for _, record in pairs(nodesByKey) do
 		if record.Model and record.Model.Parent and record.Floor and record.Floor.Parent then
@@ -2279,6 +2530,72 @@ function ChunkManager.GetEndContext()
 		Floor = selected.Floor,
 		LogicalLevel = selected.Spec.Level,
 	}
+end
+
+function ChunkManager.GetRoutePlan()
+	return routePlan
+end
+
+function ChunkManager.GetRouteIslandContext(globalIslandIndex)
+	local index = math.floor(tonumber(globalIslandIndex) or 0)
+	return routeRecordContext(routeNodeByGlobalIndex[index])
+end
+
+function ChunkManager.RequestRouteThrough(globalIslandIndex)
+	if not routePlan or not fixedRouteState then
+		return false, "FixedRouteUnavailable"
+	end
+	local target = math.clamp(
+		math.floor(tonumber(globalIslandIndex) or fixedRouteState.TargetIndex),
+		1,
+		routePlan.TotalIslandCount
+	)
+	fixedRouteState.TargetIndex = math.max(fixedRouteState.TargetIndex, target)
+	return true, fixedRouteState.TargetIndex
+end
+
+function ChunkManager.CreateBossSanctuary(options)
+	options = type(options) == "table" and options or {}
+	if not routePlan or not fixedRouteState or not fixedRouteState.FullRouteReady then
+		return false, "FixedRouteNotReady"
+	end
+	if bossSanctuaryRecord and bossSanctuaryRecord.Model and bossSanctuaryRecord.Model.Parent then
+		return true, routeRecordContext(bossSanctuaryRecord)
+	end
+	local finalRecord = routeNodeByGlobalIndex[routePlan.TotalIslandCount]
+	if not finalRecord then
+		return false, "FinalRouteIslandMissing"
+	end
+	local record, created, errorMessage = createNode(
+		routePlan.BossSanctuary,
+		options.Reason or "FinalRewardCommitted",
+		options.GenerationOwnerUserId
+	)
+	if not record then
+		return false, errorMessage or "BossSanctuaryCreationFailed"
+	end
+	local success, edgeOrError = pcall(
+		createEdge,
+		finalRecord,
+		record,
+		routePlan.BossSanctuary.IncomingDirectionId
+	)
+	if not success then
+		return false, tostring(edgeOrError)
+	end
+	finalRecord.Expanded = true
+	finalRecord.Model:SetAttribute("Expanded", true)
+	finalRecord.Model:SetAttribute("ExpansionState", "BossSanctuaryLinked")
+	bossSanctuaryRecord = record
+	enqueueDetail(record, false, 100000)
+	worldModel:SetAttribute("BossSanctuaryCreated", true)
+	workspace:SetAttribute("DungeonBossSanctuaryReady", true)
+	local context = routeRecordContext(record)
+	local callback = runtimeOptions.OnBossSanctuaryReady
+	if type(callback) == "function" then
+		task.defer(callback, context)
+	end
+	return true, context
 end
 
 function ChunkManager.GetTotalIslandCount()

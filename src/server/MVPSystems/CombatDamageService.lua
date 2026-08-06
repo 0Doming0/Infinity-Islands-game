@@ -4,8 +4,21 @@
 local Players = game:GetService("Players")
 local Debris = game:GetService("Debris")
 local GameplayAnalytics = require(script.Parent.Parent:WaitForChild("GameplayAnalyticsService"))
+local ObjectiveSignalBridge = require(script.Parent.Parent.DungeonRuntime.ObjectiveSignalBridge)
 
 local DamageService = {}
+
+local function reportObjectiveHit(attacker, model, source)
+	ObjectiveSignalBridge.Report("EnemyHit", {
+		Target = model,
+		SourceUserId = attacker and attacker.UserId or nil,
+		GlobalIslandIndex = model and model:GetAttribute("GlobalIslandIndex"),
+		MonsterRole = model and model:GetAttribute("MonsterRole"),
+		IsElite = model and model:GetAttribute("IsElite") == true,
+		DamageSource = source,
+		Amount = 1,
+	})
+end
 
 local DEFAULT_STUN_REACTION_WINDOW = 1.1
 local MIN_STUN_REACTION_WINDOW = 0.35
@@ -205,6 +218,7 @@ function DamageService.ApplyEffectDamage(attacker, target, amount, source)
 	model:SetAttribute("LastRelicDamageSource", tostring(source or "Relic"))
 	model:SetAttribute("LastRelicDamage", damage)
 	humanoid:TakeDamage(damage)
+	reportObjectiveHit(attacker, model, source or "Relic")
 	local defeated = healthBefore > 0 and humanoid.Health <= 0
 	GameplayAnalytics.RecordEnemyAttacked(attacker, model, source or "Relic")
 	if defeated then
@@ -355,6 +369,7 @@ function DamageService.ApplySwordHit(attacker, attackerRoot, target, attack)
 	model:SetAttribute("LastSwordHitAt", workspace:GetServerTimeNow())
 
 	humanoid:TakeDamage(damage)
+	reportObjectiveHit(attacker, model, attacker:GetAttribute("EquippedSword") or "Sword")
 	local defeated = healthBefore > 0 and humanoid.Health <= 0
 	local swordId = attacker:GetAttribute("EquippedSword") or "Sword"
 	GameplayAnalytics.RecordEnemyAttacked(attacker, model, swordId)
@@ -410,6 +425,7 @@ function DamageService.ApplyDirectHit(attacker, target, amount, source, alreadyR
 	model:SetAttribute("LastDamagedByUserId", attacker.UserId)
 	model:SetAttribute("LastDamageSource", tostring(source or "Direct"))
 	humanoid:TakeDamage(damage)
+	reportObjectiveHit(attacker, model, source or "Direct")
 	local defeated = healthBefore > 0 and humanoid.Health <= 0
 	GameplayAnalytics.RecordEnemyAttacked(attacker, model, source or "Direct")
 	if defeated then

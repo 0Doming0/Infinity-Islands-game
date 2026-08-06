@@ -12,10 +12,11 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 local CompanionCatalog = require(ReplicatedStorage:WaitForChild("CompanionCatalog"))
+local ItemCatalog = require(ReplicatedStorage:WaitForChild("ItemCatalog"))
 
 local DATASTORE_NAME = "SkyDungeonPlayerData_V10"
 local LEGACY_MVP_DATASTORE_NAME = "BlockParkour_PlayerData_v1"
-local SCHEMA_VERSION = 11
+local SCHEMA_VERSION = 13
 local SCORE_SCALE_VERSION = 3
 local STARTER_SWORD_ID = "ClassicSword"
 local LOAD_RETRIES = 4
@@ -74,6 +75,13 @@ local function defaultData()
 			TotalSpins = 0,
 			LastSpinAt = 0,
 		},
+		DungeonRewards = {
+			ProcessedGrantIds = {},
+		},
+		DungeonResults = {
+			ProcessedResultIds = {},
+			LastResult = nil,
+		},
 		Monetization = {
 			TreasureBoostUntil = 0,
 			EliteBoostUntil = 0,
@@ -110,6 +118,112 @@ local function sanitizeProcessedPurchaseIds(raw)
 		result[entry.Id] = entry.ProcessedAt
 	end
 	return result
+end
+
+
+local function sanitizeDungeonRewardGrantIds(raw)
+	local entries = {}
+	if type(raw) == "table" then
+		for grantId, processedAt in pairs(raw) do
+			if type(grantId) == "string" and grantId ~= "" then
+				table.insert(entries, {
+					Id = grantId,
+					ProcessedAt = math.max(1, math.floor(tonumber(processedAt) or 1)),
+				})
+			end
+		end
+	end
+	table.sort(entries, function(left, right)
+		if left.ProcessedAt == right.ProcessedAt then
+			return left.Id > right.Id
+		end
+		return left.ProcessedAt > right.ProcessedAt
+	end)
+	local result = {}
+	for index = 1, math.min(#entries, 500) do
+		local entry = entries[index]
+		result[entry.Id] = entry.ProcessedAt
+	end
+	return result
+end
+
+
+local function cloneDungeonResultRecord(source)
+\tif type(source) ~= "table" then
+\t\treturn nil
+\tend
+\treturn {
+\t\tResultId = tostring(source.ResultId or ""),
+\t\tSessionId = tostring(source.SessionId or ""),
+\t\tPhaseId = tostring(source.PhaseId or ""),
+\t\tResult = tostring(source.Result or "Defeat"),
+\t\tEligible = source.Eligible == true,
+\t\tRewardCoins = math.max(0, math.floor(tonumber(source.RewardCoins) or 0)),
+\t\tElapsedSeconds = math.max(0, tonumber(source.ElapsedSeconds) or 0),
+\t\tProcessedAt = math.max(1, math.floor(tonumber(source.ProcessedAt) or 1)),
+\t\tCompletedAt = math.max(1, math.floor(tonumber(source.CompletedAt) or source.ProcessedAt or 1)),
+\t\tBalance = math.max(0, math.floor(tonumber(source.Balance) or 0)),
+\t\tCompletions = math.max(0, math.floor(tonumber(source.Completions) or 0)),
+\t\tBestTime = tonumber(source.BestTime) and math.max(0.01, tonumber(source.BestTime)) or nil,
+\t\tCommitToken = tostring(source.CommitToken or ""),
+\t}
+end
+
+local function sanitizeDungeonResults(raw)
+\tlocal records = {}
+\tlocal processed = type(raw) == "table" and raw.ProcessedResultIds or nil
+\tif type(processed) == "table" then
+\t\tfor resultId, source in pairs(processed) do
+\t\t\tif type(resultId) == "string" and resultId ~= "" then
+\t\t\t\tlocal record
+\t\t\t\tif type(source) == "table" then
+\t\t\t\t\trecord = cloneDungeonResultRecord(source)
+\t\t\t\telse
+\t\t\t\t\trecord = cloneDungeonResultRecord({
+\t\t\t\t\t\tResultId = resultId,
+\t\t\t\t\t\tProcessedAt = source,
+\t\t\t\t\t})
+\t\t\t\tend
+\t\t\t\tif record then
+\t\t\t\t\trecord.ResultId = resultId
+\t\t\t\t\ttable.insert(records, record)
+\t\t\t\tend
+\t\t\tend
+\t\tend
+\tend
+\ttable.sort(records, function(left, right)
+\t\tif left.ProcessedAt == right.ProcessedAt then
+\t\t\treturn left.ResultId > right.ResultId
+\t\tend
+\t\treturn left.ProcessedAt > right.ProcessedAt
+\tend)
+\tlocal result = {
+\t\tProcessedResultIds = {},
+\t\tLastResult = nil,
+\t}
+\tfor index = 1, math.min(#records, 100) do
+\t\tlocal record = records[index]
+\t\tresult.ProcessedResultIds[record.ResultId] = record
+\tend
+\tlocal requestedLast = type(raw) == "table" and cloneDungeonResultRecord(raw.LastResult) or nil
+\tif requestedLast and result.ProcessedResultIds[requestedLast.ResultId] then
+\t\tresult.LastResult = result.ProcessedResultIds[requestedLast.ResultId]
+\telseif records[1] and result.ProcessedResultIds[records[1].ResultId] then
+\t\tresult.LastResult = result.ProcessedResultIds[records[1].ResultId]
+\tend
+\treturn result
+end
+
+local function cloneDungeonResults(source)
+\tlocal result = {
+\t\tProcessedResultIds = {},
+\t\tLastResult = nil,
+\t}
+\tfor resultId, record in pairs(source.ProcessedResultIds or {}) do
+\t\tresult.ProcessedResultIds[resultId] = cloneDungeonResultRecord(record)
+\tend
+\tresult.LastResult = cloneDungeonResultRecord(source.LastResult)
+\treturn result
 end
 
 local function sanitizeOwnedSwords(raw)
@@ -424,6 +538,11 @@ local function sanitize(raw)
 		LastSpinAt = math.max(0, math.floor(tonumber(rawRoulette.LastSpinAt) or 0)),
 	}
 	local rawMonetization = type(raw.Monetization) == "table" and raw.Monetization or {}
+	local rawDungeonRewards = type(raw.DungeonRewards) == "table" and raw.DungeonRewards or {}
+	data.DungeonRewards = {
+		ProcessedGrantIds = sanitizeDungeonRewardGrantIds(rawDungeonRewards.ProcessedGrantIds),
+	}
+	data.DungeonResults = sanitizeDungeonResults(raw.DungeonResults)
 	data.Monetization = {
 		TreasureBoostUntil = math.max(0, math.floor(tonumber(rawMonetization.TreasureBoostUntil) or 0)),
 		EliteBoostUntil = math.max(0, math.floor(tonumber(rawMonetization.EliteBoostUntil) or 0)),
@@ -519,12 +638,20 @@ local function cloneData(data)
 		Tickets = cloneDictionary(data.Tickets),
 		Progression = cloneProgression(data.Progression),
 		Roulette = cloneDictionary(data.Roulette),
+		DungeonRewards = {
+			ProcessedGrantIds = cloneDictionary(data.DungeonRewards.ProcessedGrantIds),
+		},
+		DungeonResults = cloneDungeonResults(data.DungeonResults),
 		Monetization = cloneMonetization(data.Monetization),
 	}
 end
 
+local function keyForUserId(userId)
+	return string.format("Player_%d", math.max(1, math.floor(tonumber(userId) or 0)))
+end
+
 local function keyFor(player)
-	return string.format("Player_%d", player.UserId)
+	return keyForUserId(player.UserId)
 end
 
 local function retry(label, count, callback)
@@ -1512,6 +1639,278 @@ function PlayerDataService.ExtendMonetizationBoost(player, boostName, durationSe
 	return true, nextExpiration
 end
 
+
+function PlayerDataService.HasDungeonGrant(player, grantId)
+	local data = PlayerDataService.Get(player)
+	local cleanId = tostring(grantId or "")
+	return data ~= nil
+		and cleanId ~= ""
+		and data.DungeonRewards.ProcessedGrantIds[cleanId] ~= nil
+end
+
+function PlayerDataService.ApplyDungeonGrant(player, grantId, rewards)
+	local session = sessions[player]
+	local cleanId = tostring(grantId or "")
+	if not session or cleanId == "" or type(rewards) ~= "table" or #rewards == 0 then
+		return false, false, "InvalidDungeonGrant"
+	end
+	if session.Data.DungeonRewards.ProcessedGrantIds[cleanId] ~= nil then
+		return true, true, {}
+	end
+	for _, reward in ipairs(rewards) do
+		local kind = type(reward) == "table" and tostring(reward.Kind or "") or ""
+		if kind ~= "Coins" and kind ~= "Sword" and kind ~= "Companion" and kind ~= "Item" then
+			return false, false, "UnsupportedDungeonReward:" .. kind
+		end
+		if kind ~= "Coins" and (type(reward.Id) ~= "string" or reward.Id == "") then
+			return false, false, "DungeonRewardIdMissing"
+		end
+		if kind == "Companion" and not CompanionCatalog.IsSupported(reward.Id) then
+			return false, false, "UnsupportedCompanion:" .. tostring(reward.Id)
+		end
+		if kind == "Item" and not ItemCatalog.Get(reward.Id) then
+			return false, false, "UnsupportedItem:" .. tostring(reward.Id)
+		end
+	end
+
+	local results = {}
+	local compensationCoins = 0
+	for _, reward in ipairs(rewards) do
+		local kind = tostring(reward.Kind)
+		local amount = kind == "Coins"
+			and math.max(0, math.floor(tonumber(reward.Amount) or 0))
+			or math.max(1, math.floor(tonumber(reward.Amount) or 1))
+		local duplicateCoins = math.max(0, math.floor(tonumber(reward.DuplicateCoins) or 0))
+		if kind == "Coins" then
+			session.Data.Coins += amount
+			table.insert(results, { Kind = kind, Amount = amount })
+		elseif kind == "Sword" then
+			local duplicate = session.Data.OwnedSwords[reward.Id] == true
+			if duplicate then
+				compensationCoins += duplicateCoins
+			else
+				session.Data.OwnedSwords[reward.Id] = true
+			end
+			table.insert(results, {
+				Kind = kind,
+				Id = reward.Id,
+				Amount = 1,
+				Duplicate = duplicate,
+				CompensationCoins = duplicate and duplicateCoins or 0,
+			})
+		elseif kind == "Companion" then
+			local duplicate = false
+			for _, record in pairs(session.Data.OwnedCompanions) do
+				if record.SpeciesId == reward.Id then
+					duplicate = true
+					break
+				end
+			end
+			local storedCount = 0
+			for _ in pairs(session.Data.OwnedCompanions) do
+				storedCount += 1
+			end
+			if duplicate or storedCount >= CompanionCatalog.MaximumStored then
+				compensationCoins += duplicateCoins
+			else
+				local definition = CompanionCatalog.Get(reward.Id)
+				local instanceId = "companion_" .. HttpService:GenerateGUID(false)
+				session.Data.OwnedCompanions[instanceId] = {
+					InstanceId = instanceId,
+					SpeciesId = reward.Id,
+					DisplayName = definition.DisplayName,
+					Level = 1,
+					XP = 0,
+					Kills = 0,
+					Upgrades = CompanionCatalog.EmptyUpgrades(),
+				}
+				if #session.Data.EquippedCompanions == 0 and session.Data.CompanionEquipSlots >= 1 then
+					table.insert(session.Data.EquippedCompanions, instanceId)
+				end
+			end
+			table.insert(results, {
+				Kind = kind,
+				Id = reward.Id,
+				Amount = 1,
+				Duplicate = duplicate or storedCount >= CompanionCatalog.MaximumStored,
+				CompensationCoins = (duplicate or storedCount >= CompanionCatalog.MaximumStored) and duplicateCoins or 0,
+			})
+		elseif kind == "Item" then
+			local definition = ItemCatalog.Get(reward.Id)
+			local current = session.Data.Inventory[reward.Id] or 0
+			local maximum = math.max(1, math.floor(tonumber(definition.MaximumStack) or 9999))
+			local granted = math.max(0, math.min(amount, maximum - current))
+			if granted > 0 then
+				session.Data.Inventory[reward.Id] = current + granted
+			end
+			local rejected = amount - granted
+			if rejected > 0 then
+				compensationCoins += duplicateCoins
+			end
+			table.insert(results, {
+				Kind = kind,
+				Id = reward.Id,
+				Amount = granted,
+				Duplicate = rejected > 0,
+				CompensationCoins = rejected > 0 and duplicateCoins or 0,
+			})
+		end
+	end
+	if compensationCoins > 0 then
+		session.Data.Coins += compensationCoins
+		table.insert(results, { Kind = "Coins", Amount = compensationCoins, Compensation = true })
+	end
+	session.Data.DungeonRewards.ProcessedGrantIds[cleanId] = os.time()
+	session.Data.DungeonRewards.ProcessedGrantIds = sanitizeDungeonRewardGrantIds(
+		session.Data.DungeonRewards.ProcessedGrantIds
+	)
+	markDirty(session)
+	return true, false, results
+end
+
+
+local function normalizeDungeonResult(resultId, payload)
+\tif type(payload) ~= "table" then
+\t\treturn nil, "InvalidDungeonResultPayload"
+\tend
+\tlocal cleanId = tostring(resultId or "")
+\tlocal sessionId = tostring(payload.SessionId or "")
+\tlocal phaseId = tostring(payload.PhaseId or "")
+\tlocal resultName = tostring(payload.Result or "Defeat")
+\tif cleanId == "" or sessionId == "" or phaseId == "" then
+\t\treturn nil, "InvalidDungeonResultIdentity"
+\tend
+\treturn {
+\t\tResultId = cleanId,
+\t\tSessionId = sessionId,
+\t\tPhaseId = phaseId,
+\t\tResult = resultName,
+\t\tEligible = resultName == "Victory" and payload.Eligible == true,
+\t\tRewardCoins = math.max(0, math.floor(tonumber(payload.RewardCoins) or 0)),
+\t\tElapsedSeconds = math.max(0, tonumber(payload.ElapsedSeconds) or 0),
+\t\tCompletedAt = math.max(1, math.floor(tonumber(payload.CompletedAt) or os.time())),
+\t}
+end
+
+local function applyDungeonResult(data, definition, commitToken)
+\tlocal existing = data.DungeonResults.ProcessedResultIds[definition.ResultId]
+\tif existing then
+\t\treturn existing
+\tend
+\tlocal progress = data.Progression.Phases[definition.PhaseId]
+\tif not progress then
+\t\tprogress = { Completions = 0, BossDefeated = false, BestTime = nil }
+\t\tdata.Progression.Phases[definition.PhaseId] = progress
+\tend
+\tlocal rewardCoins = definition.Eligible and definition.RewardCoins or 0
+\tif definition.Result == "Victory" and definition.Eligible then
+\t\tdata.Coins += rewardCoins
+\t\tprogress.Completions += 1
+\t\tprogress.BossDefeated = true
+\t\tif definition.ElapsedSeconds > 0
+\t\t\tand (not progress.BestTime or definition.ElapsedSeconds < progress.BestTime)
+\t\tthen
+\t\t\tprogress.BestTime = definition.ElapsedSeconds
+\t\tend
+\tend
+\tlocal record = {
+\t\tResultId = definition.ResultId,
+\t\tSessionId = definition.SessionId,
+\t\tPhaseId = definition.PhaseId,
+\t\tResult = definition.Result,
+\t\tEligible = definition.Eligible,
+\t\tRewardCoins = rewardCoins,
+\t\tElapsedSeconds = definition.ElapsedSeconds,
+\t\tProcessedAt = os.time(),
+\t\tCompletedAt = definition.CompletedAt,
+\t\tBalance = data.Coins,
+\t\tCompletions = progress.Completions,
+\t\tBestTime = progress.BestTime,
+\t\tCommitToken = commitToken,
+\t}
+\tdata.DungeonResults.ProcessedResultIds[definition.ResultId] = record
+\tdata.DungeonResults.LastResult = record
+\tdata.DungeonResults = sanitizeDungeonResults(data.DungeonResults)
+\treturn data.DungeonResults.ProcessedResultIds[definition.ResultId]
+end
+
+local function commitDungeonResultByUserId(userId, resultId, payload)
+\tlocal cleanUserId = math.floor(tonumber(userId) or 0)
+\tif cleanUserId <= 0 then
+\t\treturn false, false, nil, "InvalidUserId"
+\tend
+\tlocal definition, validationError = normalizeDungeonResult(resultId, payload)
+\tif not definition then
+\t\treturn false, false, nil, validationError
+\tend
+\tlocal commitToken = HttpService:GenerateGUID(false)
+\tlocal success, persisted = retry(
+\t\t"DungeonResult " .. tostring(cleanUserId),
+\t\tSAVE_RETRIES,
+\t\tfunction()
+\t\t\treturn store:UpdateAsync(keyForUserId(cleanUserId), function(previous)
+\t\t\t\tlocal data = sanitize(previous)
+\t\t\t\tapplyDungeonResult(data, definition, commitToken)
+\t\t\t\treturn data
+\t\t\tend)
+\t\tend
+\t)
+\tif not success then
+\t\treturn false, false, nil, tostring(persisted)
+\tend
+\tlocal persistedData = sanitize(persisted)
+\tlocal record = persistedData.DungeonResults.ProcessedResultIds[definition.ResultId]
+\tif not record then
+\t\treturn false, false, nil, "DungeonResultMissingAfterCommit"
+\tend
+\treturn true, record.CommitToken == commitToken, cloneDungeonResultRecord(record), nil, persistedData
+end
+
+function PlayerDataService.GetDungeonResult(player, resultId)
+\tlocal data = PlayerDataService.Get(player)
+\tlocal record = data
+\t\tand data.DungeonResults.ProcessedResultIds[tostring(resultId or "")]
+\treturn cloneDungeonResultRecord(record)
+end
+
+function PlayerDataService.GetLastDungeonResult(player)
+\tlocal data = PlayerDataService.Get(player)
+\treturn data and cloneDungeonResultRecord(data.DungeonResults.LastResult) or nil
+end
+
+function PlayerDataService.CommitDungeonResultByUserId(userId, resultId, payload)
+\tlocal success, applied, record, errorCode = commitDungeonResultByUserId(
+\t\tuserId,
+\t\tresultId,
+\t\tpayload
+\t)
+\treturn success, applied, record, errorCode
+end
+
+function PlayerDataService.CommitDungeonResult(player, resultId, payload)
+\tif not player or player.Parent ~= Players then
+\t\treturn false, false, nil, "InvalidPlayer"
+\tend
+\tPlayerDataService.Load(player)
+\tlocal session = sessions[player]
+\tif not session or not session.CanSave then
+\t\treturn false, false, nil, "PlayerDataNotSaveable"
+\tend
+\t-- Primeiro confirma todos os grants e moedas de rodadas já concluídas. O
+\t-- resultado final nunca deve substituir um snapshot mais novo por um antigo.
+\tif not PlayerDataService.Save(player, true) then
+\t\treturn false, false, nil, "PreResultSaveFailed"
+\tend
+\tlocal success, applied, record, errorCode, persistedData =
+\t\tcommitDungeonResultByUserId(player.UserId, resultId, payload)
+\tif success and persistedData and sessions[player] == session then
+\t\tsession.Data = persistedData
+\t\tsession.Dirty = false
+\t\tsession.Revision += 1
+\tend
+\treturn success, applied, record, errorCode
+end
+
 function PlayerDataService.Save(player, force)
 	local session = sessions[player]
 	if not session or not session.CanSave then
@@ -1659,6 +2058,34 @@ function PlayerDataService.Save(player, force)
 			snapshot.Monetization.ProcessedPurchaseIds = sanitizeProcessedPurchaseIds(
 				snapshot.Monetization.ProcessedPurchaseIds
 			)
+			for grantId, processedAt in pairs(previousData.DungeonRewards.ProcessedGrantIds) do
+				snapshot.DungeonRewards.ProcessedGrantIds[grantId] = math.max(
+					tonumber(snapshot.DungeonRewards.ProcessedGrantIds[grantId]) or 0,
+					processedAt
+				)
+			end
+			snapshot.DungeonRewards.ProcessedGrantIds = sanitizeDungeonRewardGrantIds(
+				snapshot.DungeonRewards.ProcessedGrantIds
+			)
+			local inheritedCommittedResult = false
+			for resultId, previousRecord in pairs(
+				previousData.DungeonResults.ProcessedResultIds
+			) do
+				local currentRecord = snapshot.DungeonResults.ProcessedResultIds[resultId]
+				if not currentRecord
+					or previousRecord.ProcessedAt >= currentRecord.ProcessedAt
+				then
+					if not currentRecord then
+						inheritedCommittedResult = true
+					end
+					snapshot.DungeonResults.ProcessedResultIds[resultId] =
+						cloneDungeonResultRecord(previousRecord)
+				end
+			end
+			if inheritedCommittedResult then
+				snapshot.Coins = math.max(snapshot.Coins, previousData.Coins)
+			end
+			snapshot.DungeonResults = sanitizeDungeonResults(snapshot.DungeonResults)
 			return snapshot
 		end)
 	end)
@@ -1675,6 +2102,23 @@ function PlayerDataService.Save(player, force)
 		session.Data.Monetization.ProcessedPurchaseIds = sanitizeProcessedPurchaseIds(
 			session.Data.Monetization.ProcessedPurchaseIds
 		)
+		for grantId, processedAt in pairs(snapshot.DungeonRewards.ProcessedGrantIds) do
+			session.Data.DungeonRewards.ProcessedGrantIds[grantId] = math.max(
+				tonumber(session.Data.DungeonRewards.ProcessedGrantIds[grantId]) or 0,
+				processedAt
+			)
+		end
+		session.Data.DungeonRewards.ProcessedGrantIds = sanitizeDungeonRewardGrantIds(
+			session.Data.DungeonRewards.ProcessedGrantIds
+		)
+		for resultId, record in pairs(snapshot.DungeonResults.ProcessedResultIds) do
+			local current = session.Data.DungeonResults.ProcessedResultIds[resultId]
+			if not current or record.ProcessedAt >= current.ProcessedAt then
+				session.Data.DungeonResults.ProcessedResultIds[resultId] =
+					cloneDungeonResultRecord(record)
+			end
+		end
+		session.Data.DungeonResults = sanitizeDungeonResults(session.Data.DungeonResults)
 		for monsterId, discardedRevision in pairs(snapshotDiscardedCompanions) do
 			if session.DiscardedCompanions[monsterId] == discardedRevision then
 				session.DiscardedCompanions[monsterId] = nil

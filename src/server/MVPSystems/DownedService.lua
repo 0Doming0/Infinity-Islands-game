@@ -10,12 +10,34 @@ local PlayerStatusService = require(script.Parent:WaitForChild("PlayerStatusServ
 
 local DownedService = {}
 local CONFIG = MVPConfig.Social.Downed
-local DOWNED_SECONDS = tonumber(CONFIG.DurationSeconds) or 15
+local DEFAULT_DOWNED_SECONDS = tonumber(CONFIG.DurationSeconds) or 15
 local REVIVE_HOLD_SECONDS = tonumber(CONFIG.ReviveHoldSeconds) or 3
 local REVIVE_HEALTH_RATIO = tonumber(CONFIG.ReviveHealthRatio) or 0.35
 local REVIVE_PROTECTION_SECONDS = tonumber(CONFIG.ProtectionSeconds) or 3
-local RESCUE_WEAKNESS_SECONDS = tonumber(CONFIG.WeaknessSeconds) or 60
+local DEFAULT_RESCUE_WEAKNESS_SECONDS = tonumber(CONFIG.WeaknessSeconds) or 60
 local REVIVE_DISTANCE = tonumber(CONFIG.ReviveDistanceStuds) or 10
+
+local function downedDurationSeconds()
+	if workspace:GetAttribute("DungeonRuntimeManaged") == true then
+		return math.clamp(
+			tonumber(workspace:GetAttribute("DungeonDownedDurationSeconds")) or 10,
+			5,
+			30
+		)
+	end
+	return DEFAULT_DOWNED_SECONDS
+end
+
+local function rescueWeaknessSeconds()
+	if workspace:GetAttribute("DungeonRuntimeManaged") == true then
+		return math.clamp(
+			tonumber(workspace:GetAttribute("DungeonReviveWeaknessSeconds")) or 12,
+			0,
+			60
+		)
+	end
+	return DEFAULT_RESCUE_WEAKNESS_SECONDS
+end
 
 local states = setmetatable({}, { __mode = "k" })
 local started = false
@@ -281,6 +303,7 @@ local function finishDowned(player, state, cause)
 	if states[player] ~= state then
 		return
 	end
+	player:SetAttribute("DungeonDownedResolution", "Eliminated")
 	clearState(player, state)
 	local humanoid = state.Humanoid
 	if humanoid and humanoid.Parent and humanoid.Health > 0 then
@@ -323,12 +346,13 @@ local function revive(rescuer, target, state)
 		return false
 	end
 
+	target:SetAttribute("DungeonDownedResolution", "Revived")
 	clearState(target, state)
 	deactivateRagdoll(state)
 	restoreMovement(target, state)
 	state.Humanoid.Health = math.max(1, state.Humanoid.MaxHealth * REVIVE_HEALTH_RATIO)
 	stabilizeRevivedCharacter(target, state)
-	target:SetAttribute("RescueWeakUntil", serverTime() + RESCUE_WEAKNESS_SECONDS)
+	target:SetAttribute("RescueWeakUntil", serverTime() + rescueWeaknessSeconds())
 	local forceField = Instance.new("ForceField")
 	forceField.Name = "RescueProtection"
 	forceField.Visible = false
@@ -371,6 +395,7 @@ function DownedService.TryInterceptFatal(player, humanoid, damage, source)
 		return false
 	end
 
+	local durationSeconds = downedDurationSeconds()
 	PlayerStatusService.Clear(player)
 	humanoid.Health = 1
 	humanoid:UnequipTools()
@@ -383,7 +408,7 @@ function DownedService.TryInterceptFatal(player, humanoid, damage, source)
 		AutoRotate = humanoid.AutoRotate,
 		Root = root,
 		RootAnchored = root.Anchored,
-		ExpiresAt = serverTime() + DOWNED_SECONDS,
+		ExpiresAt = serverTime() + durationSeconds,
 	}
 	states[player] = state
 	state.RagdollSerial = (tonumber(character:GetAttribute("DownedRagdollSerial")) or 0) + 1
@@ -421,7 +446,7 @@ function DownedService.TryInterceptFatal(player, humanoid, damage, source)
 		UserId = player.UserId,
 		ExpiresAt = state.ExpiresAt,
 	})
-	task.delay(DOWNED_SECONDS, function()
+	task.delay(durationSeconds, function()
 		finishDowned(player, state, "Expired")
 	end)
 	return true
@@ -434,6 +459,52 @@ function DownedService.ForceDeath(player, cause)
 		return true
 	end
 	return false
+end
+
+function DownedService.ForceRevive(target, reason)
+	local state = states[target]
+	if not state
+		or not target
+		or target.Parent ~= Players
+		or not state.Character
+		or not state.Character.Parent
+		or not state.Humanoid
+		or not state.Humanoid.Parent
+		or state.Humanoid.Health <= 0
+	then
+		return false
+	end
+	target:SetAttribute(
+		"DungeonDownedResolution",
+		tostring(reason or "DungeonRevive")
+	)
+	clearState(target, state)
+	deactivateRagdoll(state)
+	restoreMovement(target, state)
+	state.Humanoid.Health = math.max(1, state.Humanoid.MaxHealth * REVIVE_HEALTH_RATIO)
+	stabilizeRevivedCharacter(target, state)
+	local weaknessSeconds = tostring(reason or "") == "SkyBlessing"
+		and 0
+		or rescueWeaknessSeconds()
+	target:SetAttribute("RescueWeakUntil", serverTime() + weaknessSeconds)
+	local forceField = Instance.new("ForceField")
+	forceField.Name = tostring(reason or "DungeonRevive") .. "Protection"
+	forceField.Visible = false
+	forceField.Parent = state.Character
+	task.delay(REVIVE_PROTECTION_SECONDS, function()
+		if forceField.Parent then
+			forceField:Destroy()
+		end
+	end)
+	if event then
+		event:FireAllClients({
+			Action = "Revived",
+			UserId = target.UserId,
+			RescuerUserId = nil,
+			Reason = tostring(reason or "DungeonRevive"),
+		})
+	end
+	return true
 end
 
 function DownedService.IsDowned(player)

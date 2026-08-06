@@ -61,6 +61,7 @@ local RewardWheelService = require(script.Parent.Parent.MVPSystems.RewardWheelSe
 local MonetizationService = require(script.Parent.Parent.MVPSystems.MonetizationService)
 local ContentResolver = require(script.Parent.Parent.DungeonRuntime.ContentResolver)
 local PartyScalingService = require(script.Parent.Parent.DungeonRuntime.PartyScalingService)
+local ObjectiveSignalBridge = require(script.Parent.Parent.DungeonRuntime.ObjectiveSignalBridge)
 
 ScoreService.Start()
 InventoryService.Start()
@@ -572,8 +573,21 @@ local function createMarker(pointsFolder, cellRecord, index, template, spawnMode
 	return marker
 end
 
-local function spawnClone(template, parent, island, cellRecord, marker, random, spawnMode, slimeVariantForSpawn)
-	local elite = island:GetAttribute("IslandType") == "Elite"
+local function spawnClone(
+	template,
+	parent,
+	island,
+	cellRecord,
+	marker,
+	random,
+	spawnMode,
+	slimeVariantForSpawn,
+	spawnOptions
+)
+	spawnOptions = type(spawnOptions) == "table" and spawnOptions or {}
+	local requestedRole = tostring(spawnOptions.Role or "")
+	local elite = spawnOptions.IsElite == true or island:GetAttribute("IslandType") == "Elite"
+	local monsterRole = requestedRole ~= "" and requestedRole or (elite and "Elite" or "Common")
 	if monsterCount >= getSpawnLimit(elite) then
 		return false
 	end
@@ -635,6 +649,20 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 		damageMultiplier *= MVPConfig.Difficulty.EliteDamageMultiplier
 		rewardMultiplier *= MVPConfig.Difficulty.EliteRewardMultiplier
 	end
+	local roleSpeedMultiplier = 1
+	if monsterRole == "Guard" then
+		healthMultiplier *= 1.5
+		damageMultiplier *= 0.9
+		roleSpeedMultiplier = 0.78
+	elseif monsterRole == "Ranged" then
+		roleSpeedMultiplier = 0.88
+	elseif monsterRole == "Elite" then
+		healthMultiplier *= 1.15
+		roleSpeedMultiplier = 1.05
+	end
+	healthMultiplier *= math.max(0.1, tonumber(spawnOptions.HealthMultiplier) or 1)
+	damageMultiplier *= math.max(0.1, tonumber(spawnOptions.DamageMultiplier) or 1)
+	roleSpeedMultiplier *= math.max(0.25, tonumber(spawnOptions.SpeedMultiplier) or 1)
 	maxHealth = math.floor(maxHealth * healthMultiplier)
 	attackDamage = math.floor(attackDamage * damageMultiplier)
 	local partySize = math.clamp(
@@ -664,7 +692,8 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 	humanoid.BreakJointsOnDeath = false
 	humanoid.WalkSpeed = math.clamp(
 		numberAttribute(template, "WalkSpeed", humanoid.WalkSpeed)
-			* (elite and MVPConfig.Difficulty.EliteSpeedMultiplier or 1),
+			* (elite and MVPConfig.Difficulty.EliteSpeedMultiplier or 1)
+			* roleSpeedMultiplier,
 		4,
 		28
 	)
@@ -679,6 +708,25 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 	clone:SetAttribute("AttackDamage", attackDamage)
 	clone:SetAttribute("DifficultyTier", difficultyTier)
 	clone:SetAttribute("IsElite", elite)
+	clone:SetAttribute(
+		"GlobalIslandIndex",
+		spawnOptions.GlobalIslandIndex or island:GetAttribute("GlobalIslandIndex")
+	)
+	clone:SetAttribute("RouteIslandIndex", island:GetAttribute("IslandIndex"))
+	clone:SetAttribute("RouteRoundIndex", island:GetAttribute("RoundIndex"))
+	clone:SetAttribute("MonsterRole", monsterRole)
+	clone:SetAttribute("ObjectiveSpawned", spawnOptions.EncounterId ~= nil)
+	clone:SetAttribute("ObjectiveEncounterId", spawnOptions.EncounterId)
+	clone:SetAttribute("ObjectiveId", spawnOptions.ObjectiveId)
+	clone:SetAttribute("ObjectiveWaveIndex", spawnOptions.WaveIndex)
+	clone:SetAttribute("ObjectiveSpawnSequence", spawnOptions.SpawnSequence)
+	clone:SetAttribute("ObjectiveTargetCompleted", false)
+	if monsterRole == "Guard" then
+		clone:SetAttribute("Defense", math.max(3, tonumber(clone:GetAttribute("Defense")) or 0))
+		clone:SetAttribute("NoKnockback", true)
+		clone:SetAttribute("CanBeKnockedBack", false)
+		clone:SetAttribute("StunResistance", math.max(0.5, tonumber(clone:GetAttribute("StunResistance")) or 0))
+	end
 	PartyScalingService.MarkApplied(clone, partySize, partyMultipliers)
 	if elite then
 		local baseAttackCooldown = slimeDefinition and slimeDefinition.AttackCooldown
@@ -693,7 +741,8 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 	if slimeDefinition then
 		initiallyPeaceful = slimeDefinition.InitiallyPeaceful
 	end
-	clone:SetAttribute("Peaceful", not elite and initiallyPeaceful)
+	local forceHostile = spawnOptions.EncounterId ~= nil and spawnOptions.ForceHostile ~= false
+	clone:SetAttribute("Peaceful", not forceHostile and not elite and initiallyPeaceful)
 	local usesSlimeController = slimeDefinition ~= nil
 	local useCentralAI = not usesSlimeController and template:GetAttribute("UseCustomAI") ~= true
 	if useCentralAI then
@@ -764,6 +813,9 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 	}
 	if entry.SlimeDefinition then
 		entry.SlimeDefinition.AttackDamage = attackDamage
+		if forceHostile then
+			entry.SlimeDefinition.InitiallyPeaceful = false
+		end
 		if elite and entry.SlimeDefinition.AttackCooldown then
 			entry.SlimeDefinition.AttackCooldown = math.max(
 				0.25,
@@ -790,6 +842,14 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 
 		local deathPosition = root.Position
 		local damager = getRecordedDamager(entry, clone, humanoid)
+		ObjectiveSignalBridge.Report("EnemyDefeated", {
+			Target = clone,
+			SourceUserId = damager and damager.UserId or nil,
+			GlobalIslandIndex = clone:GetAttribute("GlobalIslandIndex")
+				or entry.Island:GetAttribute("GlobalIslandIndex"),
+			MonsterRole = clone:GetAttribute("MonsterRole"),
+			IsElite = clone:GetAttribute("IsElite") == true,
+		})
 		if damager then
 			GameplayAnalytics.RecordEnemyDefeated(
 				damager,
@@ -882,7 +942,7 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 	pcall(function()
 		root:SetNetworkOwner(nil)
 	end)
-	return true
+	return true, clone
 end
 
 function MonsterSpawner.DamageMonster(player, model, damage)
@@ -981,6 +1041,7 @@ function MonsterSpawner.PopulateIsland(island, freeCells, context)
 	if
 		island:GetAttribute("CanSpawnMonster") ~= true
 		or island:GetAttribute("HasBoss") == true
+		or island:GetAttribute("ObjectiveEncounterManaged") == true
 		or island:FindFirstChild("MonsterSpawnPoints")
 		or monsterCount >= getSpawnLimit(eliteIsland)
 	then
@@ -1138,6 +1199,168 @@ function MonsterSpawner.PopulateIsland(island, freeCells, context)
 		)
 	)
 	return spawned
+end
+
+
+local function objectiveMonsterTemplate(options)
+	local templates = getTemplates()
+	local requestedId = tostring(options.MonsterId or "")
+	if requestedId ~= "" then
+		for _, template in ipairs(templates) do
+			if (template:GetAttribute("MonsterId") or template.Name) == requestedId then
+				return template
+			end
+		end
+	end
+	for _, template in ipairs(templates) do
+		if SlimeVariants.IsSlime(template) then
+			return template
+		end
+	end
+	return templates[1]
+end
+
+function MonsterSpawner.SpawnObjectiveMonster(island, spawnMarker, spawnOptions)
+	initialize()
+	if not island or not island:IsA("Model") then
+		return nil, "InvalidIsland"
+	end
+	if not spawnMarker or not spawnMarker:IsA("BasePart") then
+		return nil, "InvalidSpawnMarker"
+	end
+	spawnOptions = type(spawnOptions) == "table" and spawnOptions or {}
+	local encounterId = tostring(spawnOptions.EncounterId or "")
+	if encounterId == "" then
+		return nil, "EncounterIdMissing"
+	end
+	if monsterCount >= getSpawnLimit(spawnOptions.IsElite == true) then
+		return nil, "GlobalMonsterLimitReached"
+	end
+	local template = objectiveMonsterTemplate(spawnOptions)
+	if not template then
+		return nil, "MonsterTemplateMissing"
+	end
+	local content = island:FindFirstChild("ObjectiveEncounterContent")
+	if not content then
+		content = Instance.new("Folder")
+		content.Name = "ObjectiveEncounterContent"
+		content.Parent = island
+	end
+	local encounterFolder = content:FindFirstChild(encounterId)
+	if not encounterFolder then
+		encounterFolder = Instance.new("Folder")
+		encounterFolder.Name = encounterId
+		encounterFolder:SetAttribute("ObjectiveEncounterId", encounterId)
+		encounterFolder:SetAttribute("ObjectiveId", spawnOptions.ObjectiveId)
+		encounterFolder.Parent = content
+	end
+	local pointsFolder = encounterFolder:FindFirstChild("SpawnPoints")
+	if not pointsFolder then
+		pointsFolder = Instance.new("Folder")
+		pointsFolder.Name = "SpawnPoints"
+		pointsFolder.Parent = encounterFolder
+	end
+	local monsterFolder = encounterFolder:FindFirstChild("Monsters")
+	if not monsterFolder then
+		monsterFolder = Instance.new("Folder")
+		monsterFolder.Name = "Monsters"
+		monsterFolder.Parent = encounterFolder
+	end
+	local sequence = math.max(1, math.floor(tonumber(spawnOptions.SpawnSequence) or (#pointsFolder:GetChildren() + 1)))
+	local angle = sequence * 2.399963229728653
+	local offsetRadius = math.min(3.5, math.max(0, sequence - 1) * 0.35)
+	local surfacePosition = spawnMarker.Position
+		+ Vector3.new(math.cos(angle) * offsetRadius, 0, math.sin(angle) * offsetRadius)
+	local cellRecord = {
+		Cell = Vector3.new(
+			tonumber(spawnMarker:GetAttribute("GridX")) or 0,
+			tonumber(spawnMarker:GetAttribute("GridY")) or 0,
+			tonumber(spawnMarker:GetAttribute("GridZ")) or 0
+		),
+		SurfacePosition = surfacePosition,
+	}
+	local marker = createMarker(pointsFolder, cellRecord, sequence, template, "Solo")
+	marker:SetAttribute("ObjectiveEncounterId", encounterId)
+	marker:SetAttribute("ObjectiveId", spawnOptions.ObjectiveId)
+	marker:SetAttribute("MonsterRole", spawnOptions.Role or "Common")
+	local seed = normalizedSeed(
+		tonumber(spawnOptions.Seed)
+			or ((island:GetAttribute("IslandSeed") or 1) + sequence * 104729)
+	)
+	local variant = spawnOptions.SlimeVariant
+	if variant == nil then
+		variant = spawnOptions.Role == "Ranged" and "Blue"
+			or (spawnOptions.Role == "Elite" and "Red" or "Green")
+	end
+	local spawned, clone = spawnClone(
+		template,
+		monsterFolder,
+		island,
+		cellRecord,
+		marker,
+		Random.new(seed),
+		"Solo",
+		variant,
+		spawnOptions
+	)
+	if not spawned or not clone then
+		marker:Destroy()
+		return nil, "SpawnCloneFailed"
+	end
+	island:SetAttribute("ObjectiveEncounterManaged", true)
+	return clone
+end
+
+function MonsterSpawner.GetObjectiveActiveCount(encounterId)
+	local count = 0
+	for model, entry in pairs(activeMonsters) do
+		if model.Parent
+			and entry.Humanoid.Health > 0
+			and model:GetAttribute("ObjectiveSpawned") == true
+			and (encounterId == nil or model:GetAttribute("ObjectiveEncounterId") == encounterId)
+		then
+			count += 1
+		end
+	end
+	return count
+end
+
+function MonsterSpawner.SetObjectiveMonstersActive(encounterId, active)
+	local changed = 0
+	active = active == true
+	for model, entry in pairs(activeMonsters) do
+		if model.Parent
+			and model:GetAttribute("ObjectiveSpawned") == true
+			and (encounterId == nil or model:GetAttribute("ObjectiveEncounterId") == encounterId)
+		then
+			model:SetAttribute("SimulationActive", active)
+			model:SetAttribute("Invulnerable", not active)
+			if not active and entry.Root and entry.Root.Parent then
+				entry.Humanoid:MoveTo(entry.Root.Position)
+				entry.Humanoid:Move(Vector3.zero)
+			end
+			changed += 1
+		end
+	end
+	return changed
+end
+
+function MonsterSpawner.DespawnObjectiveMonsters(encounterId)
+	local targets = {}
+	for model in pairs(activeMonsters) do
+		if model:GetAttribute("ObjectiveSpawned") == true
+			and (encounterId == nil or model:GetAttribute("ObjectiveEncounterId") == encounterId)
+		then
+			table.insert(targets, model)
+		end
+	end
+	for _, model in ipairs(targets) do
+		unregisterMonster(model)
+		if model.Parent then
+			model:Destroy()
+		end
+	end
+	return #targets
 end
 
 function MonsterSpawner.GetActiveCount()

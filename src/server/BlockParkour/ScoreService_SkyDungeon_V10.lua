@@ -12,6 +12,7 @@ local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 local PlayerDataService = require(script.Parent.PlayerDataService_SkyDungeon_V10)
 local PartyService = require(script.Parent.PartyService)
 local GameplayAnalytics = require(script.Parent.Parent:WaitForChild("GameplayAnalyticsService"))
+local RunRewardLedgerService = require(script.Parent.Parent.DungeonRuntime.RunRewardLedgerService)
 
 local coinRewardRemote = ReplicatedStorage:FindFirstChild("CoinReward")
 if coinRewardRemote and not coinRewardRemote:IsA("RemoteEvent") then
@@ -156,6 +157,24 @@ function ScoreService.AwardCoins(player, baseAmount, source, worldPosition)
 	local awarded = math.max(0, math.floor((tonumber(baseAmount) or 0) * multiplier))
 	if awarded <= 0 then
 		return 0
+	end
+	if workspace:GetAttribute("DungeonRewardLedgerEnabled") == true
+		and tostring(source or "") == "Monster"
+	then
+		local queued, pendingBalance = RunRewardLedgerService.AddPendingCoins(
+			player,
+			awarded,
+			source,
+			worldPosition,
+			workspace:GetAttribute("DungeonObjectiveRoundIndex")
+		)
+		if queued then
+			player:SetAttribute("LastCoinSource", "Pending:" .. tostring(source or "Monster"))
+			player:SetAttribute("LastCoinAward", awarded)
+			player:SetAttribute("LastPendingCoinBalance", pendingBalance)
+			player:SetAttribute("LastCoinSerial", (player:GetAttribute("LastCoinSerial") or 0) + 1)
+			return awarded
+		end
 	end
 	local success, balance = PlayerDataService.AddCoins(player, awarded)
 	if not success then

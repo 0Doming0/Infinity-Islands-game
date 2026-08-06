@@ -368,6 +368,13 @@ local function prepareInitialPlayer(player)
 end
 
 function DeathReviveService.RecordDeath(player, runScore, lostCoins, cause)
+	if workspace:GetAttribute("DungeonRuntimeManaged") == true
+		and player:GetAttribute("DungeonSessionId") ~= nil
+	then
+		player:SetAttribute("RespawnState", "Spectating")
+		setLifecycle(player, "Spectating")
+		return false
+	end
 	MarketingOfferService.Record(player, "Death", 1)
 	local serial = (player:GetAttribute("DeathScreenSerial") or 0) + 1
 	local state = {
@@ -586,6 +593,11 @@ function DeathReviveService.Start()
 		return { Success = false, Ready = state.Ready, Message = "Pedido inválido." }
 	end
 	deathEvent.OnServerEvent:Connect(function(player, request)
+		if workspace:GetAttribute("DungeonRuntimeManaged") == true
+			and player:GetAttribute("DungeonSessionId") ~= nil
+		then
+			return
+		end
 		if type(request) ~= "table" then
 			return
 		end

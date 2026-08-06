@@ -22,6 +22,7 @@ local MonsterSpawner = require(script.Parent.MonsterSpawner)
 local IslandTypeService = require(script.Parent.IslandTypeService)
 local ChestService = require(script.Parent.ChestService)
 local ContentResolver = require(script.Parent.Parent.DungeonRuntime.ContentResolver)
+local IslandMarkerService = require(script.Parent.Parent.DungeonRuntime.IslandMarkerService)
 local Generator = {}
 local warnedMissingDecorationAssets = false
 local warnedMissingGrassAssets = false
@@ -1181,7 +1182,9 @@ local function decorateIsland(model, island, content, roundIndex, yieldCallback)
 		if #selected >= maximumAttempts then
 			break
 		end
-		if isFarEnoughFromSelected(cell, selected) then
+		if isFarEnoughFromSelected(cell, selected)
+			and not IslandMarkerService.IsReservedCell(model, cell)
+		then
 			table.insert(selected, cell)
 			local surfacePosition = gridToWorld(cell) + Vector3.new(0, Config.ISLAND_FLOOR_THICKNESS_STUDS / 2, 0)
 			local marker = Instance.new("CFrameValue")
@@ -1849,9 +1852,35 @@ function Generator.CreateFrontierNode(parent, spec, options)
 	islandModel:SetAttribute("SimulationActive", false)
 	islandModel:SetAttribute("GenerationOwnerUserId", options.GenerationOwnerUserId)
 	islandModel:SetAttribute("PhaseId", options.PhaseId or "Phase01")
+	for _, attributeName in ipairs({
+		"RouteSeed",
+		"RoundIndex",
+		"IslandIndex",
+		"GlobalIslandIndex",
+		"IncomingDirectionId",
+		"NextDirectionId",
+		"IsMandatoryRoute",
+		"IsRewardIsland",
+		"IsBossSanctuary",
+		"RouteExitLeadsToBoss",
+	}) do
+		local value = spec[attributeName]
+		if value ~= nil then
+			model:SetAttribute(attributeName, value)
+			islandModel:SetAttribute(attributeName, value)
+			if islandModel.PrimaryPart then
+				islandModel.PrimaryPart:SetAttribute(attributeName, value)
+			end
+		end
+	end
+	if spec.IsMandatoryRoute == true then
+		islandModel:SetAttribute("SpecialIslandChanceMultiplier", 0)
+	end
+	local gameplayMarkers, markerError = IslandMarkerService.Build(islandModel, spec)
+	assert(gameplayMarkers, "[SkyDungeon] Marcadores procedurais invalidos: " .. tostring(markerError))
 	IslandTypeService.Classify(islandModel, {
 		ChunkIndex = options.NodeSerial or roundIndex,
-		RoundIndex = roundIndex,
+		RoundIndex = spec.RoundIndex or roundIndex,
 		RoundSeed = spec.Seed,
 		GenerationOwnerUserId = options.GenerationOwnerUserId,
 	})
