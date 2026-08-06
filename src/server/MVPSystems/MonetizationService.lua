@@ -116,6 +116,14 @@ local function ownsPass(player, definition)
 end
 
 local function bestWing(player)
+	local data = PlayerDataService.Get(player)
+	local selectedId = data and data.EquippedWings
+	if selectedId and WING_RANK[selectedId] then
+		local selected = MonetizationCatalog.Get(selectedId)
+		if ownsPass(player, selected) then
+			return selected
+		end
+	end
 	for _, productId in ipairs(WING_PRIORITY) do
 		local definition = MonetizationCatalog.Get(productId)
 		if ownsPass(player, definition) then

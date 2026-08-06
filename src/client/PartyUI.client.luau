@@ -7,8 +7,9 @@ local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
-local request = ReplicatedStorage:WaitForChild("PartyRequest")
-local event = ReplicatedStorage:WaitForChild("PartyEvent")
+local RemoteRegistry = require(ReplicatedStorage.Shared.Utilities.RemoteRegistry)
+local request = RemoteRegistry.Get("Party", "Request", "RemoteFunction")
+local event = RemoteRegistry.Get("Party", "Event", "RemoteEvent")
 
 local COLORS = {
 	Panel = Color3.fromRGB(14, 24, 27),

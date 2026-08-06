@@ -25,6 +25,7 @@ local CompanionCombat = require(script.Parent.Parent.MonsterSystem.CompanionComb
 local MonsterConfig = require(script.Parent.Parent.MonsterSystem.MonsterConfig)
 local MonsterAnimationLoader = require(script.Parent.Parent.MonsterSystem.MonsterAnimationLoader)
 local GameplayAnalytics = require(script.Parent.Parent:WaitForChild("GameplayAnalyticsService"))
+local RuntimeFolders = require(script.Parent.Parent.DungeonRuntime:WaitForChild("RuntimeFolders"))
 
 local CompanionService = {}
 local THINK_INTERVAL = 0.15
@@ -656,7 +657,7 @@ local function spawnState(player, instanceId, record, slot)
 	humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
 	configurePhysicalModel(model)
 	CollectionService:AddTag(model, "Companion")
-	model.Parent = workspace
+	model.Parent = RuntimeFolders.Get("PlayerObjects")
 	local _, _, characterRoot = ownerCharacter(player)
 	if characterRoot then
 		model:PivotTo(CFrame.new(followPosition(characterRoot, slot)))

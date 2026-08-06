@@ -1,35 +1,24 @@
--- Grupo autoritativo do MVP. Mantem convites, lideranca, pontuacao coletiva e
--- uma missao cooperativa simples. Todos os membros precisam estar no mesmo servidor.
+-- Grupo autoritativo de ate quatro jogadores do mesmo servidor.
 
+local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
+local PhaseConfig = require(ReplicatedStorage.Shared.Configs.PhaseConfig)
+local RemoteRegistry = require(ReplicatedStorage.Shared.Utilities.RemoteRegistry)
+
 local CONFIG = MVPConfig.Party or {}
 local MISSION = CONFIG.Mission or {}
+local MAX_MEMBERS = math.clamp(math.floor(tonumber(CONFIG.MaxMembers) or 4), 1, 4)
 
 local PartyService = {}
 local started = false
-local nextPartyId = 0
 local parties = {}
 local partyByPlayer = setmetatable({}, { __mode = "k" })
 local invitesByTarget = setmetatable({}, { __mode = "k" })
 local partyRequest
 local partyEvent
-
-local function ensureRemote(className, name)
-	local remote = ReplicatedStorage:FindFirstChild(name)
-	if remote and remote.ClassName ~= className then
-		remote:Destroy()
-		remote = nil
-	end
-	if not remote then
-		remote = Instance.new(className)
-		remote.Name = name
-		remote.Parent = ReplicatedStorage
-	end
-	return remote
-end
 
 local function memberArray(party)
 	local result = {}
@@ -44,7 +33,7 @@ local function memberArray(party)
 		elseif right == party.Leader then
 			return false
 		end
-		return string.lower(left.DisplayName) < string.lower(right.DisplayName)
+		return left.UserId < right.UserId
 	end)
 	return result
 end
@@ -67,6 +56,8 @@ local function setPlayerAttributes(player, party)
 		player:SetAttribute("PartyId", nil)
 		player:SetAttribute("PartyLeaderUserId", nil)
 		player:SetAttribute("PartyMemberCount", 0)
+		player:SetAttribute("PartyLocked", false)
+		player:SetAttribute("PartySelectedPhaseId", nil)
 		player:SetAttribute("PartySharedScore", 0)
 		player:SetAttribute("PartyMissionMobDefeated", 0)
 		player:SetAttribute("PartyMissionIslandVisited", 0)
@@ -76,10 +67,17 @@ local function setPlayerAttributes(player, party)
 	player:SetAttribute("PartyId", party.Id)
 	player:SetAttribute("PartyLeaderUserId", party.Leader and party.Leader.UserId or 0)
 	player:SetAttribute("PartyMemberCount", memberCount(party))
+	player:SetAttribute("PartyLocked", party.Locked == true)
+	player:SetAttribute("PartySelectedPhaseId", party.SelectedPhaseId)
 	player:SetAttribute("PartySharedScore", party.SharedScore)
 	player:SetAttribute("PartyMissionMobDefeated", party.MobDefeated)
 	player:SetAttribute("PartyMissionIslandVisited", party.IslandVisited)
 	player:SetAttribute("PartyMissionComplete", party.Completed)
+end
+
+local function findPlayer(userId)
+	local clean = math.floor(tonumber(userId) or 0)
+	return clean > 0 and Players:GetPlayerByUserId(clean) or nil
 end
 
 local function serializeInvites(player)
@@ -90,7 +88,8 @@ local function serializeInvites(player)
 		return result
 	end
 	for inviter, expiresAt in pairs(invites) do
-		if inviter.Parent == Players and expiresAt > now then
+		local party = partyByPlayer[inviter]
+		if inviter.Parent == Players and expiresAt > now and party and not party.Locked then
 			table.insert(result, {
 				UserId = inviter.UserId,
 				Name = inviter.Name,
@@ -101,9 +100,6 @@ local function serializeInvites(player)
 			invites[inviter] = nil
 		end
 	end
-	table.sort(result, function(left, right)
-		return string.lower(left.DisplayName) < string.lower(right.DisplayName)
-	end)
 	return result
 end
 
@@ -130,14 +126,13 @@ local function serializeState(player)
 			})
 		end
 	end
-	table.sort(available, function(left, right)
-		return string.lower(left.DisplayName) < string.lower(right.DisplayName)
-	end)
 	return {
 		Party = party and {
 			Id = party.Id,
 			LeaderUserId = party.Leader and party.Leader.UserId or 0,
 			Members = members,
+			Locked = party.Locked == true,
+			SelectedPhaseId = party.SelectedPhaseId,
 			SharedScore = party.SharedScore,
 			Mission = {
 				Id = tostring(MISSION.Id or "PartyExpedition"),
@@ -151,28 +146,40 @@ local function serializeState(player)
 		} or nil,
 		Invites = serializeInvites(player),
 		AvailablePlayers = available,
-		MaxMembers = tonumber(CONFIG.MaxMembers) or 4,
+		MaxMembers = MAX_MEMBERS,
 		IndicatorDistanceStuds = tonumber(CONFIG.IndicatorDistanceStuds) or 70,
 	}
+end
+
+local function publishToPlayer(player, action, message)
+	if player.Parent == Players then
+		partyEvent:FireClient(player, {
+			Action = action or "State",
+			Message = message,
+			State = serializeState(player),
+		})
+	end
 end
 
 local function publishParty(party, action, message)
 	for _, member in ipairs(memberArray(party)) do
 		setPlayerAttributes(member, party)
-		partyEvent:FireClient(member, {
-			Action = action or "State",
-			Message = message,
-			State = serializeState(member),
-		})
+		publishToPlayer(member, action, message)
 	end
 end
 
 local function createParty(leader)
-	nextPartyId += 1
+	local existing = partyByPlayer[leader]
+	if existing then
+		return existing
+	end
 	local party = {
-		Id = string.format("party-%d-%d", game.JobId ~= "" and #game.JobId or 0, nextPartyId),
+		Id = "party-" .. HttpService:GenerateGUID(false),
 		Leader = leader,
 		Members = { [leader] = true },
+		Locked = false,
+		TeleportToken = nil,
+		SelectedPhaseId = nil,
 		SharedScore = 0,
 		MobDefeated = 0,
 		IslandVisited = 0,
@@ -181,57 +188,41 @@ local function createParty(leader)
 	}
 	parties[party.Id] = party
 	partyByPlayer[leader] = party
+	setPlayerAttributes(leader, party)
 	return party
 end
 
-local function dissolveIfSolo(party)
-	local members = memberArray(party)
-	if #members > 1 then
+local function destroyIfEmpty(party)
+	if memberCount(party) > 0 then
 		return false
-	end
-	for _, member in ipairs(members) do
-		partyByPlayer[member] = nil
-		setPlayerAttributes(member, nil)
-		partyEvent:FireClient(member, {
-			Action = "Dissolved",
-			Message = "O grupo foi encerrado.",
-			State = serializeState(member),
-		})
 	end
 	parties[party.Id] = nil
 	return true
 end
 
-local function removeMember(player, reason)
+local function removeMember(player, reason, force)
 	local party = partyByPlayer[player]
 	if not party then
 		return false, "Voce nao esta em um grupo."
 	end
+	if party.Locked and not force then
+		return false, "O grupo esta bloqueado para o teleporte."
+	end
 	party.Members[player] = nil
 	partyByPlayer[player] = nil
 	setPlayerAttributes(player, nil)
-	partyEvent:FireClient(player, {
-		Action = "Left",
-		Message = reason or "Voce saiu do grupo.",
-		State = serializeState(player),
-	})
+	publishToPlayer(player, "Left", reason or "Voce saiu do grupo.")
 	if party.Leader == player then
 		party.Leader = memberArray(party)[1]
 	end
-	if not dissolveIfSolo(party) then
+	if not destroyIfEmpty(party) then
+		if force and party.Locked and not party.DungeonSession then
+			party.Locked = false
+			party.TeleportToken = nil
+		end
 		publishParty(party, "MemberLeft", player.DisplayName .. " saiu do grupo.")
 	end
 	return true
-end
-
-local function findPlayer(userId)
-	userId = tonumber(userId)
-	for _, player in ipairs(Players:GetPlayers()) do
-		if player.UserId == userId then
-			return player
-		end
-	end
-	return nil
 end
 
 local function invite(player, targetUserId)
@@ -243,15 +234,21 @@ local function invite(player, targetUserId)
 	if party and party.Leader ~= player then
 		return false, "Somente o lider pode convidar."
 	end
-	if party and memberCount(party) >= (tonumber(CONFIG.MaxMembers) or 4) then
+	if party and party.Locked then
+		return false, "O grupo esta iniciando uma fase."
+	end
+	if party and memberCount(party) >= MAX_MEMBERS then
 		return false, "O grupo esta cheio."
 	end
 	if partyByPlayer[target] then
 		return false, "Esse jogador ja esta em um grupo."
 	end
+	-- O primeiro convite cria imediatamente o grupo do remetente.
+	party = party or createParty(player)
 	local invites = invitesByTarget[target] or {}
 	invitesByTarget[target] = invites
 	invites[player] = os.clock() + (tonumber(CONFIG.InviteLifetimeSeconds) or 30)
+	publishParty(party, "PartyCreated")
 	partyEvent:FireClient(target, {
 		Action = "Invite",
 		Message = player.DisplayName .. " convidou voce para um grupo.",
@@ -272,8 +269,8 @@ local function accept(player, inviterUserId)
 	if partyByPlayer[player] then
 		return false, "Voce ja esta em um grupo."
 	end
-	local party = partyByPlayer[inviter] or createParty(inviter)
-	if party.Leader ~= inviter or memberCount(party) >= (tonumber(CONFIG.MaxMembers) or 4) then
+	local party = partyByPlayer[inviter]
+	if not party or party.Leader ~= inviter or party.Locked or memberCount(party) >= MAX_MEMBERS then
 		return false, "O grupo nao esta mais disponivel."
 	end
 	invites[inviter] = nil
@@ -287,13 +284,13 @@ local function handleRequest(player, action, payload)
 	if action == "GetState" then
 		return true, nil, serializeState(player)
 	elseif action == "Invite" then
-		local success, message = invite(player, payload and payload.UserId)
+		local success, message = invite(player, payload.UserId)
 		return success, message, serializeState(player)
 	elseif action == "Accept" then
-		local success, message = accept(player, payload and payload.UserId)
+		local success, message = accept(player, payload.UserId)
 		return success, message, serializeState(player)
 	elseif action == "Decline" then
-		local inviter = findPlayer(payload and payload.UserId)
+		local inviter = findPlayer(payload.UserId)
 		local invites = invitesByTarget[player]
 		if inviter and invites then
 			invites[inviter] = nil
@@ -304,9 +301,12 @@ local function handleRequest(player, action, payload)
 		return success, message, serializeState(player)
 	elseif action == "Kick" then
 		local party = partyByPlayer[player]
-		local target = findPlayer(payload and payload.UserId)
+		local target = findPlayer(payload.UserId)
 		if not party or party.Leader ~= player then
 			return false, "Somente o lider pode remover membros.", serializeState(player)
+		end
+		if party.Locked then
+			return false, "O grupo esta iniciando uma fase.", serializeState(player)
 		end
 		if not target or partyByPlayer[target] ~= party or target == player then
 			return false, "Membro invalido.", serializeState(player)
@@ -315,6 +315,111 @@ local function handleRequest(player, action, payload)
 		return true, "Membro removido.", serializeState(player)
 	end
 	return false, "Acao invalida.", serializeState(player)
+end
+
+function PartyService.GetOrCreateParty(player)
+	return partyByPlayer[player] or createParty(player)
+end
+
+function PartyService.GetPartyMembers(player)
+	local party = partyByPlayer[player]
+	return party and memberArray(party) or {}
+end
+
+function PartyService.RestoreDungeonParty(players, leaderUserId, phaseId, sessionId)
+	local leader
+	for _, player in ipairs(players) do
+		if player.UserId == leaderUserId then
+			leader = player
+			break
+		end
+	end
+	leader = leader or players[1]
+	if not leader then
+		return nil
+	end
+	local party = partyByPlayer[leader] or createParty(leader)
+	parties[party.Id] = nil
+	party.Id = "session-" .. tostring(sessionId)
+	parties[party.Id] = party
+	party.SelectedPhaseId = phaseId
+	party.Locked = true
+	party.DungeonSession = true
+	party.TeleportToken = nil
+	for _, player in ipairs(players) do
+		local previous = partyByPlayer[player]
+		if not previous or previous == party then
+			party.Members[player] = true
+			partyByPlayer[player] = party
+			player:SetAttribute("TeleportingToDungeon", false)
+		end
+	end
+	publishParty(party, "DungeonPartyRestored", "Grupo da expedicao restaurado.")
+	return party
+end
+
+function PartyService.IsLeader(player)
+	local party = partyByPlayer[player]
+	return party ~= nil and party.Leader == player
+end
+
+function PartyService.SetSelectedPhase(player, phaseId)
+	local party = PartyService.GetOrCreateParty(player)
+	if party.Leader ~= player then
+		return false, "Somente o lider escolhe a fase."
+	end
+	if party.Locked then
+		return false, "O grupo esta bloqueado."
+	end
+	if not PhaseConfig.IsValid(phaseId) then
+		return false, "Fase invalida."
+	end
+	party.SelectedPhaseId = phaseId
+	publishParty(party, "PhaseSelected", "Fase selecionada: " .. phaseId)
+	return true, nil, party
+end
+
+function PartyService.LockForTeleport(player, token)
+	local party = PartyService.GetOrCreateParty(player)
+	if party.Leader ~= player then
+		return false, "Somente o lider pode iniciar."
+	end
+	if party.Locked then
+		return false, "O grupo ja esta iniciando."
+	end
+	local members = memberArray(party)
+	if #members < 1 or #members > MAX_MEMBERS then
+		return false, "Tamanho de grupo invalido."
+	end
+	for _, member in ipairs(members) do
+		if member.Parent ~= Players or member:GetAttribute("TeleportingToDungeon") == true then
+			return false, "Um membro esta indisponivel."
+		end
+	end
+	party.Locked = true
+	party.TeleportToken = token
+	for _, member in ipairs(members) do
+		member:SetAttribute("TeleportingToDungeon", true)
+	end
+	publishParty(party, "TeleportLocked", "Preparando a expedicao...")
+	return true, nil, party, members
+end
+
+function PartyService.UnlockTeleport(player, token, message)
+	local party = partyByPlayer[player]
+	if not party or party.Leader ~= player then
+		return false
+	end
+	if token and party.TeleportToken ~= token then
+		return false
+	end
+	party.Locked = false
+	party.TeleportToken = nil
+	for _, member in ipairs(memberArray(party)) do
+		member:SetAttribute("TeleportingToDungeon", false)
+	end
+	publishParty(party, "TeleportCancelled", message or "Inicio cancelado.")
+	return true
 end
 
 function PartyService.RecordScore(player, amount, _source)
@@ -347,8 +452,7 @@ function PartyService.RecordMissionProgress(player, objective, amount, uniqueKey
 	else
 		return
 	end
-	local completedNow = missionComplete(party)
-	if completedNow and not party.Completed then
+	if missionComplete(party) and not party.Completed then
 		party.Completed = true
 		publishParty(party, "MissionComplete", "Missao do grupo concluida!")
 	else
@@ -356,29 +460,25 @@ function PartyService.RecordMissionProgress(player, objective, amount, uniqueKey
 	end
 end
 
-function PartyService.GetPartyMembers(player)
-	local party = partyByPlayer[player]
-	return party and memberArray(party) or {}
-end
-
 function PartyService.Start()
 	if started then
 		return
 	end
 	started = true
-	partyRequest = ensureRemote("RemoteFunction", "PartyRequest")
-	partyEvent = ensureRemote("RemoteEvent", "PartyEvent")
+	partyRequest = RemoteRegistry.Get("Party", "Request", "RemoteFunction")
+	partyEvent = RemoteRegistry.Get("Party", "Event", "RemoteEvent")
 	partyRequest.OnServerInvoke = function(player, action, payload)
 		return handleRequest(player, tostring(action or ""), type(payload) == "table" and payload or {})
 	end
 	local function setupPlayer(player)
 		setPlayerAttributes(player, nil)
+		player:SetAttribute("TeleportingToDungeon", false)
 	end
 	Players.PlayerAdded:Connect(setupPlayer)
 	Players.PlayerRemoving:Connect(function(player)
 		invitesByTarget[player] = nil
 		if partyByPlayer[player] then
-			removeMember(player, "Voce saiu do grupo.")
+			removeMember(player, "Voce saiu do grupo.", true)
 		end
 		for target, invites in pairs(invitesByTarget) do
 			invites[player] = nil

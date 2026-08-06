@@ -116,7 +116,17 @@ local CONFIG = {
 ScoreService.Start()
 
 if not ChunkManager.IsRunning() then
-	ChunkManager.Start()
+	-- O bootstrap da dungeon precisa validar o TeleportData antes de escolher
+	-- PhaseId/PartySize/Seed. Este script apenas aguarda esse bootstrap.
+	local deadline = os.clock() + 30
+	repeat
+		task.wait(0.1)
+	until ChunkManager.IsRunning()
+		or workspace:GetAttribute("DungeonRuntimeReady") == true
+		or os.clock() >= deadline
+	if not ChunkManager.IsRunning() and workspace:GetAttribute("DungeonRuntimeManaged") ~= true then
+		ChunkManager.Start()
+	end
 end
 CollectibleService.Start()
 SanctuaryService.Start()

@@ -122,7 +122,7 @@ local function loadCharacterIfDead(player, expectedState, forceReload)
 end
 
 local function worldIsReady()
-	local generated = Workspace:FindFirstChild(WorldConfig.WORLD_MODEL_NAME)
+	local generated = Workspace:FindFirstChild(WorldConfig.WORLD_MODEL_NAME, true)
 	if not generated then
 		return false
 	end
@@ -247,6 +247,27 @@ local function spawnInitialCharacter(player, state)
 	return true
 end
 
+local function usesDungeonAutoStart(player)
+	return player:GetAttribute("DungeonRuntimeAutoStart") == true
+end
+
+local function adoptDungeonAutoStart(player, state)
+	if not player.Parent or initialStates[player] ~= state then
+		return
+	end
+	state.Started = true
+	player:SetAttribute("InitialGameStarted", true)
+	if player:GetAttribute("RespawnState") == "Ready" then
+		player:SetAttribute("InitialSpawnPositioned", true)
+		player:SetAttribute("InitialStartState", "Playing")
+		setLifecycle(player, "Playing")
+	else
+		player:SetAttribute("InitialSpawnPositioned", false)
+		player:SetAttribute("InitialStartState", "Positioning")
+		setLifecycle(player, "InitialSpawning")
+	end
+end
+
 local function prepareInitialPlayer(player)
 	local state = {
 		Ready = false,
@@ -255,11 +276,20 @@ local function prepareInitialPlayer(player)
 		LastRequestAt = 0,
 	}
 	initialStates[player] = state
-	player:SetAttribute("InitialGameStarted", false)
-	player:SetAttribute("InitialSpawnPositioned", false)
-	player:SetAttribute("InitialStartState", "LoadingData")
-	player:SetAttribute("RespawnState", "NotStarted")
-	setLifecycle(player, "LoadingData")
+	if usesDungeonAutoStart(player) then
+		adoptDungeonAutoStart(player, state)
+	else
+		player:SetAttribute("InitialGameStarted", false)
+		player:SetAttribute("InitialSpawnPositioned", false)
+		player:SetAttribute("InitialStartState", "LoadingData")
+		player:SetAttribute("RespawnState", "NotStarted")
+		setLifecycle(player, "LoadingData")
+	end
+	player:GetAttributeChangedSignal("DungeonRuntimeAutoStart"):Connect(function()
+		if usesDungeonAutoStart(player) then
+			adoptDungeonAutoStart(player, state)
+		end
+	end)
 	player.CharacterAdded:Connect(function(character)
 		protectInitialCharacter(player, character)
 	end)
@@ -315,8 +345,12 @@ local function prepareInitialPlayer(player)
 			if worldIsReady() then
 				state.Ready = true
 				state.WorldFailed = false
-				player:SetAttribute("InitialStartState", "Ready")
-				setLifecycle(player, "AwaitingStart")
+				if usesDungeonAutoStart(player) then
+					adoptDungeonAutoStart(player, state)
+				else
+					player:SetAttribute("InitialStartState", "Ready")
+					setLifecycle(player, "AwaitingStart")
+				end
 			else
 				state.Ready = false
 				state.WorldFailed = true
@@ -452,7 +486,9 @@ function DeathReviveService.Start()
 						return
 					end
 				end
-				if not ChunkManager.IsRunning() then
+				if not ChunkManager.IsRunning()
+					and workspace:GetAttribute("DungeonRuntimeManaged") ~= true
+				then
 					local startOk, startResult = pcall(ChunkManager.Start)
 					if not startOk or startResult == false then
 						warn(string.format(

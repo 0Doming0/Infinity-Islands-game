@@ -126,7 +126,7 @@ local function attachFolder(folder)
 end
 
 local function findNodesFolder()
-	local world = Workspace:FindFirstChild(WORLD_MODEL_NAME)
+	local world = Workspace:FindFirstChild(WORLD_MODEL_NAME, true)
 	local folder = world and world:FindFirstChild(NODES_FOLDER_NAME)
 	if folder and folder:IsA("Folder") then
 		return folder, world

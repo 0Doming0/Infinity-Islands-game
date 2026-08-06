@@ -654,9 +654,8 @@ function SanctuaryService.Start()
 	end
 	started = true
 	GameplayAnalytics.Start()
-	if not ChunkManager.IsRunning() then
-		ChunkManager.Start()
-	end
+	-- O Main/DungeonRuntimeService e o unico dono da inicializacao do gerador.
+	-- O santuario pode registrar seus listeners antes de o mapa ficar pronto.
 	transitionRemote = ensureRemote()
 	transitionRemote.OnServerEvent:Connect(function(player, payload)
 		if type(payload) ~= "table" or payload.Action ~= "ClientReady" then

@@ -1,8 +1,5 @@
--- Inicializador canonico da geracao. Start e idempotente porque o sistema de
--- agua tambem confirma que o mundo esta pronto antes de iniciar sua simulacao.
+-- Inicializador canonico do Place de dungeon. O runtime valida o TeleportData,
+-- carrega os perfis e somente entao inicia o gerador com PhaseId/PartySize/Seed.
 
-local ChunkManager = require(script.Parent.ChunkManager_SkyDungeon_V10)
-
-if not ChunkManager.IsRunning() then
-	ChunkManager.Start()
-end
+local DungeonRuntimeService = require(script.Parent.Parent.DungeonRuntime.DungeonRuntimeService)
+DungeonRuntimeService.Start()

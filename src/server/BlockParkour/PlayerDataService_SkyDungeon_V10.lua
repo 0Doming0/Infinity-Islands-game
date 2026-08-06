@@ -15,7 +15,7 @@ local CompanionCatalog = require(ReplicatedStorage:WaitForChild("CompanionCatalo
 
 local DATASTORE_NAME = "SkyDungeonPlayerData_V10"
 local LEGACY_MVP_DATASTORE_NAME = "BlockParkour_PlayerData_v1"
-local SCHEMA_VERSION = 10
+local SCHEMA_VERSION = 11
 local SCORE_SCALE_VERSION = 3
 local STARTER_SWORD_ID = "ClassicSword"
 local LOAD_RETRIES = 4
@@ -45,6 +45,10 @@ local function defaultData()
 			[STARTER_SWORD_ID] = true,
 		},
 		EquippedSword = STARTER_SWORD_ID,
+		OwnedWings = {},
+		EquippedWings = nil,
+		OwnedAbilities = {},
+		EquippedAbility = nil,
 		OwnedRelics = {},
 		EquippedRelic = nil,
 		OwnedCompanions = {},
@@ -57,6 +61,19 @@ local function defaultData()
 		AnalyticsOnboardingCompleted = false,
 		DailyLastClaimDay = 0,
 		DailyStreak = 0,
+		Tickets = {
+			LuckyWheelSpin = 0,
+		},
+		Progression = {
+			Phases = {
+				Phase01 = { Completions = 0, BossDefeated = false, BestTime = nil },
+				Phase02 = { Completions = 0, BossDefeated = false, BestTime = nil },
+			},
+		},
+		Roulette = {
+			TotalSpins = 0,
+			LastSpinAt = 0,
+		},
 		Monetization = {
 			TreasureBoostUntil = 0,
 			EliteBoostUntil = 0,
@@ -112,6 +129,21 @@ local function sanitizeOwnedSwords(raw)
 	return owned
 end
 
+local function sanitizeOwnedSet(raw)
+	local owned = {}
+	if type(raw) ~= "table" then
+		return owned
+	end
+	for key, value in pairs(raw) do
+		if type(key) == "string" and value == true then
+			owned[key] = true
+		elseif type(key) == "number" and type(value) == "string" and value ~= "" then
+			owned[value] = true
+		end
+	end
+	return owned
+end
+
 local function sanitizeInventory(raw)
 	local inventory = {}
 	if type(raw) ~= "table" then
@@ -124,6 +156,38 @@ local function sanitizeInventory(raw)
 		end
 	end
 	return inventory
+end
+
+local function sanitizeTickets(raw)
+	local tickets = { LuckyWheelSpin = 0 }
+	if type(raw) ~= "table" then
+		return tickets
+	end
+	for ticketId, amount in pairs(raw) do
+		if type(ticketId) == "string" and ticketId ~= "" then
+			tickets[ticketId] = math.clamp(math.floor(tonumber(amount) or 0), 0, 9999)
+		end
+	end
+	return tickets
+end
+
+local function sanitizePhaseProgress(raw)
+	local result = {
+		Phase01 = { Completions = 0, BossDefeated = false, BestTime = nil },
+		Phase02 = { Completions = 0, BossDefeated = false, BestTime = nil },
+	}
+	local phases = type(raw) == "table" and raw.Phases or nil
+	if type(phases) ~= "table" then
+		return { Phases = result }
+	end
+	for phaseId, defaults in pairs(result) do
+		local saved = type(phases[phaseId]) == "table" and phases[phaseId] or {}
+		local bestTime = tonumber(saved.BestTime)
+		defaults.Completions = math.max(0, math.floor(tonumber(saved.Completions) or 0))
+		defaults.BossDefeated = saved.BossDefeated == true or defaults.Completions > 0
+		defaults.BestTime = bestTime and bestTime > 0 and bestTime or nil
+	end
+	return { Phases = result }
 end
 
 local function sanitizeOwnedRelics(raw)
@@ -298,6 +362,8 @@ local function sanitize(raw)
 	data.Stamina = math.max(0, math.floor((tonumber(raw.Stamina) or 0) * 2 + 0.5) / 2)
 	data.BestScore = migrateBestScore(raw, sourceVersion)
 	data.OwnedSwords = sanitizeOwnedSwords(raw.OwnedSwords)
+	data.OwnedWings = sanitizeOwnedSet(raw.OwnedWings or (raw.Inventory and raw.Inventory.Wings))
+	data.OwnedAbilities = sanitizeOwnedSet(raw.OwnedAbilities or (raw.Inventory and raw.Inventory.Abilities))
 	data.OwnedRelics = sanitizeOwnedRelics(raw.OwnedRelics)
 	local migratedCompanionIds
 	data.OwnedCompanions, migratedCompanionIds = sanitizeOwnedCompanions(raw.OwnedCompanions)
@@ -317,6 +383,16 @@ local function sanitize(raw)
 	local equipped = type(raw.EquippedSword) == "string" and raw.EquippedSword or STARTER_SWORD_ID
 	if data.OwnedSwords[equipped] then
 		data.EquippedSword = equipped
+	end
+	local equippedWings = type(raw.EquippedWings) == "string" and raw.EquippedWings
+		or type(raw.Equipped) == "table" and raw.Equipped.Wings
+	if equippedWings and data.OwnedWings[equippedWings] then
+		data.EquippedWings = equippedWings
+	end
+	local equippedAbility = type(raw.EquippedAbility) == "string" and raw.EquippedAbility
+		or type(raw.Equipped) == "table" and raw.Equipped.Ability
+	if equippedAbility and data.OwnedAbilities[equippedAbility] then
+		data.EquippedAbility = equippedAbility
 	end
 	local equippedRelic = type(raw.EquippedRelic) == "string" and raw.EquippedRelic or nil
 	if equippedRelic and data.OwnedRelics[equippedRelic] then
@@ -340,6 +416,13 @@ local function sanitize(raw)
 	)
 	data.DailyLastClaimDay = math.max(0, math.floor(tonumber(raw.DailyLastClaimDay) or 0))
 	data.DailyStreak = math.clamp(math.floor(tonumber(raw.DailyStreak) or 0), 0, 7)
+	data.Tickets = sanitizeTickets(raw.Tickets or (raw.Inventory and raw.Inventory.Tickets))
+	data.Progression = sanitizePhaseProgress(raw.Progression)
+	local rawRoulette = type(raw.Roulette) == "table" and raw.Roulette or {}
+	data.Roulette = {
+		TotalSpins = math.max(0, math.floor(tonumber(rawRoulette.TotalSpins) or 0)),
+		LastSpinAt = math.max(0, math.floor(tonumber(rawRoulette.LastSpinAt) or 0)),
+	}
 	local rawMonetization = type(raw.Monetization) == "table" and raw.Monetization or {}
 	data.Monetization = {
 		TreasureBoostUntil = math.max(0, math.floor(tonumber(rawMonetization.TreasureBoostUntil) or 0)),
@@ -397,6 +480,18 @@ local function cloneCompanions(source)
 	return result
 end
 
+local function cloneProgression(source)
+	local phases = {}
+	for phaseId, progress in pairs(source.Phases or {}) do
+		phases[phaseId] = {
+			Completions = progress.Completions,
+			BossDefeated = progress.BossDefeated == true,
+			BestTime = progress.BestTime,
+		}
+	end
+	return { Phases = phases }
+end
+
 local function cloneData(data)
 	return {
 		SchemaVersion = SCHEMA_VERSION,
@@ -405,6 +500,10 @@ local function cloneData(data)
 		BestScore = data.BestScore,
 		OwnedSwords = cloneDictionary(data.OwnedSwords),
 		EquippedSword = data.EquippedSword,
+		OwnedWings = cloneDictionary(data.OwnedWings),
+		EquippedWings = data.EquippedWings,
+		OwnedAbilities = cloneDictionary(data.OwnedAbilities),
+		EquippedAbility = data.EquippedAbility,
 		OwnedRelics = cloneDictionary(data.OwnedRelics),
 		EquippedRelic = data.EquippedRelic,
 		OwnedCompanions = cloneCompanions(data.OwnedCompanions),
@@ -417,6 +516,9 @@ local function cloneData(data)
 		AnalyticsOnboardingCompleted = data.AnalyticsOnboardingCompleted == true,
 		DailyLastClaimDay = data.DailyLastClaimDay,
 		DailyStreak = data.DailyStreak,
+		Tickets = cloneDictionary(data.Tickets),
+		Progression = cloneProgression(data.Progression),
+		Roulette = cloneDictionary(data.Roulette),
 		Monetization = cloneMonetization(data.Monetization),
 	}
 end
@@ -701,6 +803,76 @@ function PlayerDataService.SetEquippedSword(player, swordId)
 		return false
 	end
 	session.Data.EquippedSword = swordId
+	markDirty(session)
+	return true
+end
+
+function PlayerDataService.HasWings(player, wingId)
+	local data = PlayerDataService.Get(player)
+	return data ~= nil and data.OwnedWings[wingId] == true
+end
+
+function PlayerDataService.GrantWings(player, wingId)
+	local session = sessions[player]
+	if not session or type(wingId) ~= "string" or wingId == "" then
+		return false
+	end
+	if not session.Data.OwnedWings[wingId] then
+		session.Data.OwnedWings[wingId] = true
+		markDirty(session)
+	end
+	return true
+end
+
+function PlayerDataService.SetEquippedWings(player, wingId)
+	local session = sessions[player]
+	if not session then
+		return false
+	end
+	if wingId == nil or wingId == "" then
+		session.Data.EquippedWings = nil
+		markDirty(session)
+		return true
+	end
+	if session.Data.OwnedWings[wingId] ~= true then
+		return false
+	end
+	session.Data.EquippedWings = wingId
+	markDirty(session)
+	return true
+end
+
+function PlayerDataService.HasAbility(player, abilityId)
+	local data = PlayerDataService.Get(player)
+	return data ~= nil and data.OwnedAbilities[abilityId] == true
+end
+
+function PlayerDataService.GrantAbility(player, abilityId)
+	local session = sessions[player]
+	if not session or type(abilityId) ~= "string" or abilityId == "" then
+		return false
+	end
+	if not session.Data.OwnedAbilities[abilityId] then
+		session.Data.OwnedAbilities[abilityId] = true
+		markDirty(session)
+	end
+	return true
+end
+
+function PlayerDataService.SetEquippedAbility(player, abilityId)
+	local session = sessions[player]
+	if not session then
+		return false
+	end
+	if abilityId == nil or abilityId == "" then
+		session.Data.EquippedAbility = nil
+		markDirty(session)
+		return true
+	end
+	if session.Data.OwnedAbilities[abilityId] ~= true then
+		return false
+	end
+	session.Data.EquippedAbility = abilityId
 	markDirty(session)
 	return true
 end
@@ -1109,6 +1281,76 @@ function PlayerDataService.UpgradeCompanionStat(player, instanceId, statName)
 	return true
 end
 
+function PlayerDataService.GetTicketAmount(player, ticketId)
+	local data = PlayerDataService.Get(player)
+	return data and math.max(0, math.floor(tonumber(data.Tickets[ticketId]) or 0)) or 0
+end
+
+function PlayerDataService.AddTicket(player, ticketId, amount)
+	local session = sessions[player]
+	local clean = math.max(1, math.floor(tonumber(amount) or 1))
+	if not session or type(ticketId) ~= "string" or ticketId == "" then
+		return false, 0
+	end
+	local nextAmount = math.min(9999, (session.Data.Tickets[ticketId] or 0) + clean)
+	session.Data.Tickets[ticketId] = nextAmount
+	markDirty(session)
+	return true, nextAmount
+end
+
+function PlayerDataService.RemoveTicket(player, ticketId, amount)
+	local session = sessions[player]
+	local clean = math.max(1, math.floor(tonumber(amount) or 1))
+	if not session or type(ticketId) ~= "string" then
+		return false, 0
+	end
+	local current = session.Data.Tickets[ticketId] or 0
+	if current < clean then
+		return false, current
+	end
+	local nextAmount = current - clean
+	session.Data.Tickets[ticketId] = nextAmount
+	markDirty(session)
+	return true, nextAmount
+end
+
+function PlayerDataService.RecordRouletteSpin(player)
+	local session = sessions[player]
+	if not session then
+		return false
+	end
+	session.Data.Roulette.TotalSpins += 1
+	session.Data.Roulette.LastSpinAt = os.time()
+	markDirty(session)
+	return true
+end
+
+function PlayerDataService.GetPhaseProgress(player, phaseId)
+	local data = PlayerDataService.Get(player)
+	local progress = data and data.Progression.Phases[phaseId]
+	return progress and {
+		Completions = progress.Completions,
+		BossDefeated = progress.BossDefeated,
+		BestTime = progress.BestTime,
+	} or nil
+end
+
+function PlayerDataService.RecordPhaseCompletion(player, phaseId, elapsedSeconds)
+	local session = sessions[player]
+	local progress = session and session.Data.Progression.Phases[phaseId]
+	if not progress then
+		return false
+	end
+	local elapsed = math.max(0.01, tonumber(elapsedSeconds) or math.huge)
+	progress.Completions += 1
+	progress.BossDefeated = true
+	if elapsed < math.huge and (not progress.BestTime or elapsed < progress.BestTime) then
+		progress.BestTime = elapsed
+	end
+	markDirty(session)
+	return true
+end
+
 function PlayerDataService.GetDailyRewardState(player)
 	local data = PlayerDataService.Get(player)
 	if not data then
@@ -1307,6 +1549,16 @@ function PlayerDataService.Save(player, force)
 					snapshot.OwnedSwords[swordId] = true
 				end
 			end
+			for wingId, owned in pairs(previousData.OwnedWings) do
+				if owned then
+					snapshot.OwnedWings[wingId] = true
+				end
+			end
+			for abilityId, owned in pairs(previousData.OwnedAbilities) do
+				if owned then
+					snapshot.OwnedAbilities[abilityId] = true
+				end
+			end
 			for relicId, owned in pairs(previousData.OwnedRelics) do
 				if owned then
 					snapshot.OwnedRelics[relicId] = true
@@ -1346,6 +1598,12 @@ function PlayerDataService.Save(player, force)
 			if not snapshot.OwnedSwords[snapshot.EquippedSword] then
 				snapshot.EquippedSword = STARTER_SWORD_ID
 			end
+			if snapshot.EquippedWings and not snapshot.OwnedWings[snapshot.EquippedWings] then
+				snapshot.EquippedWings = nil
+			end
+			if snapshot.EquippedAbility and not snapshot.OwnedAbilities[snapshot.EquippedAbility] then
+				snapshot.EquippedAbility = nil
+			end
 			if snapshot.EquippedRelic and not snapshot.OwnedRelics[snapshot.EquippedRelic] then
 				snapshot.EquippedRelic = nil
 			end
@@ -1362,6 +1620,26 @@ function PlayerDataService.Save(player, force)
 			elseif previousData.DailyLastClaimDay == snapshot.DailyLastClaimDay then
 				snapshot.DailyStreak = math.max(snapshot.DailyStreak, previousData.DailyStreak)
 			end
+			for phaseId, previousProgress in pairs(previousData.Progression.Phases) do
+				local current = snapshot.Progression.Phases[phaseId]
+				if current then
+					current.Completions = math.max(current.Completions, previousProgress.Completions)
+					current.BossDefeated = current.BossDefeated or previousProgress.BossDefeated
+					if previousProgress.BestTime and (
+						not current.BestTime or previousProgress.BestTime < current.BestTime
+					) then
+						current.BestTime = previousProgress.BestTime
+					end
+				end
+			end
+			snapshot.Roulette.TotalSpins = math.max(
+				snapshot.Roulette.TotalSpins,
+				previousData.Roulette.TotalSpins
+			)
+			snapshot.Roulette.LastSpinAt = math.max(
+				snapshot.Roulette.LastSpinAt,
+				previousData.Roulette.LastSpinAt
+			)
 			snapshot.Monetization.TreasureBoostUntil = math.max(
 				snapshot.Monetization.TreasureBoostUntil,
 				previousData.Monetization.TreasureBoostUntil

@@ -426,7 +426,7 @@ local function createFogCurtains(highestY)
 end
 
 local function findFogCoreAnchorPosition(highestY)
-	local generatedWorld = workspace:FindFirstChild(MapConfig.WORLD_MODEL_NAME)
+	local generatedWorld = workspace:FindFirstChild(MapConfig.WORLD_MODEL_NAME, true)
 
 	if not generatedWorld then
 		return Vector3.new(worldCenter.X, highestY + CONFIG.FOG_CORE_OFFSET_Y, worldCenter.Z)
@@ -978,10 +978,12 @@ local function queueNewHighestY(newHighestY)
 	processRevealQueue()
 end
 
-local worldModel = workspace:WaitForChild(
-	MapConfig.WORLD_MODEL_NAME,
-	CONFIG.STARTUP_TIMEOUT_SECONDS
-)
+local worldModel = workspace:FindFirstChild(MapConfig.WORLD_MODEL_NAME, true)
+local worldDeadline = os.clock() + CONFIG.STARTUP_TIMEOUT_SECONDS
+while not worldModel and os.clock() < worldDeadline do
+	task.wait(0.1)
+	worldModel = workspace:FindFirstChild(MapConfig.WORLD_MODEL_NAME, true)
+end
 
 if not worldModel then
 	warn(

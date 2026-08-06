@@ -40,6 +40,16 @@ local function destroyExistingStartScreens()
 	end
 end
 
+local function usesDungeonAutoStart()
+	return workspace:GetAttribute("DungeonRuntimeManaged") == true
+		or player:GetAttribute("DungeonRuntimeAutoStart") == true
+end
+
+if usesDungeonAutoStart() then
+	destroyExistingStartScreens()
+	return
+end
+
 if
 	player:GetAttribute("InitialGameStarted") == true
 	and player:GetAttribute("PlayerLifecycleState") == "Playing"
@@ -99,6 +109,16 @@ local function releaseResources()
 end
 
 track(gui.Destroying:Connect(releaseResources))
+
+local function closeForDungeonRuntime()
+	if usesDungeonAutoStart() and gui.Parent then
+		gui:Destroy()
+	end
+end
+
+track(workspace:GetAttributeChangedSignal("DungeonRuntimeManaged"):Connect(closeForDungeonRuntime))
+track(player:GetAttributeChangedSignal("DungeonRuntimeAutoStart"):Connect(closeForDungeonRuntime))
+closeForDungeonRuntime()
 
 local function addCorner(parent, radius)
 	local corner = Instance.new("UICorner")

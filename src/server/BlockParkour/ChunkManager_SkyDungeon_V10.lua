@@ -23,6 +23,7 @@ local PartyService = require(script.Parent.PartyService)
 local CollectiveProgressService = require(script.Parent.CollectiveProgressService)
 local SpatialHash = require(script.Parent.SpatialHash)
 local GameplayAnalytics = require(ServerScriptService:WaitForChild("GameplayAnalyticsService"))
+local RuntimeFolders = require(script.Parent.Parent.DungeonRuntime.RuntimeFolders)
 
 local ChunkManager = {}
 
@@ -86,6 +87,9 @@ local latestCollectiveSnapshot = {
 	LowerGroupY = nil,
 }
 local emergencyGenerationInProgress = false
+local runtimeOptions = {}
+local maximumIslandCount = math.huge
+local phaseReadySignaled = false
 
 local function countRecords(records)
 	local count = 0
@@ -322,10 +326,15 @@ local function updateWorldAttributes(force)
 	worldModel:SetAttribute("MysteryFocusDistanceStuds", Config.FRONTIER_MYSTERY_FOCUS_DISTANCE_STUDS)
 	worldModel:SetAttribute("MysteryInFocusRadiusStuds", Config.FRONTIER_MYSTERY_IN_FOCUS_RADIUS_STUDS)
 	worldModel:SetAttribute("MysteryFarIntensity", Config.FRONTIER_MYSTERY_FAR_INTENSITY)
+	worldModel:SetAttribute("PhaseId", runtimeOptions.PhaseId or "Phase01")
+	worldModel:SetAttribute("InitialPartySize", math.max(1, math.floor(tonumber(runtimeOptions.PartySize) or 1)))
+	worldModel:SetAttribute("MaximumPhaseIslandCount", maximumIslandCount < math.huge and maximumIslandCount or 0)
 end
 
 local function prepareWorld()
-	local oldWorld = workspace:FindFirstChild(Config.WORLD_MODEL_NAME)
+	local generatedRoot = RuntimeFolders.Get("GeneratedIslands")
+	local oldWorld = generatedRoot:FindFirstChild(Config.WORLD_MODEL_NAME)
+		or workspace:FindFirstChild(Config.WORLD_MODEL_NAME)
 	if oldWorld then
 		oldWorld:Destroy()
 	end
@@ -348,7 +357,7 @@ local function prepareWorld()
 	worldModel:SetAttribute("GridSize", Config.GRID_SIZE)
 	worldModel:SetAttribute("InitialGenerationComplete", false)
 	worldModel:SetAttribute("InitialGenerationSuccessful", false)
-	worldModel.Parent = workspace
+	worldModel.Parent = generatedRoot
 
 	nodesFolder = Instance.new("Folder")
 	nodesFolder.Name = "IslandNodes"
@@ -470,6 +479,9 @@ local function createNode(spec, reason, generationOwnerUserId)
 	if existing then
 		return existing, false
 	end
+	if totalNodeCount >= maximumIslandCount then
+		return nil, false, "limite de ilhas da fase atingido"
+	end
 	if activeNodeCount >= Config.FRONTIER_MAX_ACTIVE_ISLANDS then
 		return nil, false, "limite de ilhas ativas atingido"
 	end
@@ -482,6 +494,7 @@ local function createNode(spec, reason, generationOwnerUserId)
 		DeferVisualContent = true,
 		RecycledModel = recycledModel,
 		GenerationOwnerUserId = generationOwnerUserId,
+		PhaseId = runtimeOptions.PhaseId or "Phase01",
 	})
 	model:SetAttribute("GenerationReason", reason or "Unknown")
 	model:SetAttribute("GenerationOwnerUserId", generationOwnerUserId)
@@ -525,6 +538,20 @@ local function createNode(spec, reason, generationOwnerUserId)
 		CollectionService:AddTag(model, "SkyDungeonSanctuary")
 	end
 	updateWorldAttributes()
+	if totalNodeCount >= maximumIslandCount and not phaseReadySignaled then
+		phaseReadySignaled = true
+		worldModel:SetAttribute("PhaseIslandLimitReached", true)
+		local callback = runtimeOptions.OnPhaseReady
+		if type(callback) == "function" then
+			task.defer(callback, {
+				Key = record.Key,
+				Model = record.Model,
+				IslandModel = record.IslandModel,
+				Floor = record.Floor,
+				LogicalLevel = record.Spec.Level,
+			})
+		end
+	end
 	return record, true
 end
 
@@ -572,6 +599,7 @@ local function createEdge(source, target, directionId)
 		Seed = target.Spec.Seed,
 		YieldCallback = yieldGeometrySlice,
 		RecycledModel = recycledModel,
+		PhaseId = runtimeOptions.PhaseId or "Phase01",
 	})
 	geometryOperationActive = false
 	if not success then
@@ -1713,12 +1741,15 @@ function ChunkManager.GetSafeZoneContext(position, horizontalPadding, verticalPa
 	return best
 end
 
-function ChunkManager.Start()
+function ChunkManager.Start(options)
 	if running then
-		return
+		return true
 	end
+	runtimeOptions = type(options) == "table" and options or {}
+	maximumIslandCount = math.max(1, math.floor(tonumber(runtimeOptions.MaximumIslandCount) or math.huge))
+	phaseReadySignaled = false
 	validateConfig()
-	baseSeed = Config.SEED or (os.time() % 2147483647)
+	baseSeed = tonumber(runtimeOptions.Seed) or Config.SEED or (os.time() % 2147483647)
 	nodeSerial = 0
 	totalNodeCount = 0
 	totalEdgeCount = 0
@@ -2224,6 +2255,34 @@ end
 
 function ChunkManager.GetWorldModel()
 	return worldModel
+end
+
+function ChunkManager.GetEndContext()
+	local selected
+	for _, record in pairs(nodesByKey) do
+		if record.Model and record.Model.Parent and record.Floor and record.Floor.Parent then
+			if not selected
+				or record.Spec.Level > selected.Spec.Level
+				or (record.Spec.Level == selected.Spec.Level and record.CreatedAt > selected.CreatedAt)
+			then
+				selected = record
+			end
+		end
+	end
+	if not selected then
+		return nil
+	end
+	return {
+		Key = selected.Key,
+		Model = selected.Model,
+		IslandModel = selected.IslandModel,
+		Floor = selected.Floor,
+		LogicalLevel = selected.Spec.Level,
+	}
+end
+
+function ChunkManager.GetTotalIslandCount()
+	return totalNodeCount
 end
 
 function ChunkManager.IsRunning()

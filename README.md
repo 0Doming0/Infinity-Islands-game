@@ -1,5 +1,8 @@
 # SkyDungeon
 
+> A integração de lobby, duas fases e boss está documentada em
+> [`docs/LOBBY_MVP_INTEGRATION.md`](docs/LOBBY_MVP_INTEGRATION.md).
+
 Projeto Roblox sincronizado por Rojo. O loop do MVP e subir antes da agua,
 lutar, acumular moedas, comprar equipamento nas vilas e arriscar rotas laterais.
 
@@ -174,7 +177,7 @@ nao muda conforme os jogadores presentes no servidor.
 
 ## Economia e salvamento
 
-O DataStore canonico continua `SkyDungeonPlayerData_V10`, agora com schema 8:
+O DataStore canonico continua `SkyDungeonPlayerData_V10`, agora com schema 11:
 
 ```text
 Coins
@@ -184,6 +187,11 @@ EquippedSword
 OwnedCompanions
 EquippedCompanions
 Inventory
+OwnedWings / EquippedWings
+OwnedAbilities / EquippedAbility
+Tickets
+Progression.Phases
+Roulette
 ```
 
 Registros antigos sao migrados. `TotalScore` antigo nao vira moeda, e recordes

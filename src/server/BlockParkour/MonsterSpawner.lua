@@ -21,6 +21,8 @@
 	AttackDamage        Number   8
 	SpawnChance         Number   1
 	SpawnWeight         Number   10
+	MinimumRound        Number   1
+	MaximumRound        Number   sem limite
 	MinimumIslandSize   String   "Small", "Medium" ou "Large"
 	SpawnMode           String   "Solo", "Group" ou "Boss"
 	GroupMin            Number   2
@@ -57,6 +59,8 @@ local GameplayAnalytics = require(ServerScriptService:WaitForChild("GameplayAnal
 local CompanionService = require(script.Parent.Parent.MVPSystems.CompanionService)
 local RewardWheelService = require(script.Parent.Parent.MVPSystems.RewardWheelService)
 local MonetizationService = require(script.Parent.Parent.MVPSystems.MonetizationService)
+local ContentResolver = require(script.Parent.Parent.DungeonRuntime.ContentResolver)
+local PartyScalingService = require(script.Parent.Parent.DungeonRuntime.PartyScalingService)
 
 ScoreService.Start()
 InventoryService.Start()
@@ -117,10 +121,19 @@ local function numberAttribute(instance, name, defaultValue)
 end
 
 local function getSpawnLimit(isElite)
+	local maximum = math.max(
+		1,
+		math.floor(tonumber(workspace:GetAttribute("DungeonMaximumActiveMonsters")) or CONFIG.MAX_MONSTERS)
+	)
+	local reserved = math.clamp(
+		math.floor(tonumber(workspace:GetAttribute("DungeonEliteReservedMonsterSlots")) or CONFIG.ELITE_RESERVED_SLOTS),
+		0,
+		maximum - 1
+	)
 	if isElite then
-		return CONFIG.MAX_MONSTERS
+		return maximum
 	end
-	return math.max(0, CONFIG.MAX_MONSTERS - CONFIG.ELITE_RESERVED_SLOTS)
+	return math.max(0, maximum - reserved)
 end
 
 local function getRoot(model)
@@ -257,19 +270,18 @@ local function ensureEliteBoundary(island)
 end
 
 local function getMonsterFolder()
-	local assets = ServerStorage:FindFirstChild("MVPAssets")
-	if not assets then
-		assets = Instance.new("Folder")
-		assets.Name = "MVPAssets"
-		assets.Parent = ServerStorage
+	local phaseId = tostring(workspace:GetAttribute("DungeonPhaseId") or "Phase01")
+	local folder = ContentResolver.GetPhaseCategory(phaseId, "Enemies")
+	if folder then
+		return folder
 	end
-	local folder = assets:FindFirstChild("Monsters")
-	if not folder then
-		folder = Instance.new("Folder")
-		folder.Name = "Monsters"
-		folder.Parent = assets
-	end
-	return folder
+	local assets = ServerStorage:FindFirstChild("MVPAssets") or Instance.new("Folder")
+	assets.Name = "MVPAssets"
+	assets.Parent = ServerStorage
+	local fallback = assets:FindFirstChild("Monsters") or Instance.new("Folder")
+	fallback.Name = "Monsters"
+	fallback.Parent = assets
+	return fallback
 end
 
 local function createPrototypeMonster(folder)
@@ -351,7 +363,7 @@ local function getTemplates()
 	return templates
 end
 
-local function chooseWeightedTemplate(random, templates, islandSize)
+local function chooseWeightedTemplate(random, templates, islandSize, roundIndex)
 	local islandRank = SIZE_RANK[islandSize] or 0
 	local candidates = {}
 	local totalWeight = 0
@@ -360,7 +372,9 @@ local function chooseWeightedTemplate(random, templates, islandSize)
 		local minimumSize = template:GetAttribute("MinimumIslandSize") or CONFIG.DEFAULT_MINIMUM_ISLAND_SIZE
 		local minimumRank = SIZE_RANK[minimumSize] or math.huge
 		local weight = math.max(0, numberAttribute(template, "SpawnWeight", CONFIG.DEFAULT_SPAWN_WEIGHT))
-		if islandRank >= minimumRank and weight > 0 then
+		local minimumRound = math.max(1, math.floor(numberAttribute(template, "MinimumRound", 1)))
+		local maximumRound = math.max(minimumRound, math.floor(numberAttribute(template, "MaximumRound", math.huge)))
+		if islandRank >= minimumRank and roundIndex >= minimumRound and roundIndex <= maximumRound and weight > 0 then
 			totalWeight += weight
 			table.insert(candidates, {
 				Template = template,
@@ -623,6 +637,18 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 	end
 	maxHealth = math.floor(maxHealth * healthMultiplier)
 	attackDamage = math.floor(attackDamage * damageMultiplier)
+	local partySize = math.clamp(
+		math.floor(tonumber(workspace:GetAttribute("DungeonPartySize")) or 1),
+		1,
+		4
+	)
+	local partyMultipliers
+	maxHealth, attackDamage, partyMultipliers = PartyScalingService.ScaleValues(
+		maxHealth,
+		attackDamage,
+		partySize,
+		false
+	)
 	scoreValue = math.max(1, math.floor(scoreValue * rewardMultiplier))
 	coinValue = math.max(1, math.floor(coinValue * rewardMultiplier))
 	if elite then
@@ -653,6 +679,7 @@ local function spawnClone(template, parent, island, cellRecord, marker, random, 
 	clone:SetAttribute("AttackDamage", attackDamage)
 	clone:SetAttribute("DifficultyTier", difficultyTier)
 	clone:SetAttribute("IsElite", elite)
+	PartyScalingService.MarkApplied(clone, partySize, partyMultipliers)
 	if elite then
 		local baseAttackCooldown = slimeDefinition and slimeDefinition.AttackCooldown
 			or numberAttribute(template, "AttackCooldown", 1.15)
@@ -976,11 +1003,12 @@ function MonsterSpawner.PopulateIsland(island, freeCells, context)
 	local baseSeed = typeof(islandSeed) == "number" and islandSeed or (context.RoundSeed or 1)
 	local seed = normalizedSeed(baseSeed + terrainId * 7907 + CONFIG.RANDOM_SALT)
 	local random = Random.new(seed)
-	local template = chooseWeightedTemplate(random, templates, islandSize)
+	local roundIndex = math.max(1, math.floor(tonumber(island:GetAttribute("RoundIndex")) or 1))
+	local template = chooseWeightedTemplate(random, templates, islandSize, roundIndex)
 	if not template and eliteIsland then
 		-- Uma ilha Elite nunca deve ficar vazia apenas porque todos os modelos
-		-- cadastrados pedem uma ilha maior.
-		template = templates[random:NextInteger(1, #templates)]
+		-- disponiveis neste round pedem uma ilha maior.
+		template = chooseWeightedTemplate(random, templates, "Large", roundIndex)
 	end
 	if not template then
 		return 0
@@ -989,7 +1017,12 @@ function MonsterSpawner.PopulateIsland(island, freeCells, context)
 	local routeChanceMultiplier = math.max(0, tonumber(island:GetAttribute("MonsterChanceMultiplier")) or 1)
 	local spawnChance = eliteIsland and 1
 		or math.clamp(
-			numberAttribute(template, "SpawnChance", CONFIG.DEFAULT_SPAWN_CHANCE) * routeChanceMultiplier,
+			numberAttribute(
+				template,
+				"SpawnChance",
+				tonumber(workspace:GetAttribute("DungeonDefaultMonsterSpawnChance"))
+					or CONFIG.DEFAULT_SPAWN_CHANCE
+			) * routeChanceMultiplier,
 			0,
 			1
 		)

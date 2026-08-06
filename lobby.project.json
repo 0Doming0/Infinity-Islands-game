@@ -1,0 +1,34 @@
+{
+  "name": "Infinity Islands Lobby",
+  "servePort": 34873,
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "$path": "src/shared"
+    },
+    "ServerScriptService": {
+      "BlockParkour": {
+        "$className": "Folder",
+        "PlayerDataService_SkyDungeon_V10": {
+          "$path": "src/server/BlockParkour/PlayerDataService_SkyDungeon_V10.lua"
+        },
+        "PartyService": {
+          "$path": "src/server/BlockParkour/PartyService.lua"
+        }
+      },
+      "Lobby": {
+        "$path": "src/lobby/server"
+      }
+    },
+    "StarterPlayer": {
+      "StarterPlayerScripts": {
+        "PartyUI": {
+          "$path": "src/client/PartyUI.client.luau"
+        },
+        "LobbyUI": {
+          "$path": "src/lobby/client/LobbyUI.client.luau"
+        }
+      }
+    }
+  }
+}

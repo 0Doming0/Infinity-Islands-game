@@ -5,6 +5,12 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerStorage = game:GetService("ServerStorage")
 
+-- A tela de entrada pertence ao Lobby no fluxo Lobby -> Dungeon. Nao publique
+-- copias de preview no Place gerenciado da Dungeon.
+if workspace:GetAttribute("DungeonRuntimeManaged") == true then
+	return
+end
+
 local CompanionCatalog = require(ReplicatedStorage:WaitForChild("CompanionCatalog"))
 local SlimeVariants = require(
 	script.Parent.BlockParkour:WaitForChild("SlimeVariants")
@@ -211,6 +217,12 @@ end
 
 task.spawn(function()
 	while true do
+		if workspace:GetAttribute("DungeonRuntimeManaged") == true then
+			if previewRoot.Parent then
+				previewRoot:Destroy()
+			end
+			return
+		end
 		local assets = ServerStorage:FindFirstChild("MVPAssets")
 		local swords = assets and assets:FindFirstChild("Swords")
 		local monsters = assets and assets:FindFirstChild("Monsters")

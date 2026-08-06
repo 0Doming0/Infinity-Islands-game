@@ -14,7 +14,6 @@
 	as celulas logicas para o sistema de conteudo.
 ]]
 
-local ServerStorage = game:GetService("ServerStorage")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Config = require(script.Parent.Config_SkyDungeon_V10)
@@ -22,6 +21,7 @@ local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 local MonsterSpawner = require(script.Parent.MonsterSpawner)
 local IslandTypeService = require(script.Parent.IslandTypeService)
 local ChestService = require(script.Parent.ChestService)
+local ContentResolver = require(script.Parent.Parent.DungeonRuntime.ContentResolver)
 local Generator = {}
 local warnedMissingDecorationAssets = false
 local warnedMissingGrassAssets = false
@@ -33,6 +33,62 @@ local function clearAttributes(instance)
 	for name in pairs(instance:GetAttributes()) do
 		instance:SetAttribute(name, nil)
 	end
+end
+
+local BLOCK_TEXTURE_FACES = {
+	Enum.NormalId.Top,
+	Enum.NormalId.Bottom,
+	Enum.NormalId.Left,
+	Enum.NormalId.Right,
+	Enum.NormalId.Front,
+	Enum.NormalId.Back,
+}
+
+local function configuredMaterial()
+	local name = workspace:GetAttribute("DungeonIslandBlockMaterial")
+	if typeof(name) == "string" then
+		for _, material in ipairs(Enum.Material:GetEnumItems()) do
+			if material.Name == name then
+				return material
+			end
+		end
+	end
+	return Config.BLOCK_MATERIAL
+end
+
+local function applyBlockAppearance(part)
+	local color = workspace:GetAttribute("DungeonIslandBlockColor")
+	part.Color = typeof(color) == "Color3" and color or Config.BLOCK_COLOR
+	part.Material = configuredMaterial()
+	local textureId = workspace:GetAttribute("DungeonIslandBlockTextureId")
+	textureId = typeof(textureId) == "string" and textureId or ""
+	local studsU = math.max(0.1, tonumber(workspace:GetAttribute("DungeonTextureStudsPerTileU")) or 4)
+	local studsV = math.max(0.1, tonumber(workspace:GetAttribute("DungeonTextureStudsPerTileV")) or 4)
+	for _, face in ipairs(BLOCK_TEXTURE_FACES) do
+		local name = "PhaseBlockTexture_" .. face.Name
+		local texture = part:FindFirstChild(name)
+		if textureId == "" then
+			if texture then
+				texture:Destroy()
+			end
+		else
+			if texture and not texture:IsA("Texture") then
+				texture:Destroy()
+				texture = nil
+			end
+			if not texture then
+				texture = Instance.new("Texture")
+				texture.Name = name
+				texture.Face = face
+				texture.Parent = part
+			end
+			texture.Texture = textureId
+			texture.StudsPerTileU = studsU
+			texture.StudsPerTileV = studsV
+		end
+	end
+	part:SetAttribute("PhaseBlockMaterial", part.Material.Name)
+	part:SetAttribute("PhaseBlockTextureId", textureId ~= "" and textureId or nil)
 end
 
 local function destroyChildrenExcept(parent, keep)
@@ -787,8 +843,7 @@ local function createConnector(parent, cell, pathType, pathId, pathName, sequenc
 	-- pecas. A colisao e os raycasts continuam ativos sem gerar eventos de toque.
 	part.CanTouch = false
 	part.CanQuery = true
-	part.Material = Config.BLOCK_MATERIAL
-	part.Color = Config.BLOCK_COLOR
+	applyBlockAppearance(part)
 	part.TopSurface = Enum.SurfaceType.Smooth
 	part.BottomSurface = Enum.SurfaceType.Smooth
 	part:SetAttribute("BlockType", "Route")
@@ -837,11 +892,11 @@ local function getDecorationTemplates()
 	if decorationTemplateCache then
 		return decorationTemplateCache
 	end
-	local assets = ServerStorage:FindFirstChild("MVPAssets")
-	local folder = assets and assets:FindFirstChild(Config.DECORATION_FOLDER_NAME)
+	local phaseId = tostring(workspace:GetAttribute("DungeonPhaseId") or "Phase01")
+	local folder = ContentResolver.GetPhaseCategory(phaseId, "Decorations")
 	if not folder then
 		if Config.ENABLE_DECORATIONS and not warnedMissingDecorationAssets then
-			warn("[SkyDungeon] Decoracao desativada nesta execucao: crie ServerStorage > MVPAssets > Decorations.")
+			warn("[SkyDungeon] Pasta Decorations ausente na fase selecionada.")
 			warnedMissingDecorationAssets = true
 		end
 		decorationTemplateCache = {}
@@ -868,11 +923,10 @@ local function getGrassTemplates()
 	if grassTemplateCache then
 		return grassTemplateCache
 	end
-	local assets = ServerStorage:FindFirstChild("MVPAssets")
-	local folder = assets and assets:FindFirstChild(Config.GRASS_FOLDER_NAME)
+	local folder = ContentResolver.GetSharedModels(Config.GRASS_FOLDER_NAME)
 	if not folder then
 		if Config.ENABLE_GRASS_MODELS and not warnedMissingGrassAssets then
-			warn("[SkyDungeon] Grama visual ausente: crie ServerStorage > MVPAssets > Grass.")
+			warn("[SkyDungeon] Grama ausente em GameContent/SharedModels/Grass e MVPAssets/Grass.")
 			warnedMissingGrassAssets = true
 		end
 		grassTemplateCache = {}
@@ -1139,7 +1193,13 @@ local function decorateIsland(model, island, content, roundIndex, yieldCallback)
 			marker:SetAttribute("Populated", false)
 			marker.Parent = points
 
-			if random:NextNumber() <= Config.DECORATION_SPAWN_CHANCE then
+			local decorationChance = math.clamp(
+				tonumber(workspace:GetAttribute("DungeonDecorationSpawnChance"))
+					or Config.DECORATION_SPAWN_CHANCE,
+				0,
+				1
+			)
+			if random:NextNumber() <= decorationChance then
 				local template = templates[random:NextInteger(1, #templates)]
 				local decoration = template:Clone()
 				decoration.Name = template.Name
@@ -1223,8 +1283,7 @@ local function createIsland(parent, island, roundIndex, previousCenter, grassTem
 	floor.CanCollide = Config.CAN_COLLIDE
 	floor.CanTouch = false
 	floor.CanQuery = true
-	floor.Material = Config.BLOCK_MATERIAL
-	floor.Color = Config.BLOCK_COLOR
+	applyBlockAppearance(floor)
 	floor.TopSurface = Enum.SurfaceType.Smooth
 	floor.BottomSurface = Enum.SurfaceType.Smooth
 	floor:SetAttribute("BlockType", "Terrain")
@@ -1774,6 +1833,7 @@ function Generator.CreateFrontierNode(parent, spec, options)
 	model:SetAttribute("VisualContentPopulated", options.DeferVisualContent ~= true)
 	model:SetAttribute("GeometryReused", options.RecycledModel ~= nil)
 	model:SetAttribute("GenerationOwnerUserId", options.GenerationOwnerUserId)
+	model:SetAttribute("PhaseId", options.PhaseId or "Phase01")
 
 	terrainFolder.Name = "TerrainAreas"
 	local islandModel = createIsland(terrainFolder, island, roundIndex, spec.Center, getGrassTemplates(), {
@@ -1788,6 +1848,7 @@ function Generator.CreateFrontierNode(parent, spec, options)
 	islandModel:SetAttribute("IsSocialSanctuary", spec.IsSanctuary == true)
 	islandModel:SetAttribute("SimulationActive", false)
 	islandModel:SetAttribute("GenerationOwnerUserId", options.GenerationOwnerUserId)
+	islandModel:SetAttribute("PhaseId", options.PhaseId or "Phase01")
 	IslandTypeService.Classify(islandModel, {
 		ChunkIndex = options.NodeSerial or roundIndex,
 		RoundIndex = roundIndex,
@@ -1882,6 +1943,7 @@ function Generator.CreateFrontierConnection(parent, connectionPlan, options)
 	model:SetAttribute("ConnectionLaneOffsetX", connectionPlan.LaneOffsetCells.X)
 	model:SetAttribute("ConnectionLaneOffsetZ", connectionPlan.LaneOffsetCells.Z)
 	model:SetAttribute("LogicalLevel", options.LogicalLevel or 0)
+	model:SetAttribute("PhaseId", options.PhaseId or "Phase01")
 	model:SetAttribute("VisualContentDeferred", false)
 	model:SetAttribute("OptimizedEssentialRoute", options.DeferVisualContent == true)
 	model:SetAttribute("GeometryReused", options.RecycledModel ~= nil)

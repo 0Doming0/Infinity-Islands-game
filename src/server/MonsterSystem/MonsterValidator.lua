@@ -25,6 +25,8 @@ local NUMBER_RULES = {
 	StunResistance = { 0, 1 },
 	SpawnChance = { 0, 1 },
 	SpawnWeight = { 0 },
+	MinimumRound = { 1 },
+	MaximumRound = { 1 },
 	GroupMin = { 1 },
 	GroupMax = { 1 },
 	GroupSpacing = { 0 },
@@ -123,6 +125,11 @@ function MonsterValidator.Validate(template)
 	local groupMax = tonumber(template:GetAttribute("GroupMax"))
 	if groupMin and groupMax and groupMin > groupMax then
 		add(errors, "GroupMin nao pode ser maior que GroupMax")
+	end
+	local minimumRound = tonumber(template:GetAttribute("MinimumRound"))
+	local maximumRound = tonumber(template:GetAttribute("MaximumRound"))
+	if minimumRound and maximumRound and minimumRound > maximumRound then
+		add(errors, "MinimumRound nao pode ser maior que MaximumRound")
 	end
 	local detection = tonumber(template:GetAttribute("DetectionRange") or template:GetAttribute("AggroRange"))
 	local lose = tonumber(template:GetAttribute("LoseTargetRange") or template:GetAttribute("LoseAggroRange"))

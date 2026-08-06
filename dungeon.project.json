@@ -1,25 +1,17 @@
 {
-  "name": "SkyDungeon",
+  "name": "Infinity Islands Dungeon Runtime",
+  "servePort": 34872,
   "tree": {
     "$className": "DataModel",
-
     "ReplicatedStorage": {
-      
-        "$path": "src/shared"
-      
+      "$path": "src/shared"
     },
-
     "ServerScriptService": {
-      
-        "$path": "src/server"
-      
+      "$path": "src/server"
     },
-
     "StarterPlayer": {
       "StarterPlayerScripts": {
-        
-          "$path": "src/client"
-        
+        "$path": "src/client"
       }
     }
   }

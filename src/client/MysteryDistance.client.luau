@@ -83,16 +83,16 @@ local function attachWorld(world)
 	applySettings()
 end
 
-Workspace.ChildAdded:Connect(function(child)
+Workspace.DescendantAdded:Connect(function(child)
 	if child.Name == WORLD_MODEL_NAME then
 		attachWorld(child)
 	end
 end)
 
-Workspace.ChildRemoved:Connect(function(child)
+Workspace.DescendantRemoving:Connect(function(child)
 	if child == currentWorld then
 		attachWorld(nil)
 	end
 end)
 
-attachWorld(Workspace:FindFirstChild(WORLD_MODEL_NAME))
+attachWorld(Workspace:FindFirstChild(WORLD_MODEL_NAME, true))
