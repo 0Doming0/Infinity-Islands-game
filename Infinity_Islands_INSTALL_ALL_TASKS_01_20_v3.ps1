@@ -7,7 +7,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $ExpectedBranch = 'agent/lobby-mvp-integration'
-$InstallerVersion = 2
+$InstallerVersion = 3
 $PayloadSha256 = 'b60ce4f030fe9d16dbbfca87f088daca99cc1eb3a80f8ceda7ad953a28268518'
 
 function Fail([string]$Message) {
@@ -17,13 +17,13 @@ function Fail([string]$Message) {
 }
 
 function Run-Git {
-    param([string[]]$Args, [string]$WorkingDirectory)
+    param([string[]]$GitArgs, [string]$WorkingDirectory)
     $old = Get-Location
     try {
         if ($WorkingDirectory) { Set-Location $WorkingDirectory }
-        & git @Args
+        & git @GitArgs
         if ($LASTEXITCODE -ne 0) {
-            throw "git $($Args -join ' ') falhou com codigo $LASTEXITCODE"
+            throw "git $($GitArgs -join ' ') falhou com codigo $LASTEXITCODE"
         }
     } finally {
         Set-Location $old
@@ -59,7 +59,7 @@ function Apply-Patch {
 
 Write-Host ''
 Write-Host '============================================================' -ForegroundColor Cyan
-Write-Host ' Infinity Islands - Instalador Tasks 01 -> 20  [V2]' -ForegroundColor Cyan
+Write-Host ' Infinity Islands - Instalador Tasks 01 -> 20  [V3]' -ForegroundColor Cyan
 Write-Host ' Task 14 corrigida para o IslandMarkerService REAL' -ForegroundColor Cyan
 Write-Host '============================================================' -ForegroundColor Cyan
 Write-Host ''
@@ -87,8 +87,8 @@ if ($Dirty) {
 
 $StartHead = (& git -C $RepoRoot rev-parse HEAD).Trim()
 $Timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$BackupBranch = "backup/mobile-dungeon-tasks01-20-v2-$Timestamp"
-$TempBase = Join-Path ([IO.Path]::GetTempPath()) ("InfinityIslandsInstallerV2-" + [Guid]::NewGuid().ToString('N'))
+$BackupBranch = "backup/mobile-dungeon-tasks01-20-v3-$Timestamp"
+$TempBase = Join-Path ([IO.Path]::GetTempPath()) ("InfinityIslandsInstallerV3-" + [Guid]::NewGuid().ToString('N'))
 $PayloadDir = Join-Path $TempBase 'payload'
 $TempWorktree = Join-Path $TempBase 'preflight-worktree'
 $PayloadZip = Join-Path $TempBase 'payload.zip'
@@ -1310,7 +1310,7 @@ try {
     Write-Host ''
 
     Write-Host '[1/4] Criando worktree temporario...' -ForegroundColor Cyan
-    Run-Git -Args @('worktree','add','--detach',$TempWorktree,$StartHead) -WorkingDirectory $RepoRoot
+    Run-Git -GitArgs @('worktree','add','--detach',$TempWorktree,$StartHead) -WorkingDirectory $RepoRoot
 
     Write-Host '[2/4] Preflight completo 01 -> 20...' -ForegroundColor Cyan
     $i = 0
@@ -1340,7 +1340,7 @@ try {
     Write-Host ''
 
     Write-Host '[3/4] Criando backup...' -ForegroundColor Cyan
-    Run-Git -Args @('branch',$BackupBranch,$StartHead) -WorkingDirectory $RepoRoot
+    Run-Git -GitArgs @('branch',$BackupBranch,$StartHead) -WorkingDirectory $RepoRoot
     Write-Host ('  ' + $BackupBranch) -ForegroundColor Green
 
     Write-Host '[4/4] Aplicando no branch real...' -ForegroundColor Cyan
@@ -1357,28 +1357,28 @@ try {
     } catch {
         Write-Host ''
         Write-Host 'Falha na aplicacao real; executando rollback...' -ForegroundColor Red
-        Run-Git -Args @('reset','--hard',$StartHead) -WorkingDirectory $RepoRoot
-        Run-Git -Args @('clean','-fd') -WorkingDirectory $RepoRoot
+        Run-Git -GitArgs @('reset','--hard',$StartHead) -WorkingDirectory $RepoRoot
+        Run-Git -GitArgs @('clean','-fd') -WorkingDirectory $RepoRoot
         throw "Rollback completo. $($_.Exception.Message)"
     }
 
     foreach ($Relative in $Manifest.sentinels) {
         $TestPath = Join-Path $RepoRoot ($Relative -replace '/', [IO.Path]::DirectorySeparatorChar)
         if (-not (Test-Path $TestPath)) {
-            Run-Git -Args @('reset','--hard',$StartHead) -WorkingDirectory $RepoRoot
-            Run-Git -Args @('clean','-fd') -WorkingDirectory $RepoRoot
+            Run-Git -GitArgs @('reset','--hard',$StartHead) -WorkingDirectory $RepoRoot
+            Run-Git -GitArgs @('clean','-fd') -WorkingDirectory $RepoRoot
             throw "Validacao final falhou em $Relative. Rollback executado."
         }
     }
 
     if ($Commit) {
-        Run-Git -Args @('add','-A') -WorkingDirectory $RepoRoot
-        Run-Git -Args @('commit','-m','feat: install mobile dungeon tasks 01-20 and guided intro') -WorkingDirectory $RepoRoot
+        Run-Git -GitArgs @('add','-A') -WorkingDirectory $RepoRoot
+        Run-Git -GitArgs @('commit','-m','feat: install mobile dungeon tasks 01-20 and guided intro') -WorkingDirectory $RepoRoot
     }
 
     Write-Host ''
     Write-Host '============================================================' -ForegroundColor Green
-    Write-Host ' INSTALACAO V2 CONCLUIDA COM SUCESSO' -ForegroundColor Green
+    Write-Host ' INSTALACAO V3 CONCLUIDA COM SUCESSO' -ForegroundColor Green
     Write-Host '============================================================' -ForegroundColor Green
     Write-Host ('Backup: ' + $BackupBranch)
     if (-not $Commit) {
