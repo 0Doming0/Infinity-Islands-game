@@ -7,7 +7,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $ExpectedBranch = 'agent/lobby-mvp-integration'
-$InstallerVersion = 4
+$InstallerVersion = 5
 $PayloadSha256 = 'b7afe714907c4eb5fcf2c88294be1c755e01e95f9f0ffa6a0263f76a6381c5e0'
 $script:InstallerScriptPath = $PSCommandPath
 
@@ -116,14 +116,16 @@ function Invoke-ExactReplacement {
     $FullPath = Join-Path $Repository ($Relative -replace '/', [IO.Path]::DirectorySeparatorChar)
 
     if (-not (Test-Path -LiteralPath $FullPath -PathType Leaf)) {
-        throw "$Label: arquivo nao encontrado: $Relative"
+        throw "${Label}: arquivo nao encontrado: $Relative"
     }
 
     $RawBytes = [IO.File]::ReadAllBytes($FullPath)
-    $HasUtf8Bom = $RawBytes.Length -ge 3 `
-        -and $RawBytes[0] -eq 0xEF `
-        -and $RawBytes[1] -eq 0xBB `
-        -and $RawBytes[2] -eq 0xBF
+    $HasUtf8Bom = (
+        $RawBytes.Length -ge 3 -and
+        $RawBytes[0] -eq 0xEF -and
+        $RawBytes[1] -eq 0xBB -and
+        $RawBytes[2] -eq 0xBF
+    )
 
     $Text = [IO.File]::ReadAllText($FullPath)
     $UsesCrLf = $Text.Contains("`r`n")
@@ -136,24 +138,24 @@ function Invoke-ExactReplacement {
     $BeforeSha = Get-Utf8Sha256 $Before
 
     if ($BeforeSha -ne [string]$Operation.before_sha256) {
-        throw "$Label: contexto interno corrompido."
+        throw "${Label}: contexto interno corrompido."
     }
 
     $Pattern = [Regex]::Escape($Before)
     $Count = [Regex]::Matches($Normalized, $Pattern).Count
     if ($Count -ne 1) {
         $AfterCount = [Regex]::Matches($Normalized, [Regex]::Escape($After)).Count
-        throw "$Label: contexto exato esperado 1 vez em '$Relative', encontrado $Count. Contexto novo ja presente: $AfterCount."
+        throw "${Label}: contexto exato esperado 1 vez em '$Relative', encontrado $Count. Contexto novo ja presente: $AfterCount."
     }
 
     $Updated = $Normalized.Replace($Before, $After)
 
     # Verify that the old context was actually removed and the new context exists.
     if ([Regex]::Matches($Updated, [Regex]::Escape($Before)).Count -ne 0) {
-        throw "$Label: contexto antigo permaneceu apos substituicao em '$Relative'."
+        throw "${Label}: contexto antigo permaneceu apos substituicao em '$Relative'."
     }
     if ([Regex]::Matches($Updated, [Regex]::Escape($After)).Count -lt 1) {
-        throw "$Label: contexto novo nao apareceu apos substituicao em '$Relative'."
+        throw "${Label}: contexto novo nao apareceu apos substituicao em '$Relative'."
     }
 
     if ($UsesCrLf) {
@@ -189,7 +191,7 @@ function Invoke-Operation {
             Invoke-ExactReplacement -Repository $Repository -Operation $Operation -Label $Label
         }
         else {
-            throw "$Label: tipo de operacao desconhecido '$Kind'."
+            throw "${Label}: tipo de operacao desconhecido '$Kind'."
         }
         Write-Host '  OK' -ForegroundColor Green
     }
@@ -206,9 +208,12 @@ function Get-InstallerRelativePath {
 
     try {
         $InstallerFullPath = [IO.Path]::GetFullPath($script:InstallerScriptPath)
-        $RepositoryFullPath = [IO.Path]::GetFullPath($Repository).TrimEnd(
+        $TrimCharacters = [char[]]@(
             [IO.Path]::DirectorySeparatorChar,
             [IO.Path]::AltDirectorySeparatorChar
+        )
+        $RepositoryFullPath = [IO.Path]::GetFullPath($Repository).TrimEnd(
+            $TrimCharacters
         )
 
         $Prefix = $RepositoryFullPath + [IO.Path]::DirectorySeparatorChar
@@ -266,7 +271,7 @@ function Test-DiffCheck {
 
 Write-Host ''
 Write-Host '==================================================================' -ForegroundColor Cyan
-Write-Host ' Infinity Islands - Instalador Tasks 01 -> 20  [V4 AUDITADA]' -ForegroundColor Cyan
+Write-Host ' Infinity Islands - Instalador Tasks 01 -> 20  [V5 AUDITADA]' -ForegroundColor Cyan
 Write-Host ' Patches completos + substituicoes exatas sem line-number falso' -ForegroundColor Cyan
 Write-Host '==================================================================' -ForegroundColor Cyan
 Write-Host ''
@@ -328,10 +333,10 @@ try {
 
     $Timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     $RandomSuffix = [Guid]::NewGuid().ToString('N').Substring(0, 6)
-    $BackupBranch = "backup/mobile-dungeon-tasks01-20-v4-$Timestamp-$RandomSuffix"
+    $BackupBranch = "backup/mobile-dungeon-tasks01-20-v5-$Timestamp-$RandomSuffix"
 
     $TempBase = Join-Path ([IO.Path]::GetTempPath()) (
-        "InfinityIslandsInstallerV4-" + [Guid]::NewGuid().ToString('N')
+        "InfinityIslandsInstallerV5-" + [Guid]::NewGuid().ToString('N')
     )
     $PayloadDir = Join-Path $TempBase 'payload'
     $TempWorktree = Join-Path $TempBase 'preflight-worktree'
@@ -1523,12 +1528,14 @@ try {
     $Index = 0
     foreach ($Operation in $Operations) {
         $Index++
-        Invoke-Operation `
-            -Repository $TempWorktree `
-            -PayloadDirectory $PayloadDir `
-            -Operation $Operation `
-            -Index $Index `
-            -Total $TotalOperations
+        $PreflightOperationParams = @{
+            Repository = $TempWorktree
+            PayloadDirectory = $PayloadDir
+            Operation = $Operation
+            Index = $Index
+            Total = $TotalOperations
+        }
+        Invoke-Operation @PreflightOperationParams
     }
 
     Test-DiffCheck -Repository $TempWorktree -StageName 'Preflight'
@@ -1569,12 +1576,14 @@ try {
         $Index = 0
         foreach ($Operation in $Operations) {
             $Index++
-            Invoke-Operation `
-                -Repository $RepoRoot `
-                -PayloadDirectory $PayloadDir `
-                -Operation $Operation `
-                -Index $Index `
-                -Total $TotalOperations
+            $RealOperationParams = @{
+                Repository = $RepoRoot
+                PayloadDirectory = $PayloadDir
+                Operation = $Operation
+                Index = $Index
+                Total = $TotalOperations
+            }
+            Invoke-Operation @RealOperationParams
         }
 
         Test-DiffCheck -Repository $RepoRoot -StageName 'Instalacao final'
@@ -1591,10 +1600,12 @@ try {
     catch {
         Write-Host ''
         Write-Host 'Falha na aplicacao real. Executando rollback completo...' -ForegroundColor Red
-        Invoke-Rollback `
-            -Repository $RepoRoot `
-            -OriginalHead $StartHead `
-            -InstallerRelativePath $InstallerRelativePath
+        $RollbackParams = @{
+            Repository = $RepoRoot
+            OriginalHead = $StartHead
+            InstallerRelativePath = $InstallerRelativePath
+        }
+        Invoke-Rollback @RollbackParams
         $RealInstallStarted = $false
         throw "Rollback concluido; nenhuma Task ficou parcialmente instalada.`n$($_.Exception.Message)"
     }
@@ -1612,7 +1623,7 @@ try {
 
     Write-Host ''
     Write-Host '==================================================================' -ForegroundColor Green
-    Write-Host ' INSTALACAO V4 CONCLUIDA COM SUCESSO' -ForegroundColor Green
+    Write-Host ' INSTALACAO V5 CONCLUIDA COM SUCESSO' -ForegroundColor Green
     Write-Host '==================================================================' -ForegroundColor Green
     Write-Host ("Backup: " + $BackupBranch)
     if ($Commit) {
