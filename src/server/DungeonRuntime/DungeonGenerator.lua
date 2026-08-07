@@ -35,7 +35,7 @@ function DungeonGenerator.Generate(options)
 		return false, routeValidation.ErrorCode or "RouteValidationFailed"
 	end
 	local plannedPhysicalCount = physicalIslandCount(activeRoutePlan)
-	return ChunkManager.Start({
+	local started, startError = ChunkManager.Start({
 		PhaseId = options.PhaseId,
 		PartySize = math.clamp(math.floor(tonumber(options.PartySize) or 1), 1, phase.MaxPlayers),
 		Seed = math.floor(tonumber(options.Seed) or 1),
@@ -46,6 +46,34 @@ function DungeonGenerator.Generate(options)
 		OnRouteIslandEntered = options.OnRouteIslandEntered,
 		OnOptionalIslandEntered = options.OnOptionalIslandEntered,
 	})
+	if not started then
+		activeRoutePlan = nil
+		workspace:SetAttribute("DungeonInitialRouteReady", false)
+		workspace:SetAttribute("DungeonInitialRouteError", tostring(startError or "ChunkManagerStartFailed"))
+		return false, startError
+	end
+
+	workspace:SetAttribute("DungeonInitialRouteReady", false)
+	workspace:SetAttribute("DungeonInitialRouteWaitPolicy", "WaitForMaterializedWindowV1")
+	local deadline = os.clock() + 22
+	while not ChunkManager.IsInitialGenerationComplete() and os.clock() < deadline do
+		task.wait(0.05)
+	end
+
+	local initialReady = ChunkManager.IsInitialGenerationComplete()
+	workspace:SetAttribute("DungeonInitialRouteReady", initialReady)
+	workspace:SetAttribute(
+		"DungeonInitialRouteReadyAt",
+		initialReady and workspace:GetServerTimeNow() or nil
+	)
+	if not initialReady then
+		workspace:SetAttribute("DungeonInitialRouteError", "InitialRouteGenerationTimeout")
+		ChunkManager.Stop()
+		activeRoutePlan = nil
+		return false, "InitialRouteGenerationTimeout"
+	end
+	workspace:SetAttribute("DungeonInitialRouteError", nil)
+	return true
 end
 
 function DungeonGenerator.Stop()

@@ -96,6 +96,8 @@ local routePlan
 local fixedRouteState
 local routeNodeByGlobalIndex = {}
 local bossSanctuaryRecord
+local fixedRouteLastMaterializedAt = 0
+local fixedRouteLastProgressRefreshAt = 0
 
 local function countRecords(records)
 	local count = 0
@@ -776,6 +778,50 @@ local function routeMaterializationIndex(globalIslandIndex)
 	return math.clamp(index, 1, routePhysicalIslandCount())
 end
 
+local function currentObjectiveProgressIndex()
+	if not routePlan then
+		return 1
+	end
+	local current = math.max(
+		1,
+		math.floor(tonumber(workspace:GetAttribute("DungeonCurrentObjectiveIsland")) or 1)
+	)
+	for _, player in ipairs(Players:GetPlayers()) do
+		current = math.max(
+			current,
+			math.floor(tonumber(player:GetAttribute("CurrentGlobalIslandIndex")) or 0)
+		)
+	end
+	return math.clamp(current, 1, routePlan.TotalIslandCount)
+end
+
+local function refreshFixedRouteTargetFromProgress(reason)
+	if not routePlan or not fixedRouteState or fixedRouteState.FullRouteReady then
+		return false
+	end
+	local currentObjective = currentObjectiveProgressIndex()
+	local futureWindow = math.max(1, math.floor(tonumber(routePlan.FutureWindowSize) or 3))
+	local desiredObjective = math.min(routePlan.TotalIslandCount, currentObjective + futureWindow)
+	local targetNodeIndex = routeMaterializationIndex(desiredObjective)
+	if not targetNodeIndex then
+		return false
+	end
+	local previousTarget = fixedRouteState.TargetNodeIndex
+	fixedRouteState.TargetNodeIndex = math.max(previousTarget, targetNodeIndex)
+	fixedRouteLastProgressRefreshAt = os.clock()
+
+	workspace:SetAttribute("DungeonRouteRequestedThroughObjective", desiredObjective)
+	workspace:SetAttribute("DungeonRouteMaterializationTargetNode", fixedRouteState.TargetNodeIndex)
+	workspace:SetAttribute("DungeonRouteMaterializedNodeCount", fixedRouteState.MaterializedNodeCount)
+	workspace:SetAttribute("DungeonRouteProgressWatchdogReason", tostring(reason or "ProgressRefresh"))
+	workspace:SetAttribute("DungeonRouteProgressWatchdogPolicy", "ObjectiveLookaheadV1")
+	if worldModel and worldModel.Parent then
+		worldModel:SetAttribute("FixedRouteTargetNodeIndex", fixedRouteState.TargetNodeIndex)
+		worldModel:SetAttribute("FixedRouteLookaheadObjective", desiredObjective)
+	end
+	return fixedRouteState.TargetNodeIndex > previousTarget
+end
+
 local function signalFixedRouteReady(record)
 	if phaseReadySignaled then
 		return
@@ -822,6 +868,9 @@ local function finalizePendingFixedRouteNode()
 	local pending = fixedRouteState.PendingRecord
 	local pendingNodeIndex = fixedRouteState.PendingNodeIndex
 	fixedRouteState.MaterializedNodeCount = pendingNodeIndex
+	fixedRouteLastMaterializedAt = os.clock()
+	workspace:SetAttribute("DungeonRouteMaterializedNodeCount", fixedRouteState.MaterializedNodeCount)
+	workspace:SetAttribute("DungeonRouteMaterializationStalled", false)
 	fixedRouteState.NextNodeIndex = pendingNodeIndex + 1
 	fixedRouteState.PendingRecord = nil
 	fixedRouteState.PendingNodeIndex = nil
@@ -2202,6 +2251,14 @@ function ChunkManager.Start(options)
 			1,
 			physicalCount
 		)
+		local initialObjectiveLookahead = math.min(
+			routePlan.TotalIslandCount,
+			1 + math.max(1, math.floor(tonumber(routePlan.FutureWindowSize) or 3))
+		)
+		local initialLookaheadNodeIndex = routeMaterializationIndex(initialObjectiveLookahead)
+		if initialLookaheadNodeIndex then
+			initialTargetNodeIndex = math.max(initialTargetNodeIndex, initialLookaheadNodeIndex)
+		end
 		fixedRouteState = {
 			NextNodeIndex = 2,
 			MaterializedNodeCount = 1,
@@ -2221,6 +2278,12 @@ function ChunkManager.Start(options)
 		worldModel:SetAttribute("FixedRoutePhysicalIslandCount", physicalCount)
 		worldModel:SetAttribute("FixedRouteOptionalIslandCount", math.max(0, physicalCount - routePlan.TotalIslandCount))
 		worldModel:SetAttribute("FixedRouteMaterializedThrough", 1)
+		fixedRouteLastMaterializedAt = os.clock()
+		fixedRouteLastProgressRefreshAt = os.clock()
+		workspace:SetAttribute("DungeonRouteMaterializedNodeCount", 1)
+		workspace:SetAttribute("DungeonRouteMaterializationTargetNode", initialTargetNodeIndex)
+		workspace:SetAttribute("DungeonRouteMaterializationStalled", false)
+		workspace:SetAttribute("DungeonRouteProgressWatchdogPolicy", "ObjectiveLookaheadV1")
 		workspace:SetAttribute("DungeonRouteId", routePlan.RouteId)
 		workspace:SetAttribute("DungeonRouteIslandCount", routePlan.TotalIslandCount)
 		workspace:SetAttribute("DungeonPhysicalIslandCount", physicalCount)
@@ -2266,8 +2329,22 @@ function ChunkManager.Start(options)
 			RunService.Heartbeat:Wait()
 			if not detailOperationActive then
 				if routePlan then
-					if processFixedRoute() > 0 then
+					refreshFixedRouteTargetFromProgress("Heartbeat")
+					local progressed = processFixedRoute()
+					if progressed > 0 then
 						lastGeometryOperationAt = os.clock()
+						workspace:SetAttribute("DungeonRouteMaterializationStalled", false)
+					elseif fixedRouteState
+						and not fixedRouteState.FullRouteReady
+						and fixedRouteState.TargetNodeIndex > fixedRouteState.MaterializedNodeCount
+						and os.clock() - fixedRouteLastMaterializedAt >= 6
+					then
+						fixedRouteState.RetryAt = nil
+						workspace:SetAttribute("DungeonRouteMaterializationStalled", true)
+						workspace:SetAttribute(
+							"DungeonRouteMaterializationStalledAt",
+							workspace:GetServerTimeNow()
+						)
 					end
 				else
 					local hasCleanup = getCleanupQueueLength() > 0
@@ -2734,6 +2811,12 @@ function ChunkManager.RequestRouteThrough(globalIslandIndex)
 		return false, "RouteMaterializationMappingMissing"
 	end
 	fixedRouteState.TargetNodeIndex = math.max(fixedRouteState.TargetNodeIndex, nodeTarget)
+	workspace:SetAttribute("DungeonRouteRequestedThroughObjective", objectiveTarget)
+	workspace:SetAttribute("DungeonRouteMaterializationTargetNode", fixedRouteState.TargetNodeIndex)
+	workspace:SetAttribute("DungeonRouteProgressWatchdogReason", "ExplicitRequest")
+	if worldModel and worldModel.Parent then
+		worldModel:SetAttribute("FixedRouteTargetNodeIndex", fixedRouteState.TargetNodeIndex)
+	end
 	return true, objectiveTarget
 end
 

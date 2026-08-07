@@ -464,6 +464,12 @@ function ObjectiveSequenceService.HandleObjectiveCompleted(snapshot)
 
 	completedObjectives[currentGlobalIndex] = true
 	setIslandObjectiveState(activeContext, activeDefinition, "Completed")
+	if type(options.RequestRouteThrough) == "function" then
+		local requestedThrough = math.min(ObjectiveCatalog.Count(), currentGlobalIndex + 3)
+		options.RequestRouteThrough(requestedThrough)
+		workspace:SetAttribute("DungeonObjectiveRouteLookaheadPolicy", "ObjectiveCompletionLookaheadV1")
+		workspace:SetAttribute("DungeonObjectiveRouteRequestedThrough", requestedThrough)
+	end
 	local isRoundExit = activeContext and activeContext.IsRoundExit == true
 	local result = {
 		ObjectiveId = activeDefinition.Id,
@@ -535,6 +541,13 @@ function ObjectiveSequenceService.CommitRoundReward(roundIndex, metadata)
 	currentRoundIndex = roundIndex
 	rewardPendingRound = nil
 	finalRewardCommitted = isFinal or finalRewardCommitted
+	if type(options.RequestRouteThrough) == "function" then
+		local requestedThrough = isFinal
+			and ObjectiveCatalog.Count()
+			or math.min(ObjectiveCatalog.Count(), currentGlobalIndex + 4)
+		options.RequestRouteThrough(requestedThrough)
+		workspace:SetAttribute("DungeonRoundRouteRequestedThrough", requestedThrough)
+	end
 	pacingTransitionSerial += 1
 	local token = pacingTransitionSerial
 	local transitionContext = activeContext
