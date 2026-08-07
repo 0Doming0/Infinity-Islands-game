@@ -362,7 +362,7 @@ local function showObjective()
 	TweenService:Create(
 		objective,
 		TweenInfo.new(0.34, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
-		{ Position = UDim2.new(0.5, 0, 1, -24) }
+		{ Position = UDim2.new(0.5, 0, 1, -172) }
 	):Play()
 end
 

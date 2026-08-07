@@ -10,6 +10,7 @@
 	sem gerar camadas enquanto o jogador esta parado.
 ]]
 
+-- TASK_14_BRANCHED_ROUND_GRAPH_V1
 local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -24,6 +25,7 @@ local CollectiveProgressService = require(script.Parent.CollectiveProgressServic
 local SpatialHash = require(script.Parent.SpatialHash)
 local GameplayAnalytics = require(ServerScriptService:WaitForChild("GameplayAnalyticsService"))
 local RuntimeFolders = require(script.Parent.Parent.DungeonRuntime.RuntimeFolders)
+local IslandVariationService = require(script.Parent.Parent.DungeonRuntime.IslandVariationService)
 
 local ChunkManager = {}
 
@@ -489,6 +491,19 @@ local ROUTE_SPEC_ATTRIBUTES = {
 	"IsRewardIsland",
 	"IsBossSanctuary",
 	"RouteExitLeadsToBoss",
+	"RouteExitLeadsToNextRound",
+	"IsOptionalRoute",
+	"IsRoundExit",
+	"RoundExitIndex",
+	"ProtectionGlobalIslandIndex",
+	"RouteNodeOrder",
+	"RouteBranchId",
+	"AlternateNextDirectionId",
+	"RouteChoiceCount",
+	"RouteEntryCount",
+	"RouteExitCount",
+	"IsRouteConvergence",
+	"IsRouteBranchPoint",
 }
 
 local function applyRouteSpecAttributes(instance, spec)
@@ -701,6 +716,10 @@ local function routeRecordContext(record)
 		GlobalIslandIndex = record.Spec.GlobalIslandIndex,
 		IsRewardIsland = record.Spec.IsRewardIsland == true,
 		IsBossSanctuary = record.Spec.IsBossSanctuary == true,
+		IsOptionalRoute = record.Spec.IsOptionalRoute == true,
+		IsRoundExit = record.Spec.IsRoundExit == true,
+		RoundExitIndex = record.Spec.RoundExitIndex,
+		RouteBranchId = record.Spec.RouteBranchId,
 		IncomingDirectionId = record.Spec.IncomingDirectionId,
 		NextDirectionId = record.Spec.NextDirectionId,
 		Spec = record.Spec,
@@ -711,6 +730,12 @@ local function routeRecordContext(record)
 		ChestSpawns = markers and markers:FindFirstChild("ChestSpawns"),
 		Entry = markers and markers:FindFirstChild("Entry"),
 		Exit = markers and markers:FindFirstChild("Exit"),
+		Entries = markers and markers:FindFirstChild("Entries"),
+		Exits = markers and markers:FindFirstChild("Exits"),
+		RouteEntryCount = markers and markers:GetAttribute("EntryCount") or 1,
+		RouteExitCount = markers and markers:GetAttribute("ExitCount") or 1,
+		IsRouteConvergence = markers and markers:GetAttribute("IsRouteConvergence") == true or false,
+		IsRouteBranchPoint = markers and markers:GetAttribute("IsRouteBranchPoint") == true or false,
 	}
 end
 
@@ -718,7 +743,7 @@ local function markInitialFixedRouteReady()
 	if not fixedRouteState or fixedRouteState.InitialReady then
 		return
 	end
-	if fixedRouteState.MaterializedThrough < fixedRouteState.InitialTargetIndex then
+	if fixedRouteState.MaterializedNodeCount < fixedRouteState.InitialTargetNodeIndex then
 		return
 	end
 	fixedRouteState.InitialReady = true
@@ -727,17 +752,88 @@ local function markInitialFixedRouteReady()
 	worldModel:SetAttribute("InitialGenerationComplete", true)
 end
 
+local function routePhysicalIslandCount()
+	if not routePlan then
+		return 0
+	end
+	return math.max(
+		math.floor(tonumber(routePlan.PhysicalIslandCount) or 0),
+		#(routePlan.Nodes or {}),
+		math.floor(tonumber(routePlan.TotalIslandCount) or 0)
+	)
+end
+
+local function routeMaterializationIndex(globalIslandIndex)
+	if not routePlan then
+		return nil
+	end
+	local index = math.floor(tonumber(globalIslandIndex) or 0)
+	local mapping = routePlan.MaterializationIndexByGlobalIndex
+	local materializationIndex = type(mapping) == "table" and tonumber(mapping[index]) or nil
+	if materializationIndex then
+		return math.clamp(math.floor(materializationIndex), 1, routePhysicalIslandCount())
+	end
+	return math.clamp(index, 1, routePhysicalIslandCount())
+end
+
 local function signalFixedRouteReady(record)
 	if phaseReadySignaled then
 		return
 	end
 	phaseReadySignaled = true
+	local physicalCount = routePhysicalIslandCount()
 	worldModel:SetAttribute("FixedRouteReady", true)
-	worldModel:SetAttribute("FixedRouteMaterializedThrough", routePlan.TotalIslandCount)
+	worldModel:SetAttribute("FixedRouteMaterializedThrough", physicalCount)
+	worldModel:SetAttribute("FixedRoutePhysicalIslandCount", physicalCount)
+	worldModel:SetAttribute("FixedRouteObjectiveIslandCount", routePlan.TotalIslandCount)
 	workspace:SetAttribute("DungeonRouteReady", true)
+	workspace:SetAttribute("DungeonPhysicalIslandCount", physicalCount)
 	local callback = runtimeOptions.OnPhaseReady
 	if type(callback) == "function" then
 		task.defer(callback, routeRecordContext(record))
+	end
+end
+
+local function incomingConnectionsFor(spec)
+	if type(spec.IncomingConnections) == "table" then
+		return spec.IncomingConnections
+	end
+	if type(spec.ParentKey) == "string" and type(spec.IncomingDirectionId) == "string" then
+		return {
+			{
+				SourceKey = spec.ParentKey,
+				DirectionId = spec.IncomingDirectionId,
+			},
+		}
+	end
+	return {}
+end
+
+local function markFixedRouteSourceLinked(source)
+	if not source or not source.Model or not source.Model.Parent then
+		return
+	end
+	source.Expanded = true
+	source.Model:SetAttribute("Expanded", true)
+	source.Model:SetAttribute("ExpansionState", "FixedRouteGraphLinked")
+end
+
+local function finalizePendingFixedRouteNode()
+	local pending = fixedRouteState.PendingRecord
+	local pendingNodeIndex = fixedRouteState.PendingNodeIndex
+	fixedRouteState.MaterializedNodeCount = pendingNodeIndex
+	fixedRouteState.NextNodeIndex = pendingNodeIndex + 1
+	fixedRouteState.PendingRecord = nil
+	fixedRouteState.PendingNodeIndex = nil
+	fixedRouteState.PendingEdgeIndex = nil
+	fixedRouteState.RetryAt = nil
+	local order = math.floor(tonumber(pending.Spec.RouteNodeOrder) or pendingNodeIndex)
+	enqueueDetail(pending, false, math.max(1000, 12000 - order * 80))
+	worldModel:SetAttribute("FixedRouteMaterializedThrough", fixedRouteState.MaterializedNodeCount)
+	markInitialFixedRouteReady()
+	if fixedRouteState.MaterializedNodeCount >= routePhysicalIslandCount() then
+		fixedRouteState.FullRouteReady = true
+		signalFixedRouteReady(pending)
 	end
 end
 
@@ -750,51 +846,57 @@ local function processFixedRoute()
 	end
 	if fixedRouteState.PendingRecord then
 		local pending = fixedRouteState.PendingRecord
-		local previous = fixedRouteState.PreviousRecord
-		local success, edgeOrError = pcall(
-			createEdge,
-			previous,
-			pending,
-			pending.Spec.IncomingDirectionId
-		)
-		if not success then
-			warn("[SkyDungeon] Falha na aresta da rota fixa: " .. tostring(edgeOrError))
-			fixedRouteState.RetryAt = os.clock() + 1
-			return 0
+		local incomingConnections = incomingConnectionsFor(pending.Spec)
+		local edgeIndex = fixedRouteState.PendingEdgeIndex or 1
+		local connection = incomingConnections[edgeIndex]
+		if connection then
+			local source = nodesByKey[connection.SourceKey]
+			if not source then
+				warn("[SkyDungeon] Origem da aresta ramificada ainda nao existe: " .. tostring(connection.SourceKey))
+				fixedRouteState.RetryAt = os.clock() + 0.5
+				return 0
+			end
+			local success, edgeOrError = pcall(
+				createEdge,
+				source,
+				pending,
+				connection.DirectionId
+			)
+			if not success then
+				warn("[SkyDungeon] Falha na aresta da rota ramificada: " .. tostring(edgeOrError))
+				fixedRouteState.RetryAt = os.clock() + 1
+				return 0
+			end
+			fixedRouteState.RetryAt = nil
+			fixedRouteState.PendingEdgeIndex = edgeIndex + 1
+			markFixedRouteSourceLinked(source)
+			return 1
 		end
-		fixedRouteState.RetryAt = nil
-		previous.Expanded = true
-		previous.Model:SetAttribute("Expanded", true)
-		previous.Model:SetAttribute("ExpansionState", "FixedRouteLinked")
-		fixedRouteState.PreviousRecord = pending
-		fixedRouteState.MaterializedThrough = fixedRouteState.NextIndex
-		fixedRouteState.NextIndex += 1
-		fixedRouteState.PendingRecord = nil
-		fixedRouteState.PendingCreated = nil
-		enqueueDetail(pending, false, math.max(1000, 12000 - pending.Spec.GlobalIslandIndex * 100))
-		worldModel:SetAttribute("FixedRouteMaterializedThrough", fixedRouteState.MaterializedThrough)
-		markInitialFixedRouteReady()
-		if fixedRouteState.MaterializedThrough >= routePlan.TotalIslandCount then
-			fixedRouteState.FullRouteReady = true
-			signalFixedRouteReady(pending)
-		end
+		finalizePendingFixedRouteNode()
 		return 1
 	end
-	if fixedRouteState.NextIndex > fixedRouteState.TargetIndex
-		or fixedRouteState.NextIndex > routePlan.TotalIslandCount
+	local physicalCount = routePhysicalIslandCount()
+	if fixedRouteState.NextNodeIndex > fixedRouteState.TargetNodeIndex
+		or fixedRouteState.NextNodeIndex > physicalCount
 	then
 		return 0
 	end
-	local spec = routePlan.Nodes[fixedRouteState.NextIndex]
-	local record, created, errorMessage = createNode(spec, "FixedRoute", nil)
+	local spec = routePlan.Nodes[fixedRouteState.NextNodeIndex]
+	if not spec then
+		fixedRouteState.RetryAt = os.clock() + 1
+		warn("[SkyDungeon] RoutePlan sem Node na ordem " .. tostring(fixedRouteState.NextNodeIndex))
+		return 0
+	end
+	local record, _, errorMessage = createNode(spec, "FixedRouteGraph", nil)
 	if not record then
-		warn("[SkyDungeon] Falha ao criar ilha da rota fixa: " .. tostring(errorMessage))
+		warn("[SkyDungeon] Falha ao criar ilha da rota ramificada: " .. tostring(errorMessage))
 		fixedRouteState.RetryAt = os.clock() + 1
 		return 0
 	end
 	fixedRouteState.RetryAt = nil
 	fixedRouteState.PendingRecord = record
-	fixedRouteState.PendingCreated = created
+	fixedRouteState.PendingNodeIndex = fixedRouteState.NextNodeIndex
+	fixedRouteState.PendingEdgeIndex = 1
 	return 1
 end
 
@@ -809,6 +911,19 @@ local function activateContent(record, yieldCallback)
 		record.ContentActivated = false
 		warn(string.format("[SkyDungeon] Conteudo de %s falhou: %s", record.Key, tostring(errorMessage)))
 		return false
+	end
+	if record.IslandModel:GetAttribute("StructuralVariationApplied") ~= true then
+		local variationOk, applied, profileOrError = pcall(
+			IslandVariationService.Apply,
+			routeRecordContext(record)
+		)
+		if not variationOk or applied == false then
+			warn(string.format(
+				"[SkyDungeon] Fallback de variação falhou em %s: %s",
+				record.Key,
+				tostring(profileOrError or applied)
+			))
+		end
 	end
 	CollectionService:AddTag(record.Model, "SkyDungeonRound")
 	return true
@@ -901,6 +1016,19 @@ local function processDetailJob(job)
 			return
 		end
 		record.VisualContentPopulated = resultOrError == true
+		if record.VisualContentPopulated then
+			local variationOk, applied, profileOrError = pcall(
+				IslandVariationService.Apply,
+				routeRecordContext(record)
+			)
+			if not variationOk or applied == false then
+				warn(string.format(
+					"[SkyDungeon] Variação estrutural falhou em %s: %s",
+					record.Key,
+					tostring(profileOrError or applied)
+				))
+			end
+		end
 	end
 	if job.NeedsRuntime and not record.ContentActivated then
 		activateContent(record, yieldBetweenClones)
@@ -1339,7 +1467,23 @@ local function updateSimulationActivity(playerRoots)
 end
 
 local function visitNode(player, record)
-	if routePlan and type(runtimeOptions.OnRouteIslandEntered) == "function" then
+	if routePlan
+		and record.Spec.IsOptionalRoute == true
+		and type(runtimeOptions.OnOptionalIslandEntered) == "function"
+	then
+		local callbackSuccess, callbackError = pcall(
+			runtimeOptions.OnOptionalIslandEntered,
+			player,
+			routeRecordContext(record)
+		)
+		if not callbackSuccess then
+			warn("[SkyDungeon] OnOptionalIslandEntered falhou: " .. tostring(callbackError))
+		end
+	end
+	if routePlan
+		and (record.Spec.IsMandatoryRoute == true or record.Spec.IsBossSanctuary == true)
+		and type(runtimeOptions.OnRouteIslandEntered) == "function"
+	then
 		local callbackSuccess, allowed, rejectReason = pcall(
 			runtimeOptions.OnRouteIslandEntered,
 			player,
@@ -1390,16 +1534,30 @@ local function visitNode(player, record)
 		PartyService.RecordMissionProgress(player, "IslandVisited", 1, record.Key)
 	end
 	player:SetAttribute("CurrentIslandKey", record.Key)
-	if record.Spec.GlobalIslandIndex then
-		player:SetAttribute("CurrentRoundIndex", record.Spec.RoundIndex)
+	player:SetAttribute("CurrentRoundIndex", record.Spec.RoundIndex)
+	player:SetAttribute("CurrentIslandIsOptional", record.Spec.IsOptionalRoute == true)
+	if record.Spec.IsOptionalRoute == true then
+		player:SetAttribute("CurrentOptionalIslandKey", record.Key)
+		player:SetAttribute("CurrentOptionalRouteBranch", record.Spec.RouteBranchId)
+	elseif record.Spec.GlobalIslandIndex then
+		player:SetAttribute("CurrentOptionalIslandKey", nil)
+		player:SetAttribute("CurrentOptionalRouteBranch", nil)
 		player:SetAttribute("CurrentRouteIslandIndex", record.Spec.IslandIndex)
 		player:SetAttribute("CurrentGlobalIslandIndex", record.Spec.GlobalIslandIndex)
 		player:SetAttribute("CurrentIslandIsReward", record.Spec.IsRewardIsland == true)
-		if fixedRouteState then
-			fixedRouteState.TargetIndex = math.max(
-				fixedRouteState.TargetIndex,
-				math.min(routePlan.TotalIslandCount, record.Spec.GlobalIslandIndex + routePlan.FutureWindowSize)
+		player:SetAttribute("CurrentIslandIsRoundExit", record.Spec.IsRoundExit == true)
+		if fixedRouteState and record.Spec.IsMandatoryRoute == true then
+			local futureObjectiveIndex = math.min(
+				routePlan.TotalIslandCount,
+				record.Spec.GlobalIslandIndex + routePlan.FutureWindowSize
 			)
+			local targetNodeIndex = routeMaterializationIndex(futureObjectiveIndex)
+			if targetNodeIndex then
+				fixedRouteState.TargetNodeIndex = math.max(
+					fixedRouteState.TargetNodeIndex,
+					targetNodeIndex
+				)
+			end
 		end
 	end
 	player:SetAttribute("CurrentIslandIndex", record.Spec.Level)
@@ -1728,11 +1886,17 @@ local function tryRebaseWorld()
 end
 
 local function isProtectedByFixedRouteWindow(record)
-	if not routePlan or not record.Spec.GlobalIslandIndex then
+	if not routePlan then
 		return false
 	end
 	if record.Spec.IsBossSanctuary then
 		return true
+	end
+	local protectionIndex = tonumber(
+		record.Spec.ProtectionGlobalIslandIndex or record.Spec.GlobalIslandIndex
+	)
+	if not protectionIndex then
+		return false
 	end
 	local minimumCurrent = math.huge
 	local maximumCurrent = -math.huge
@@ -1749,8 +1913,7 @@ local function isProtectedByFixedRouteWindow(record)
 	end
 	local minimumProtected = math.max(1, minimumCurrent - routePlan.PreviousWindowSize)
 	local maximumProtected = math.min(routePlan.TotalIslandCount, maximumCurrent + routePlan.FutureWindowSize)
-	return record.Spec.GlobalIslandIndex >= minimumProtected
-		and record.Spec.GlobalIslandIndex <= maximumProtected
+	return protectionIndex >= minimumProtected and protectionIndex <= maximumProtected
 end
 
 local function hasAlivePlayerNear(record)
@@ -1954,7 +2117,12 @@ function ChunkManager.Start(options)
 	routePlan = type(runtimeOptions.RoutePlan) == "table" and runtimeOptions.RoutePlan or nil
 	maximumIslandCount = math.max(1, math.floor(tonumber(runtimeOptions.MaximumIslandCount) or math.huge))
 	if routePlan then
-		maximumIslandCount = math.max(maximumIslandCount, routePlan.TotalIslandCount + 1)
+		local physicalCount = math.max(
+			math.floor(tonumber(routePlan.PhysicalIslandCount) or 0),
+			#(routePlan.Nodes or {}),
+			math.floor(tonumber(routePlan.TotalIslandCount) or 0)
+		)
+		maximumIslandCount = math.max(maximumIslandCount, physicalCount + 1)
 	end
 	phaseReadySignaled = false
 	fixedRouteState = nil
@@ -2028,23 +2196,34 @@ function ChunkManager.Start(options)
 	startNode.Model:SetAttribute("Discovered", false)
 	enqueueDetail(startNode, false, 2000)
 	if routePlan then
+		local physicalCount = routePhysicalIslandCount()
+		local initialTargetNodeIndex = math.clamp(
+			math.floor(tonumber(routePlan.InitialWindowSize) or 1),
+			1,
+			physicalCount
+		)
 		fixedRouteState = {
-			NextIndex = 2,
-			MaterializedThrough = 1,
-			TargetIndex = routePlan.InitialWindowSize,
-			InitialTargetIndex = routePlan.InitialWindowSize,
-			PreviousRecord = startNode,
+			NextNodeIndex = 2,
+			MaterializedNodeCount = 1,
+			TargetNodeIndex = initialTargetNodeIndex,
+			InitialTargetNodeIndex = initialTargetNodeIndex,
 			PendingRecord = nil,
-			PendingCreated = nil,
-			InitialReady = routePlan.InitialWindowSize <= 1,
-			FullRouteReady = routePlan.TotalIslandCount <= 1,
+			PendingNodeIndex = nil,
+			PendingEdgeIndex = nil,
+			InitialReady = initialTargetNodeIndex <= 1,
+			FullRouteReady = physicalCount <= 1,
 		}
 		worldModel:SetAttribute("FixedRouteEnabled", true)
+		worldModel:SetAttribute("FixedRouteTopology", tostring(routePlan.Topology or "BranchedGraph"))
 		worldModel:SetAttribute("FixedRouteId", routePlan.RouteId)
 		worldModel:SetAttribute("FixedRouteIslandCount", routePlan.TotalIslandCount)
+		worldModel:SetAttribute("FixedRouteObjectiveIslandCount", routePlan.TotalIslandCount)
+		worldModel:SetAttribute("FixedRoutePhysicalIslandCount", physicalCount)
+		worldModel:SetAttribute("FixedRouteOptionalIslandCount", math.max(0, physicalCount - routePlan.TotalIslandCount))
 		worldModel:SetAttribute("FixedRouteMaterializedThrough", 1)
 		workspace:SetAttribute("DungeonRouteId", routePlan.RouteId)
 		workspace:SetAttribute("DungeonRouteIslandCount", routePlan.TotalIslandCount)
+		workspace:SetAttribute("DungeonPhysicalIslandCount", physicalCount)
 		if fixedRouteState.InitialReady then
 			markInitialFixedRouteReady()
 		end
@@ -2545,13 +2724,17 @@ function ChunkManager.RequestRouteThrough(globalIslandIndex)
 	if not routePlan or not fixedRouteState then
 		return false, "FixedRouteUnavailable"
 	end
-	local target = math.clamp(
-		math.floor(tonumber(globalIslandIndex) or fixedRouteState.TargetIndex),
+	local objectiveTarget = math.clamp(
+		math.floor(tonumber(globalIslandIndex) or 1),
 		1,
 		routePlan.TotalIslandCount
 	)
-	fixedRouteState.TargetIndex = math.max(fixedRouteState.TargetIndex, target)
-	return true, fixedRouteState.TargetIndex
+	local nodeTarget = routeMaterializationIndex(objectiveTarget)
+	if not nodeTarget then
+		return false, "RouteMaterializationMappingMissing"
+	end
+	fixedRouteState.TargetNodeIndex = math.max(fixedRouteState.TargetNodeIndex, nodeTarget)
+	return true, objectiveTarget
 end
 
 function ChunkManager.CreateBossSanctuary(options)

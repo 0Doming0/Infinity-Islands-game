@@ -113,9 +113,11 @@ local function updateStaminaBar()
 	local ratio = math.clamp(current / maximum, 0, 1)
 	local sprinting = character:GetAttribute("Sprinting") == true
 	staminaFill.Size = UDim2.fromScale(ratio, 1)
-	staminaBackground.Visible = sprinting or ratio < 0.999
+	staminaBackground.Visible = (sprinting or ratio < 0.999)
+		and player:GetAttribute("DungeonUnifiedHUDReady") ~= true
 	staminaLimitLabel.Text = "LIMITE: " .. formatDuration(maximum) .. " s"
 	staminaLimitLabel.Visible = sprinting
+		and player:GetAttribute("DungeonUnifiedHUDReady") ~= true
 end
 
 local function wantsSprint()

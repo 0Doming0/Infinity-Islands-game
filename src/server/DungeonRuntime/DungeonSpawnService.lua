@@ -5,6 +5,9 @@ local DungeonSpawnService = {}
 local started = false
 local options = {}
 local checkpointContext
+local checkpointScope = "Uninitialized"
+local checkpointCommittedRound = 0
+local checkpointSerial = 0
 local boundPlayers = setmetatable({}, { __mode = "k" })
 local characterTokens = setmetatable({}, { __mode = "k" })
 local connections = {}
@@ -24,6 +27,28 @@ local function markerCFrame(context)
 		return marker
 	end
 	return nil
+end
+
+local function contextRoundIndex(context)
+	return type(context) == "table"
+		and math.max(0, math.floor(tonumber(context.RoundIndex) or 0))
+		or 0
+end
+
+local function isRoundExitContext(context)
+	return type(context) == "table" and context.IsRoundExit == true
+end
+
+local function applyPlayerCheckpointAttributes(player, context)
+	if not player or player.Parent ~= Players or type(context) ~= "table" then
+		return
+	end
+	player:SetAttribute("DungeonCheckpointIslandIndex", context.GlobalIslandIndex)
+	player:SetAttribute("DungeonCheckpointRoundIndex", context.RoundIndex)
+	player:SetAttribute("DungeonCheckpointNodeKey", context.Key)
+	player:SetAttribute("DungeonCheckpointScope", checkpointScope)
+	player:SetAttribute("DungeonCheckpointCommittedRound", checkpointCommittedRound)
+	player:SetAttribute("DungeonCheckpointSerial", checkpointSerial)
 end
 
 local function eligibleForManagedSpawn(player)
@@ -139,9 +164,7 @@ local function positionCharacter(player, character, context, reason)
 		"DungeonSpawnProtection",
 		math.max(1, tonumber(options.ProtectionSeconds) or DEFAULT_PROTECTION_SECONDS)
 	)
-	player:SetAttribute("DungeonCheckpointIslandIndex", context.GlobalIslandIndex)
-	player:SetAttribute("DungeonCheckpointRoundIndex", context.RoundIndex)
-	player:SetAttribute("DungeonCheckpointNodeKey", context.Key)
+	applyPlayerCheckpointAttributes(player, context)
 	player:SetAttribute("DungeonLastSpawnReason", tostring(reason or "DungeonSpawn"))
 	player:SetAttribute("DungeonLastSpawnAt", workspace:GetServerTimeNow())
 	player:SetAttribute("InitialSpawnPositioned", true)
@@ -172,6 +195,10 @@ function DungeonSpawnService.Start(startOptions)
 	options = type(startOptions) == "table" and startOptions or {}
 	workspace:SetAttribute("DungeonSpawnServiceReady", true)
 	workspace:SetAttribute("DungeonSpawnAuthority", "DungeonSpawnService")
+	workspace:SetAttribute("DungeonCheckpointPolicy", "RoundExitCommitted")
+	workspace:SetAttribute("DungeonCheckpointScope", checkpointScope)
+	workspace:SetAttribute("DungeonCheckpointCommittedRound", checkpointCommittedRound)
+	workspace:SetAttribute("DungeonCheckpointSerial", checkpointSerial)
 	connections.PlayerRemoving = Players.PlayerRemoving:Connect(function(player)
 		local connection = boundPlayers[player]
 		if connection then
@@ -198,24 +225,80 @@ function DungeonSpawnService.BindPlayer(player)
 	return true
 end
 
-function DungeonSpawnService.SetCheckpoint(context, reason, repositionPlayers)
-	if not started or not markerCFrame(context) then
-		return false, "InvalidCheckpoint"
-	end
+local function publishCheckpoint(context, reason, scope, repositionPlayers)
 	checkpointContext = context
+	checkpointScope = scope
+	checkpointSerial += 1
 	workspace:SetAttribute("DungeonCheckpointIslandIndex", context.GlobalIslandIndex)
 	workspace:SetAttribute("DungeonCheckpointRoundIndex", context.RoundIndex)
 	workspace:SetAttribute("DungeonCheckpointNodeKey", context.Key)
+	workspace:SetAttribute("DungeonCheckpointScope", checkpointScope)
+	workspace:SetAttribute("DungeonCheckpointCommittedRound", checkpointCommittedRound)
+	workspace:SetAttribute("DungeonCheckpointSerial", checkpointSerial)
 	workspace:SetAttribute("DungeonCheckpointReason", tostring(reason or "CheckpointUpdated"))
 	workspace:SetAttribute("DungeonCheckpointUpdatedAt", workspace:GetServerTimeNow())
-	if repositionPlayers == true then
-		for _, player in ipairs(Players:GetPlayers()) do
-			if eligibleForManagedSpawn(player) and player.Character then
-				task.spawn(positionCharacter, player, player.Character, context, reason or "Checkpoint")
-			end
+	for _, player in ipairs(Players:GetPlayers()) do
+		applyPlayerCheckpointAttributes(player, context)
+		if repositionPlayers == true and eligibleForManagedSpawn(player) and player.Character then
+			task.spawn(positionCharacter, player, player.Character, context, reason or "Checkpoint")
 		end
 	end
 	return true
+end
+
+function DungeonSpawnService.SetInitialCheckpoint(context, reason, repositionPlayers)
+	if not started or not markerCFrame(context) then
+		return false, "InvalidCheckpoint"
+	end
+	if checkpointContext then
+		return false, "InitialCheckpointAlreadySet"
+	end
+	checkpointCommittedRound = 0
+	return publishCheckpoint(
+		context,
+		reason or "InitialWorldReady",
+		"InitialRoundStart",
+		repositionPlayers == true
+	)
+end
+
+function DungeonSpawnService.CommitRoundCheckpoint(roundIndex, context, reason, repositionPlayers)
+	if not started or not markerCFrame(context) then
+		return false, "InvalidCheckpoint"
+	end
+	roundIndex = math.max(0, math.floor(tonumber(roundIndex) or 0))
+	if roundIndex <= 0 or contextRoundIndex(context) ~= roundIndex then
+		return false, "CheckpointRoundMismatch"
+	end
+	if not isRoundExitContext(context) then
+		return false, "CheckpointRequiresRoundExit"
+	end
+	if roundIndex == checkpointCommittedRound
+		and checkpointContext
+		and checkpointContext.Key == context.Key
+	then
+		return true, "AlreadyCommitted"
+	end
+	if roundIndex <= checkpointCommittedRound then
+		return false, "CheckpointRoundAlreadyCommitted"
+	end
+	if roundIndex ~= checkpointCommittedRound + 1 then
+		return false, "CheckpointRoundSequenceSkipped"
+	end
+	checkpointCommittedRound = roundIndex
+	return publishCheckpoint(
+		context,
+		reason or ("RoundExitCommitted:" .. tostring(roundIndex)),
+		"RoundExitCommitted",
+		repositionPlayers == true
+	)
+end
+
+function DungeonSpawnService.SetCheckpoint(context, reason, repositionPlayers)
+	if not checkpointContext then
+		return DungeonSpawnService.SetInitialCheckpoint(context, reason, repositionPlayers)
+	end
+	return false, "CheckpointPolicyRequiresRoundCommit"
 end
 
 function DungeonSpawnService.PositionPlayer(player, reason)
@@ -232,6 +315,10 @@ end
 function DungeonSpawnService.GetSnapshot()
 	return {
 		Ready = started,
+		Policy = "RoundExitCommitted",
+		Scope = checkpointScope,
+		CommittedRound = checkpointCommittedRound,
+		Serial = checkpointSerial,
 		GlobalIslandIndex = checkpointContext and checkpointContext.GlobalIslandIndex,
 		RoundIndex = checkpointContext and checkpointContext.RoundIndex,
 		NodeKey = checkpointContext and checkpointContext.Key,

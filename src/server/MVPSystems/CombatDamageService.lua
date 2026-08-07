@@ -3,10 +3,31 @@
 
 local Players = game:GetService("Players")
 local Debris = game:GetService("Debris")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local GameplayAnalytics = require(script.Parent.Parent:WaitForChild("GameplayAnalyticsService"))
 local ObjectiveSignalBridge = require(script.Parent.Parent.DungeonRuntime.ObjectiveSignalBridge)
 
 local DamageService = {}
+local RemoteRegistry = require(ReplicatedStorage.Shared.Utilities.RemoteRegistry)
+local damageFeedbackEvent = RemoteRegistry.Get("Combat", "EnemyDamageFeedback", "RemoteEvent")
+
+local function sendDamageFeedback(attacker, model, amount, source, heavy, defeated)
+	if not attacker or attacker.Parent ~= Players or not model or not model.Parent then
+		return
+	end
+	local cleanAmount = math.max(0, tonumber(amount) or 0)
+	if cleanAmount <= 0 then
+		return
+	end
+	damageFeedbackEvent:FireClient(attacker, {
+		Target = model,
+		Amount = cleanAmount,
+		Source = tostring(source or "Damage"),
+		Heavy = heavy == true,
+		Defeated = defeated == true,
+		Policy = "EnemyDamageFeedbackV1",
+	})
+end
 
 local function reportObjectiveHit(attacker, model, source)
 	ObjectiveSignalBridge.Report("EnemyHit", {
@@ -220,6 +241,7 @@ function DamageService.ApplyEffectDamage(attacker, target, amount, source)
 	humanoid:TakeDamage(damage)
 	reportObjectiveHit(attacker, model, source or "Relic")
 	local defeated = healthBefore > 0 and humanoid.Health <= 0
+	sendDamageFeedback(attacker, model, damage, source or "Relic", false, defeated)
 	GameplayAnalytics.RecordEnemyAttacked(attacker, model, source or "Relic")
 	if defeated then
 		GameplayAnalytics.RecordEnemyDefeated(attacker, model, source or "Relic")
@@ -371,6 +393,14 @@ function DamageService.ApplySwordHit(attacker, attackerRoot, target, attack)
 	humanoid:TakeDamage(damage)
 	reportObjectiveHit(attacker, model, attacker:GetAttribute("EquippedSword") or "Sword")
 	local defeated = healthBefore > 0 and humanoid.Health <= 0
+	sendDamageFeedback(
+		attacker,
+		model,
+		damage,
+		attacker:GetAttribute("EquippedSword") or "Sword",
+		attack.Heavy == true,
+		defeated
+	)
 	local swordId = attacker:GetAttribute("EquippedSword") or "Sword"
 	GameplayAnalytics.RecordEnemyAttacked(attacker, model, swordId)
 	if defeated then
@@ -427,6 +457,7 @@ function DamageService.ApplyDirectHit(attacker, target, amount, source, alreadyR
 	humanoid:TakeDamage(damage)
 	reportObjectiveHit(attacker, model, source or "Direct")
 	local defeated = healthBefore > 0 and humanoid.Health <= 0
+	sendDamageFeedback(attacker, model, damage, source or "Direct", false, defeated)
 	GameplayAnalytics.RecordEnemyAttacked(attacker, model, source or "Direct")
 	if defeated then
 		GameplayAnalytics.RecordEnemyDefeated(attacker, model, source or "Direct")

@@ -9,7 +9,7 @@ local PlaceConfig = require(ReplicatedStorage.Shared.Configs.PlaceConfig)
 local RemoteRegistry = require(ReplicatedStorage.Shared.Utilities.RemoteRegistry)
 local BlockParkour = script.Parent.Parent:WaitForChild("BlockParkour")
 local PartyService = require(BlockParkour.PartyService)
-local PlayerDataService = require(BlockParkour.PlayerDataService_SkyDungeon_V10)
+local PlayerDataService = require(script.Parent.LobbyPlayerDataService)
 
 local TeleportCoordinator = {}
 local pendingByLeader = setmetatable({}, { __mode = "k" })

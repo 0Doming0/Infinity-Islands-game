@@ -1,0 +1,26 @@
+{
+  "task": "HUD-01",
+  "name": "Crystal Celestial HUD foundation",
+  "policy": "CrystalCelestialFoundationV1",
+  "branch": "agent/lobby-mvp-integration",
+  "backup": "C:\\Projetos\\SkyDungeon\\.skydungeon_backups\\hud-01-foundation-style-d-20260807-024031-284691.zip",
+  "files_written": [
+    "src/client/UI/DungeonUITheme.lua",
+    "src/client/UI/DungeonUIComponents.lua",
+    "src/client/UI/DungeonUIRouter.lua",
+    "src/client/UI/DungeonUIModalManager.lua",
+    "src/client/DungeonUnifiedHUD.client.luau",
+    "src/client/DungeonClientLegacyGuard.client.luau",
+    "src/client/CoinRewardUI.client.luau"
+  ],
+  "files_patched": [
+    "src/client/DownedUI.client.luau",
+    "src/client/StatusEffectsUI.client.luau",
+    "src/client/SprintController.client.luau",
+    "src/client/SettingsController.client.luau",
+    "src/client/WorldEventUI.client.luau",
+    "src/client/SessionFloodHUD.client.luau",
+    "src/client/TutorialUI.client.luau"
+  ],
+  "status": "applied"
+}

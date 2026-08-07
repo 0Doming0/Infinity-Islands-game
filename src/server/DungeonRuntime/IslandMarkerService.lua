@@ -4,10 +4,16 @@ local Config = require(script.Parent.Parent.BlockParkour.Config_SkyDungeon_V10)
 
 local IslandMarkerService = {}
 
-local CONTRACT_VERSION = 1
+local CONTRACT_VERSION = 3
 local MARKER_ROOT_NAME = "GameplayMarkers"
 local MAXIMUM_SEED = 2147483647
 local DEFAULT_DIRECTION_ID = "East"
+local ENEMY_EDGE_INSET_STUDS = 10
+local ENEMY_SAFE_SPAWN_DISTANCE_STUDS = 20
+local ENEMY_ENTRY_DISTANCE_STUDS = 18
+local ENEMY_MARKER_SPACING_STUDS = 9
+local ENTRY_SAFE_ZONE_RADIUS_STUDS = 16
+local ENTRY_PROTECTION_SECONDS = 3
 
 local DIRECTION_VECTORS = table.freeze({
 	East = Vector3.new(1, 0, 0),
@@ -23,6 +29,32 @@ local MARKER_COLORS = table.freeze({
 	ChestSpawn = Color3.fromRGB(255, 211, 92),
 	Entry = Color3.fromRGB(92, 184, 255),
 	Exit = Color3.fromRGB(255, 142, 78),
+})
+
+local ROUTE_ATTRIBUTE_NAMES = table.freeze({
+	"RouteSeed",
+	"RoundIndex",
+	"IslandIndex",
+	"GlobalIslandIndex",
+	"ProtectionGlobalIslandIndex",
+	"IncomingDirectionId",
+	"NextDirectionId",
+	"AlternateNextDirectionId",
+	"IsMandatoryRoute",
+	"IsOptionalRoute",
+	"IsRewardIsland",
+	"IsRoundExit",
+	"RoundExitIndex",
+	"RouteBranchId",
+	"RouteNodeOrder",
+	"RouteChoiceCount",
+	"RouteEntryCount",
+	"RouteExitCount",
+	"IsRouteConvergence",
+	"IsRouteBranchPoint",
+	"IsBossSanctuary",
+	"RouteExitLeadsToNextRound",
+	"RouteExitLeadsToBoss",
 })
 
 local function normalizedSeed(value)
@@ -62,18 +94,7 @@ local function worldToGrid(position)
 end
 
 local function applyRouteAttributes(instance, spec)
-	for _, attributeName in ipairs({
-		"RouteSeed",
-		"RoundIndex",
-		"IslandIndex",
-		"GlobalIslandIndex",
-		"IncomingDirectionId",
-		"NextDirectionId",
-		"IsMandatoryRoute",
-		"IsRewardIsland",
-		"IsBossSanctuary",
-		"RouteExitLeadsToBoss",
-	}) do
+	for _, attributeName in ipairs(ROUTE_ATTRIBUTE_NAMES) do
 		local value = spec[attributeName]
 		if value ~= nil then
 			instance:SetAttribute(attributeName, value)
@@ -84,6 +105,11 @@ end
 local function tagMarker(marker, markerType)
 	CollectionService:AddTag(marker, "DungeonGameplayMarker")
 	CollectionService:AddTag(marker, "Dungeon" .. markerType)
+	if markerType == "Entry" then
+		CollectionService:AddTag(marker, "DungeonRouteEntry")
+	elseif markerType == "Exit" then
+		CollectionService:AddTag(marker, "DungeonRouteExit")
+	end
 end
 
 local function markerTransparency()
@@ -147,6 +173,201 @@ local function farEnough(position, occupied, minimumDistance)
 	return true
 end
 
+local function horizontalDistance(left, right)
+	if typeof(left) ~= "Vector3" or typeof(right) ~= "Vector3" then
+		return math.huge
+	end
+	return (Vector3.new(left.X, 0, left.Z) - Vector3.new(right.X, 0, right.Z)).Magnitude
+end
+
+local function insideFloorInset(floor, position, insetStuds)
+	local localPosition = floor.CFrame:PointToObjectSpace(position)
+	local inset = math.max(0, tonumber(insetStuds) or 0)
+	local halfX = math.max(0, floor.Size.X / 2 - inset)
+	local halfZ = math.max(0, floor.Size.Z / 2 - inset)
+	return math.abs(localPosition.X) <= halfX and math.abs(localPosition.Z) <= halfZ
+end
+
+local function markerPositions(markers)
+	local result = {}
+	for _, marker in ipairs(type(markers) == "table" and markers or {}) do
+		if typeof(marker) == "Instance" and marker:IsA("BasePart") then
+			table.insert(result, marker.Position)
+		elseif typeof(marker) == "Vector3" then
+			table.insert(result, marker)
+		end
+	end
+	return result
+end
+
+local function minimumDistance(position, positions)
+	local result = math.huge
+	for _, other in ipairs(positions or {}) do
+		result = math.min(result, horizontalDistance(position, other))
+	end
+	return result
+end
+
+local function cloneConnection(raw, fallbackDirection)
+	raw = type(raw) == "table" and raw or {}
+	return {
+		SourceKey = raw.SourceKey,
+		TargetKey = raw.TargetKey,
+		DirectionId = raw.DirectionId or fallbackDirection or DEFAULT_DIRECTION_ID,
+		RouteBranchId = raw.RouteBranchId,
+	}
+end
+
+local function appendUniqueConnection(result, seen, connectionSpec)
+	local directionId = connectionSpec.DirectionId or DEFAULT_DIRECTION_ID
+	local endpoint = connectionSpec.SourceKey or connectionSpec.TargetKey or ""
+	local key = directionId .. "|" .. tostring(endpoint)
+	if seen[key] then
+		return
+	end
+	seen[key] = true
+	connectionSpec.DirectionId = directionId
+	table.insert(result, connectionSpec)
+end
+
+local function incomingConnections(spec)
+	local result = {}
+	local seen = {}
+	for _, raw in ipairs(type(spec.IncomingConnections) == "table" and spec.IncomingConnections or {}) do
+		appendUniqueConnection(result, seen, cloneConnection(raw, spec.IncomingDirectionId))
+	end
+	if #result == 0 then
+		appendUniqueConnection(result, seen, {
+			DirectionId = spec.IncomingDirectionId or spec.NextDirectionId or DEFAULT_DIRECTION_ID,
+			SourceKey = nil,
+			RouteBranchId = spec.RouteBranchId,
+		})
+	end
+	return result
+end
+
+local function outgoingConnections(spec)
+	local result = {}
+	local seen = {}
+	for _, raw in ipairs(type(spec.OutgoingConnections) == "table" and spec.OutgoingConnections or {}) do
+		appendUniqueConnection(result, seen, cloneConnection(raw, spec.NextDirectionId))
+	end
+	for _, directionId in ipairs(type(spec.OutgoingDirectionIds) == "table" and spec.OutgoingDirectionIds or {}) do
+		appendUniqueConnection(result, seen, {
+			DirectionId = directionId,
+			RouteBranchId = spec.RouteBranchId,
+		})
+	end
+	for _, directionId in ipairs({ spec.NextDirectionId, spec.AlternateNextDirectionId }) do
+		if directionId then
+			appendUniqueConnection(result, seen, {
+				DirectionId = directionId,
+				RouteBranchId = spec.RouteBranchId,
+			})
+		end
+	end
+	if #result == 0 then
+		appendUniqueConnection(result, seen, {
+			DirectionId = spec.IncomingDirectionId or DEFAULT_DIRECTION_ID,
+			TargetKey = nil,
+			RouteBranchId = spec.RouteBranchId,
+		})
+	end
+	return result
+end
+
+local function setConnectionAttributes(marker, connectionSpec, index, role)
+	marker:SetAttribute("ConnectionIndex", index)
+	marker:SetAttribute("ConnectionRole", role)
+	marker:SetAttribute("ConnectionDirectionId", connectionSpec.DirectionId)
+	marker:SetAttribute("DirectionId", connectionSpec.DirectionId)
+	marker:SetAttribute("ConnectionSourceKey", connectionSpec.SourceKey)
+	marker:SetAttribute("ConnectionTargetKey", connectionSpec.TargetKey)
+	marker:SetAttribute("ConnectionBranchId", connectionSpec.RouteBranchId)
+	marker:SetAttribute("IsPrimaryConnection", index == 1)
+end
+
+local function buildConnectionMarkers(root, floor, spec)
+	local entriesFolder = Instance.new("Folder")
+	entriesFolder.Name = "Entries"
+	entriesFolder:SetAttribute("MarkerType", "Entries")
+	entriesFolder:SetAttribute("DungeonMarkerContractVersion", CONTRACT_VERSION)
+	entriesFolder.Parent = root
+
+	local exitsFolder = Instance.new("Folder")
+	exitsFolder.Name = "Exits"
+	exitsFolder:SetAttribute("MarkerType", "Exits")
+	exitsFolder:SetAttribute("DungeonMarkerContractVersion", CONTRACT_VERSION)
+	exitsFolder.Parent = root
+
+	local center = topSurfacePosition(floor)
+	local entries = incomingConnections(spec)
+	local exits = outgoingConnections(spec)
+	local entryMarkers = {}
+	local exitMarkers = {}
+
+	for index, connectionSpec in ipairs(entries) do
+		local travel = directionVector(connectionSpec.DirectionId)
+		local outward = opposite(travel)
+		local position = edgePosition(floor, outward, 3, 0)
+		local parent = index == 1 and root or entriesFolder
+		local name = index == 1 and "Entry" or string.format("Entry_%02d", index)
+		local marker = createMarker(parent, name, "Entry", position, center, spec, index, 2)
+		setConnectionAttributes(marker, connectionSpec, index, "Incoming")
+		marker:SetAttribute("LocksObjectiveProgress", false)
+		entryMarkers[index] = marker
+	end
+
+	for index, connectionSpec in ipairs(exits) do
+		local travel = directionVector(connectionSpec.DirectionId)
+		local position = edgePosition(floor, travel, 3, 0)
+		local parent = index == 1 and root or exitsFolder
+		local name = index == 1 and "Exit" or string.format("Exit_%02d", index)
+		local marker = createMarker(parent, name, "Exit", position, position + travel, spec, index, 2)
+		setConnectionAttributes(marker, connectionSpec, index, "Outgoing")
+		marker:SetAttribute("ObjectiveGate", spec.IsMandatoryRoute == true)
+		marker:SetAttribute("ExitLocked", spec.IsMandatoryRoute == true)
+		exitMarkers[index] = marker
+	end
+
+	local entryCount = #entryMarkers
+	local exitCount = #exitMarkers
+	root:SetAttribute("EntryCount", entryCount)
+	root:SetAttribute("ExitCount", exitCount)
+	root:SetAttribute("IsRouteConvergence", entryCount > 1)
+	root:SetAttribute("IsRouteBranchPoint", exitCount > 1)
+	entriesFolder:SetAttribute("TotalEntryCount", entryCount)
+	entriesFolder:SetAttribute("AdditionalEntryCount", math.max(0, entryCount - 1))
+	exitsFolder:SetAttribute("TotalExitCount", exitCount)
+	exitsFolder:SetAttribute("AdditionalExitCount", math.max(0, exitCount - 1))
+
+	return {
+		Entry = entryMarkers[1],
+		Exit = exitMarkers[1],
+		Entries = entryMarkers,
+		Exits = exitMarkers,
+	}
+end
+
+local function enemySafetyDistances(floor)
+	local minimumDimension = math.min(floor.Size.X, floor.Size.Z)
+	return {
+		EdgeInset = math.min(ENEMY_EDGE_INSET_STUDS, math.max(5, minimumDimension * 0.16)),
+		SafeSpawnDistance = math.min(
+			ENEMY_SAFE_SPAWN_DISTANCE_STUDS,
+			math.max(12, minimumDimension * 0.32)
+		),
+		EntryDistance = math.min(
+			ENEMY_ENTRY_DISTANCE_STUDS,
+			math.max(10, minimumDimension * 0.28)
+		),
+		MarkerSpacing = math.min(
+			ENEMY_MARKER_SPACING_STUDS,
+			math.max(6, minimumDimension * 0.18)
+		),
+	}
+end
+
 local function enemySpawnCount(floor, isRewardIsland, isBossSanctuary)
 	if isBossSanctuary then
 		return 0
@@ -159,48 +380,108 @@ local function enemySpawnCount(floor, isRewardIsland, isBossSanctuary)
 	return count
 end
 
-local function buildEnemySpawns(root, floor, spec, occupied)
+local function buildEnemySpawns(root, floor, spec, occupied, safePosition, entryMarkers)
 	local folder = Instance.new("Folder")
 	folder.Name = "EnemySpawns"
 	folder:SetAttribute("MarkerType", "EnemySpawns")
 	folder:SetAttribute("DungeonMarkerContractVersion", CONTRACT_VERSION)
+	folder:SetAttribute("RequestedSpawnCount", enemySpawnCount(
+		floor,
+		spec.IsRewardIsland == true,
+		spec.IsBossSanctuary == true
+	))
+	local safety = enemySafetyDistances(floor)
+	folder:SetAttribute("MinimumSafeSpawnDistanceStuds", safety.SafeSpawnDistance)
+	folder:SetAttribute("MinimumEntryDistanceStuds", safety.EntryDistance)
+	folder:SetAttribute("MinimumEdgeInsetStuds", safety.EdgeInset)
+	folder:SetAttribute("MinimumMarkerSpacingStuds", safety.MarkerSpacing)
 	folder.Parent = root
 
 	local count = enemySpawnCount(floor, spec.IsRewardIsland == true, spec.IsBossSanctuary == true)
 	local random = Random.new(normalizedSeed((spec.RouteSeed or spec.Seed or 1) + 67867967))
-	local radiusX = math.max(8, floor.Size.X * 0.32)
-	local radiusZ = math.max(8, floor.Size.Z * 0.32)
+	local maximumRadiusX = math.max(4, floor.Size.X / 2 - safety.EdgeInset)
+	local maximumRadiusZ = math.max(4, floor.Size.Z / 2 - safety.EdgeInset)
+	local radiusX = math.min(math.max(7, floor.Size.X * 0.30), maximumRadiusX)
+	local radiusZ = math.min(math.max(7, floor.Size.Z * 0.30), maximumRadiusZ)
+	local entryPositions = markerPositions(entryMarkers)
+	local center = topSurfacePosition(floor)
 	local angleOffset = random:NextNumber(0, math.pi * 2)
 	local created = 0
 	local attempts = 0
-	local maximumAttempts = math.max(12, count * 6)
+	local maximumAttempts = math.max(48, count * 30)
+
+	local function candidateIsSafe(position)
+		return insideFloorInset(floor, position, safety.EdgeInset)
+			and horizontalDistance(position, safePosition) >= safety.SafeSpawnDistance
+			and minimumDistance(position, entryPositions) >= safety.EntryDistance
+			and farEnough(position, occupied, safety.MarkerSpacing)
+	end
+
+	local function createEnemyMarker(position)
+		created += 1
+		local marker = createMarker(
+			folder,
+			string.format("EnemySpawn_%02d", created),
+			"EnemySpawn",
+			position,
+			center,
+			spec,
+			created,
+			2
+		)
+		marker:SetAttribute("SpawnRole", "Standard")
+		marker:SetAttribute("SafeSpawnDistanceStuds", horizontalDistance(position, safePosition))
+		marker:SetAttribute("NearestEntryDistanceStuds", minimumDistance(position, entryPositions))
+		marker:SetAttribute("EdgeInsetStuds", safety.EdgeInset)
+		marker:SetAttribute("SafeSpawnValidated", true)
+		table.insert(occupied, marker.Position)
+	end
+
 	while created < count and attempts < maximumAttempts do
 		attempts += 1
-		local angle = angleOffset + ((attempts - 1) / math.max(1, count)) * math.pi * 2
-			+ random:NextNumber(-0.16, 0.16)
-		local radiusMultiplier = random:NextNumber(0.82, 1)
-		local position = topSurfacePosition(floor) + Vector3.new(
+		local angle = angleOffset + attempts * 2.399963229728653
+		local ring = 0.48 + ((attempts - 1) % 4) * 0.14
+		local radiusMultiplier = math.clamp(ring + random:NextNumber(-0.04, 0.04), 0.42, 0.94)
+		local position = center + Vector3.new(
 			math.cos(angle) * radiusX * radiusMultiplier,
 			0,
 			math.sin(angle) * radiusZ * radiusMultiplier
 		)
-		if farEnough(position, occupied, 12) then
-			created += 1
-			local marker = createMarker(
-				folder,
-				string.format("EnemySpawn_%02d", created),
-				"EnemySpawn",
-				position,
-				topSurfacePosition(floor),
-				spec,
-				created,
-				2
-			)
-			marker:SetAttribute("SpawnRole", "Standard")
-			table.insert(occupied, marker.Position)
+		if candidateIsSafe(position) then
+			createEnemyMarker(position)
 		end
 	end
+
+	if created < count then
+		local insetX = math.max(4, floor.Size.X / 2 - safety.EdgeInset)
+		local insetZ = math.max(4, floor.Size.Z / 2 - safety.EdgeInset)
+		local fallbackOffsets = {
+			Vector3.new(insetX, 0, insetZ),
+			Vector3.new(insetX, 0, -insetZ),
+			Vector3.new(-insetX, 0, insetZ),
+			Vector3.new(-insetX, 0, -insetZ),
+			Vector3.new(insetX, 0, 0),
+			Vector3.new(-insetX, 0, 0),
+			Vector3.new(0, 0, insetZ),
+			Vector3.new(0, 0, -insetZ),
+		}
+		table.sort(fallbackOffsets, function(left, right)
+			return horizontalDistance(center + left, safePosition)
+				> horizontalDistance(center + right, safePosition)
+		end)
+		for _, offset in ipairs(fallbackOffsets) do
+			if created >= count then
+				break
+			end
+			local position = center + offset
+			if candidateIsSafe(position) then
+				createEnemyMarker(position)
+			end
+		end
+	end
+
 	folder:SetAttribute("SpawnCount", created)
+	folder:SetAttribute("SafeSpawnValidationPassed", created == count or count == 0)
 	return folder, created
 end
 
@@ -257,6 +538,31 @@ local function requiredPart(root, name)
 	return marker and marker:IsA("BasePart") and marker or nil
 end
 
+local function collectConnectionMarkers(root, kind)
+	local result = {}
+	local primary = requiredPart(root, kind)
+	if primary then
+		table.insert(result, primary)
+	end
+	local folder = root:FindFirstChild(kind .. "s")
+	if folder and folder:IsA("Folder") then
+		for _, child in ipairs(folder:GetChildren()) do
+			if child:IsA("BasePart") then
+				table.insert(result, child)
+			end
+		end
+	end
+	table.sort(result, function(left, right)
+		local leftIndex = tonumber(left:GetAttribute("ConnectionIndex")) or tonumber(left:GetAttribute("MarkerIndex")) or 1
+		local rightIndex = tonumber(right:GetAttribute("ConnectionIndex")) or tonumber(right:GetAttribute("MarkerIndex")) or 1
+		if leftIndex == rightIndex then
+			return left.Name < right.Name
+		end
+		return leftIndex < rightIndex
+	end)
+	return result
+end
+
 function IslandMarkerService.Validate(islandModel)
 	local root = islandModel and islandModel:FindFirstChild(MARKER_ROOT_NAME)
 	if not root or not root:IsA("Folder") then
@@ -267,10 +573,56 @@ function IslandMarkerService.Validate(islandModel)
 			return false, name .. "Missing"
 		end
 	end
+	local entriesFolder = root:FindFirstChild("Entries")
+	local exitsFolder = root:FindFirstChild("Exits")
+	if not entriesFolder or not entriesFolder:IsA("Folder") then
+		return false, "EntriesFolderMissing"
+	end
+	if not exitsFolder or not exitsFolder:IsA("Folder") then
+		return false, "ExitsFolderMissing"
+	end
+	local entries = collectConnectionMarkers(root, "Entry")
+	local exits = collectConnectionMarkers(root, "Exit")
+	if #entries ~= math.max(1, math.floor(tonumber(root:GetAttribute("EntryCount")) or 0)) then
+		return false, "EntryCountMismatch"
+	end
+	if #exits ~= math.max(1, math.floor(tonumber(root:GetAttribute("ExitCount")) or 0)) then
+		return false, "ExitCountMismatch"
+	end
+	for _, marker in ipairs(entries) do
+		if type(marker:GetAttribute("ConnectionDirectionId")) ~= "string" then
+			return false, "EntryDirectionMissing"
+		end
+	end
+	for _, marker in ipairs(exits) do
+		if type(marker:GetAttribute("ConnectionDirectionId")) ~= "string" then
+			return false, "ExitDirectionMissing"
+		end
+	end
 	local enemySpawns = root:FindFirstChild("EnemySpawns")
 	local chestSpawns = root:FindFirstChild("ChestSpawns")
 	if not enemySpawns or not enemySpawns:IsA("Folder") then
 		return false, "EnemySpawnsMissing"
+	end
+	local floor = islandModel:FindFirstChild("IslandFloor") or islandModel.PrimaryPart
+	local safety = floor and enemySafetyDistances(floor) or nil
+	local safeSpawn = requiredPart(root, "SafeSpawn")
+	local safeEntries = collectConnectionMarkers(root, "Entry")
+	local entryPositions = markerPositions(safeEntries)
+	if floor and safeSpawn and safety then
+		for _, marker in ipairs(enemySpawns:GetChildren()) do
+			if marker:IsA("BasePart") then
+				if not insideFloorInset(floor, marker.Position, safety.EdgeInset) then
+					return false, "EnemySpawnTooCloseToEdge"
+				end
+				if horizontalDistance(marker.Position, safeSpawn.Position) < safety.SafeSpawnDistance then
+					return false, "EnemySpawnTooCloseToSafeSpawn"
+				end
+				if minimumDistance(marker.Position, entryPositions) < safety.EntryDistance then
+					return false, "EnemySpawnTooCloseToEntry"
+				end
+			end
+		end
 	end
 	if not chestSpawns or not chestSpawns:IsA("Folder") then
 		return false, "ChestSpawnsMissing"
@@ -308,53 +660,65 @@ function IslandMarkerService.Build(islandModel, spec)
 	root.Parent = islandModel
 	CollectionService:AddTag(root, "DungeonGameplayMarkers")
 
-	local incomingTravel = spec.IncomingDirectionId and directionVector(spec.IncomingDirectionId) or nil
-	local outgoingTravel = spec.NextDirectionId and directionVector(spec.NextDirectionId) or nil
-	if not incomingTravel and outgoingTravel then
-		incomingTravel = outgoingTravel
-	end
-	incomingTravel = incomingTravel or directionVector(DEFAULT_DIRECTION_ID)
-	outgoingTravel = outgoingTravel or incomingTravel
-	local entryOutward = opposite(incomingTravel)
-	local exitOutward = outgoingTravel
+	local connections = buildConnectionMarkers(root, floor, spec)
+	local entry = connections.Entry
+	local exit = connections.Exit
 	local center = topSurfacePosition(floor)
-	local entryPosition = edgePosition(floor, entryOutward, 3, 0)
-	local exitPosition = edgePosition(floor, exitOutward, 3, 0)
+	local entryDirection = directionVector(entry:GetAttribute("ConnectionDirectionId"))
+	local entryOutward = opposite(entryDirection)
+	local outgoingTravel = directionVector(exit:GetAttribute("ConnectionDirectionId"))
 	local safeInset = math.clamp(math.min(floor.Size.X, floor.Size.Z) * 0.18, 9, 16)
-	local safePosition = entryPosition - entryOutward * safeInset
+	local safePosition = entry.Position - entryOutward * safeInset
 
-	local entry = createMarker(root, "Entry", "Entry", entryPosition, center, spec, 1, 2)
-	entry:SetAttribute("DirectionId", spec.IncomingDirectionId or "RouteStart")
-	entry:SetAttribute("LocksObjectiveProgress", false)
-	local exit = createMarker(root, "Exit", "Exit", exitPosition, exitPosition + exitOutward, spec, 1, 2)
-	exit:SetAttribute("DirectionId", spec.NextDirectionId or spec.IncomingDirectionId or DEFAULT_DIRECTION_ID)
-	exit:SetAttribute("ObjectiveGate", true)
-	exit:SetAttribute("ExitLocked", true)
 	local safeSpawn = createMarker(root, "SafeSpawn", "SafeSpawn", safePosition, center, spec, 1, 3)
 	safeSpawn:SetAttribute("RespawnPriority", 100)
 	safeSpawn:SetAttribute("CheckpointScope", spec.IsBossSanctuary == true and "BossArena" or "Island")
-	local objective = createMarker(root, "ObjectiveAnchor", "ObjectiveAnchor", center, exitPosition, spec, 1, 3)
+	safeSpawn:SetAttribute("EntrySafeZoneRadiusStuds", ENTRY_SAFE_ZONE_RADIUS_STUDS)
+	safeSpawn:SetAttribute("EntryProtectionSeconds", ENTRY_PROTECTION_SECONDS)
+	safeSpawn:SetAttribute("EnemyExclusionRadiusStuds", ENEMY_SAFE_SPAWN_DISTANCE_STUDS)
+	local objective = createMarker(root, "ObjectiveAnchor", "ObjectiveAnchor", center, exit.Position, spec, 1, 3)
 	objective:SetAttribute("ObjectivePlacementRadius", math.max(8, math.min(floor.Size.X, floor.Size.Z) * 0.2))
 	objective:SetAttribute("SupportsBeacon", spec.IsBossSanctuary ~= true)
 	objective:SetAttribute("SupportsNest", spec.IsBossSanctuary ~= true)
 
 	local occupied = markerPositionList(root)
 	local _, chestCount = buildChestSpawns(root, floor, spec, outgoingTravel, occupied)
-	local _, enemyCount = buildEnemySpawns(root, floor, spec, occupied)
+	local _, enemyCount = buildEnemySpawns(
+		root,
+		floor,
+		spec,
+		occupied,
+		safePosition,
+		connections.Entries
+	)
 
+	local entryCount = #connections.Entries
+	local exitCount = #connections.Exits
 	root:SetAttribute("EnemySpawnCount", enemyCount)
+	root:SetAttribute("EntrySafeZoneRadiusStuds", ENTRY_SAFE_ZONE_RADIUS_STUDS)
+	root:SetAttribute("EntryProtectionSeconds", ENTRY_PROTECTION_SECONDS)
+	root:SetAttribute("SafeEnemySpawnPolicy", "EdgeAndEntryExclusionV1")
 	root:SetAttribute("ChestSpawnCount", chestCount)
 	root:SetAttribute("MarkersReady", true)
 	islandModel:SetAttribute("DungeonMarkerContractVersion", CONTRACT_VERSION)
 	islandModel:SetAttribute("GameplayMarkersReady", true)
+	islandModel:SetAttribute("RouteEntryCount", entryCount)
+	islandModel:SetAttribute("RouteExitCount", exitCount)
+	islandModel:SetAttribute("IsRouteConvergence", entryCount > 1)
+	islandModel:SetAttribute("IsRouteBranchPoint", exitCount > 1)
 	islandModel:SetAttribute(
 		"ObjectiveEncounterManaged",
 		spec.IsMandatoryRoute == true and spec.IsBossSanctuary ~= true
 	)
 	islandModel:SetAttribute("EnemyMarkerCount", enemyCount)
+	islandModel:SetAttribute("EntrySafeZoneRadiusStuds", ENTRY_SAFE_ZONE_RADIUS_STUDS)
+	islandModel:SetAttribute("EntryProtectionSeconds", ENTRY_PROTECTION_SECONDS)
+	islandModel:SetAttribute("SafeEnemySpawnPolicy", "EdgeAndEntryExclusionV1")
 	islandModel:SetAttribute("ChestMarkerCount", chestCount)
 	floor:SetAttribute("DungeonMarkerContractVersion", CONTRACT_VERSION)
 	floor:SetAttribute("GameplayMarkersReady", true)
+	floor:SetAttribute("RouteEntryCount", entryCount)
+	floor:SetAttribute("RouteExitCount", exitCount)
 
 	local valid, reason = IslandMarkerService.Validate(islandModel)
 	if not valid then
@@ -370,7 +734,24 @@ function IslandMarkerService.Get(islandModel, markerName)
 	return root and root:FindFirstChild(markerName, true) or nil
 end
 
+function IslandMarkerService.GetConnectionMarkers(islandModel, kind)
+	local root = islandModel and islandModel:FindFirstChild(MARKER_ROOT_NAME)
+	if not root then
+		return {}
+	end
+	if kind == "Entry" or kind == "Entries" then
+		return collectConnectionMarkers(root, "Entry")
+	end
+	if kind == "Exit" or kind == "Exits" then
+		return collectConnectionMarkers(root, "Exit")
+	end
+	return {}
+end
+
 function IslandMarkerService.GetAll(islandModel, folderName)
+	if folderName == "Entries" or folderName == "Exits" then
+		return IslandMarkerService.GetConnectionMarkers(islandModel, folderName)
+	end
 	local root = islandModel and islandModel:FindFirstChild(MARKER_ROOT_NAME)
 	local folder = root and root:FindFirstChild(folderName)
 	if not folder then

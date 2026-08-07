@@ -36,6 +36,12 @@ playerEffects.BackgroundTransparency = 1
 playerEffects.BorderSizePixel = 0
 playerEffects.Parent = screenGui
 
+local function synchronizeUnifiedPlayerEffects()
+	playerEffects.Visible = player:GetAttribute("DungeonUnifiedHUDReady") ~= true
+end
+player:GetAttributeChangedSignal("DungeonUnifiedHUDReady"):Connect(synchronizeUnifiedPlayerEffects)
+task.defer(synchronizeUnifiedPlayerEffects)
+
 local playerLayout = Instance.new("UIListLayout")
 playerLayout.FillDirection = Enum.FillDirection.Horizontal
 playerLayout.HorizontalAlignment = Enum.HorizontalAlignment.Right

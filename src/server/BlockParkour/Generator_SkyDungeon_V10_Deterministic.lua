@@ -1863,6 +1863,15 @@ function Generator.CreateFrontierNode(parent, spec, options)
 		"IsRewardIsland",
 		"IsBossSanctuary",
 		"RouteExitLeadsToBoss",
+		"RouteExitLeadsToNextRound",
+		"IsOptionalRoute",
+		"IsRoundExit",
+		"RoundExitIndex",
+		"ProtectionGlobalIslandIndex",
+		"RouteNodeOrder",
+		"RouteBranchId",
+		"AlternateNextDirectionId",
+		"RouteChoiceCount",
 	}) do
 		local value = spec[attributeName]
 		if value ~= nil then

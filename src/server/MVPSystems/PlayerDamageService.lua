@@ -169,6 +169,9 @@ function PlayerDamageService.IsProtected(player, humanoid)
 	if player:GetAttribute("InvisibleToEnemies") == true then
 		return true, "InvisibleToEnemies"
 	end
+	if (tonumber(player:GetAttribute("DungeonEntryProtectionUntil")) or 0) > serverTime() then
+		return true, "DungeonEntryProtection"
+	end
 
 	local protected, reason = hasSafeZoneOrRescueProtection(player)
 	if protected then

@@ -14,6 +14,7 @@ local ChunkManager = require(script.Parent.Parent.BlockParkour.ChunkManager_SkyD
 local PlayerDataService = require(script.Parent.Parent.BlockParkour.PlayerDataService_SkyDungeon_V10)
 local PartyService = require(script.Parent.Parent.BlockParkour.PartyService)
 local BossService = require(script.Parent.BossService)
+local BossEncounterDirector = require(script.Parent.BossEncounterDirector)
 local ContentResolver = require(script.Parent.ContentResolver)
 local DungeonGenerator = require(script.Parent.DungeonGenerator)
 local DungeonStateMachine = require(script.Parent.DungeonStateMachine)
@@ -22,11 +23,17 @@ local DungeonResultCommitService = require(script.Parent.DungeonResultCommitServ
 local DungeonReturnService = require(script.Parent.DungeonReturnService)
 local DungeonLegacyIsolationService = require(script.Parent.DungeonLegacyIsolationService)
 local DungeonSpawnService = require(script.Parent.DungeonSpawnService)
+local DungeonHealthRecoveryService = require(script.Parent.DungeonHealthRecoveryService)
+local DungeonEntrySafetyService = require(script.Parent.DungeonEntrySafetyService)
+local DungeonRecoveryService = require(script.Parent.DungeonRecoveryService)
+local DungeonPacingService = require(script.Parent.DungeonPacingService)
+local OptionalIslandService = require(script.Parent.OptionalIslandService)
 local ObjectiveEncounterService = require(script.Parent.ObjectiveEncounterService)
 local ObjectiveSequenceService = require(script.Parent.ObjectiveSequenceService)
 local ObjectiveService = require(script.Parent.ObjectiveService)
 local RewardIslandService = require(script.Parent.RewardIslandService)
 local RunRewardLedgerService = require(script.Parent.RunRewardLedgerService)
+local MobCollectibleService = require(script.Parent.MobCollectibleService)
 local PhaseRegistry = require(script.Parent.PhaseRegistry)
 local RuntimeFolders = require(script.Parent.RuntimeFolders)
 
@@ -186,6 +193,9 @@ local function loadSessionPlayer(player)
 	player:SetAttribute("InitialStartState", "Positioning")
 	player:SetAttribute("PlayerLifecycleState", "InitialSpawning")
 	DungeonSpawnService.BindPlayer(player)
+	if workspace:GetAttribute("DungeonHealthRecoveryReady") == true then
+		DungeonHealthRecoveryService.BindPlayer(player)
+	end
 	local lifeServiceReady = workspace:GetAttribute("DungeonLifeServiceReady") == true
 	if lifeServiceReady then
 		DungeonPartyLifeService.BindPlayer(player)
@@ -315,10 +325,17 @@ finishSession = function(reason)
 	local bossEligibleUserIds = reason == "Victory"
 		and BossService.GetEligibleUserIds()
 		or {}
+	DungeonPacingService.FinishRun(reason)
+	BossEncounterDirector.Stop()
 	BossService.Stop()
+	DungeonHealthRecoveryService.Stop()
+	DungeonEntrySafetyService.Stop()
+	DungeonRecoveryService.Stop()
+	OptionalIslandService.Stop()
 	DungeonPartyLifeService.Stop()
 	ObjectiveEncounterService.Stop()
 	RewardIslandService.Stop()
+	MobCollectibleService.Stop()
 	RunRewardLedgerService.Stop()
 	ObjectiveSequenceService.Stop()
 	ObjectiveService.Stop()
@@ -447,15 +464,28 @@ local function startBossEncounter(arenaContext)
 			if session.Completed then
 				return
 			end
+			DungeonPacingService.MarkBossActive(snapshot)
 			transitionState(DungeonStateMachine.States.BossActive, {
 				Reason = "BossArenaActivated",
 				BossId = snapshot and snapshot.BossId,
 			})
 		end,
-		OnDefeated = function()
-			if not session.Completed then
-				finishSession("Victory")
+		OnDefeated = function(boss, snapshot)
+			if session.Completed or session.BossVictoryPending then
+				return
 			end
+			session.BossVictoryPending = true
+			local rewardDelay = BossEncounterDirector.HandleDefeated(boss, snapshot)
+			workspace:SetAttribute("DungeonBossVictoryPending", true)
+			workspace:SetAttribute(
+				"DungeonBossVictoryFinalizeAt",
+				workspace:GetServerTimeNow() + math.max(0, tonumber(rewardDelay) or 0)
+			)
+			task.delay(math.max(0, tonumber(rewardDelay) or 0), function()
+				if session and not session.Completed then
+					finishSession("Victory")
+				end
+			end)
 		end,
 	})
 	if not created then
@@ -463,6 +493,18 @@ local function startBossEncounter(arenaContext)
 		warn("[DungeonRuntime] Criacao do chefe falhou: " .. tostring(bossStateOrError))
 		return false, bossStateOrError
 	end
+	local directorAttached, directorError = BossEncounterDirector.Attach(
+		bossStateOrError,
+		{
+			BossRewardCoins = math.max(
+				50,
+				math.floor((tonumber(phase.VictoryCoins) or 0) * 0.40)
+			),
+		}
+	)
+	workspace:SetAttribute("DungeonBossDirectorAttached", directorAttached == true)
+	workspace:SetAttribute("DungeonBossDirectorError", directorAttached and nil or tostring(directorError))
+	DungeonPacingService.MarkBossReady(arenaContext)
 	workspace:SetAttribute("DungeonBossState", "Ready")
 	workspace:SetAttribute("DungeonBossPreparedAt", workspace:GetServerTimeNow())
 	return true, bossStateOrError
@@ -504,6 +546,30 @@ local function beginWorld()
 	workspace:SetAttribute("DungeonDecorationSpawnChance", phase.DecorationSpawnChance)
 	workspace:SetAttribute("DungeonSessionClosed", false)
 
+	DungeonPacingService.Start({
+		ObjectivePreparationSeconds = 2.5,
+		InterWaveSeconds = 1.5,
+		ObjectiveCompletionSeconds = 1.35,
+		RoundTransitionSeconds = 2.75,
+		BossTransitionSeconds = 4,
+		CountdownTickSeconds = 0.1,
+	})
+
+	DungeonHealthRecoveryService.Start({
+		ParticipantUserIds = session.PartyUserIds,
+		RegenDelaySeconds = 5,
+		RegenPercentPerSecond = 0.04,
+		ObjectiveHealPercent = 0.15,
+		RewardHealPercent = 0.40,
+		BossHealPercent = 1,
+		TickSeconds = 0.25,
+	})
+
+	DungeonEntrySafetyService.Start({
+		ParticipantUserIds = session.PartyUserIds,
+		ProtectionSeconds = 3,
+	})
+
 	ObjectiveService.Start({
 		SessionId = session.SessionId,
 		PhaseId = session.PhaseId,
@@ -512,6 +578,13 @@ local function beginWorld()
 		OnObjectiveCompleted = function(snapshot)
 			local sequenceResult = ObjectiveSequenceService.HandleObjectiveCompleted(snapshot)
 			ObjectiveEncounterService.CompleteObjective(snapshot.Id)
+			if sequenceResult and sequenceResult.IsRewardIsland ~= true then
+				DungeonHealthRecoveryService.HealParticipants(
+					0.15,
+					"ObjectiveCompleted:" .. tostring(snapshot.Id),
+					false
+				)
+			end
 			if sequenceResult and stateMachine:GetState() == DungeonStateMachine.States.Active then
 				transitionState(
 					sequenceResult.IsRewardIsland
@@ -585,6 +658,19 @@ local function beginWorld()
 		SessionId = session.SessionId,
 		ParticipantUserIds = session.PartyUserIds,
 	})
+	MobCollectibleService.Start({
+		SessionId = session.SessionId,
+		ParticipantUserIds = session.PartyUserIds,
+	})
+	BossEncounterDirector.Start({
+		SessionId = session.SessionId,
+		ParticipantUserIds = session.PartyUserIds,
+	})
+	OptionalIslandService.Start({
+		SessionId = session.SessionId,
+		PartySize = session.PartySize,
+		ParticipantUserIds = session.PartyUserIds,
+	})
 	RewardIslandService.Start({
 		SessionId = session.SessionId,
 		PhaseId = session.PhaseId,
@@ -601,10 +687,10 @@ local function beginWorld()
 		GetIslandContext = DungeonGenerator.GetRouteIslandContext,
 		RequestRouteThrough = DungeonGenerator.RequestRouteThrough,
 		OnObjectiveStarted = function(definition, islandContext)
-			DungeonSpawnService.SetCheckpoint(
+			DungeonEntrySafetyService.ProtectParticipants(
 				islandContext,
-				"ObjectiveStarted:" .. tostring(definition.Id),
-				false
+				"ObjectiveIslandEntered:" .. tostring(definition.Id),
+				3
 			)
 			local currentState = stateMachine:GetState()
 			if currentState ~= DungeonStateMachine.States.Active then
@@ -624,9 +710,18 @@ local function beginWorld()
 			end
 		end,
 		OnRoundRewardPending = function(result, islandContext)
+			MobCollectibleService.AttractRound(
+				result.RoundIndex,
+				"RoundObjectiveCompleted"
+			)
 			DungeonPartyLifeService.RestoreEliminatedAtReward(
 				result.RoundIndex,
 				islandContext and islandContext.SafeSpawn
+			)
+			DungeonHealthRecoveryService.HealParticipants(
+				0.40,
+				"RewardIslandReached:" .. tostring(result.RoundIndex),
+				false
 			)
 			workspace:SetAttribute("DungeonRoundRewardPending", true)
 			workspace:SetAttribute("DungeonRoundRewardIndex", result.RoundIndex)
@@ -637,9 +732,27 @@ local function beginWorld()
 				warn("[DungeonRuntime] Reward Island falhou: " .. tostring(rewardError))
 			end
 		end,
-		OnRoundRewardCommitted = function(roundIndex, isFinal)
+		OnRoundRewardCommitted = function(roundIndex, isFinal, roundExitContext)
+			MobCollectibleService.AttractRound(
+				roundIndex,
+				"RoundRewardCommittedFallback"
+			)
 			workspace:SetAttribute("DungeonRoundRewardPending", false)
 			workspace:SetAttribute("DungeonLastCommittedRewardRound", roundIndex)
+			local checkpointUpdated, checkpointError = DungeonSpawnService.CommitRoundCheckpoint(
+				roundIndex,
+				roundExitContext,
+				"RoundExitCommitted:" .. tostring(roundIndex),
+				false
+			)
+			workspace:SetAttribute("DungeonRoundCheckpointReady", checkpointUpdated == true)
+			workspace:SetAttribute(
+				"DungeonRoundCheckpointError",
+				checkpointUpdated and nil or tostring(checkpointError)
+			)
+			if not checkpointUpdated then
+				warn("[DungeonRuntime] Checkpoint do round falhou: " .. tostring(checkpointError))
+			end
 			if not isFinal then
 				transitionState(DungeonStateMachine.States.Transitioning, {
 					Reason = "RoundRewardCommitted",
@@ -657,6 +770,7 @@ local function beginWorld()
 				return false
 			end
 			session.BossSanctuaryContext = bossContextOrError
+			DungeonHealthRecoveryService.HealParticipants(1, "BossPreparation", true)
 			transitionState(DungeonStateMachine.States.BossPending, {
 				Reason = "FinalRewardCommitted",
 				RouteEndKey = finalContext and finalContext.Key,
@@ -687,7 +801,13 @@ local function beginWorld()
 		Seed = session.Seed,
 		MaximumIslandCount = phase.BaseIslandCount,
 		OnRouteIslandEntered = function(player, islandContext)
+			player:SetAttribute("DungeonCurrentOptionalIslandKey", nil)
+			player:SetAttribute("DungeonCurrentOptionalProfile", nil)
+			player:SetAttribute("DungeonOptionalRewardAvailable", false)
 			return ObjectiveSequenceService.HandleIslandEntered(player, islandContext)
+		end,
+		OnOptionalIslandEntered = function(player, islandContext)
+			return OptionalIslandService.HandleIslandEntered(player, islandContext)
 		end,
 		OnBossSanctuaryReady = function(bossContext)
 			session.BossSanctuaryContext = bossContext
@@ -714,7 +834,7 @@ local function beginWorld()
 	if success then
 		workspace:SetAttribute("DungeonGenerationState", "Ready")
 		local initialContext = DungeonGenerator.GetRouteIslandContext(1)
-		local positioned, positionError = DungeonSpawnService.SetCheckpoint(
+		local positioned, positionError = DungeonSpawnService.SetInitialCheckpoint(
 			initialContext,
 			"InitialWorldReady",
 			true
@@ -723,6 +843,14 @@ local function beginWorld()
 			workspace:SetAttribute("DungeonInitialSpawnError", tostring(positionError))
 			warn("[DungeonRuntime] Spawn inicial falhou: " .. tostring(positionError))
 		end
+		DungeonRecoveryService.Start({
+			ParticipantUserIds = session.PartyUserIds,
+			GetCheckpoint = DungeonSpawnService.GetCheckpoint,
+			PositionPlayer = DungeonSpawnService.PositionPlayer,
+			FallDistanceBelowCheckpoint = 55,
+			StuckSeconds = 6.5,
+			ProtectionSeconds = 4,
+		})
 		transitionState(DungeonStateMachine.States.Active, {
 			Reason = "InitialWorldReady",
 		})
@@ -931,6 +1059,10 @@ function DungeonRuntimeService.GetObjectiveSequenceSnapshot()
 	return ObjectiveSequenceService.GetSnapshot()
 end
 
+function DungeonRuntimeService.GetPacingSnapshot()
+	return DungeonPacingService.GetSnapshot()
+end
+
 function DungeonRuntimeService.GetEncounterSnapshot()
 	return ObjectiveEncounterService.GetSnapshot()
 end
@@ -957,6 +1089,38 @@ end
 
 function DungeonRuntimeService.ActivateBossForTesting(player)
 	return BossService.ActivateForTesting(player)
+end
+
+function DungeonRuntimeService.GetBossDirectorSnapshot()
+	return BossEncounterDirector.GetSnapshot()
+end
+
+function DungeonRuntimeService.GetMobCollectibleSnapshot()
+	return MobCollectibleService.GetSnapshot()
+end
+
+function DungeonRuntimeService.GetOptionalIslandSnapshot(player)
+	return OptionalIslandService.GetSnapshot(player)
+end
+
+function DungeonRuntimeService.ClaimOptionalIslandReward(player, islandKey)
+	return OptionalIslandService.Claim(player, islandKey)
+end
+
+function DungeonRuntimeService.GetRecoverySnapshot(player)
+	return DungeonRecoveryService.GetSnapshot(player)
+end
+
+function DungeonRuntimeService.RequestRecovery(player, reason)
+	return DungeonRecoveryService.Request(player, reason)
+end
+
+function DungeonRuntimeService.GetEntrySafetySnapshot()
+	return DungeonEntrySafetyService.GetSnapshot()
+end
+
+function DungeonRuntimeService.GetHealthRecoverySnapshot()
+	return DungeonHealthRecoveryService.GetSnapshot()
 end
 
 function DungeonRuntimeService.GetPartyLifeSnapshot()

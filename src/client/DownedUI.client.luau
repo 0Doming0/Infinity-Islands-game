@@ -163,7 +163,7 @@ Players.PlayerRemoving:Connect(removeMarker)
 
 RunService.RenderStepped:Connect(function()
 	local downed = localPlayer:GetAttribute("IsDowned") == true
-	card.Visible = downed
+	card.Visible = downed and localPlayer:GetAttribute("DungeonUnifiedHUDReady") ~= true
 	if downed then
 		local remaining = math.max(0, math.ceil(
 			(tonumber(localPlayer:GetAttribute("DownedExpiresAt")) or workspace:GetServerTimeNow())

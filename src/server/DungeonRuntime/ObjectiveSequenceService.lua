@@ -3,6 +3,7 @@ local Players = game:GetService("Players")
 
 local ObjectiveCatalog = require(script.Parent.ObjectiveCatalog)
 local ObjectiveGateService = require(script.Parent.ObjectiveGateService)
+local DungeonPacingService = require(script.Parent.DungeonPacingService)
 local ObjectiveService = require(script.Parent.ObjectiveService)
 local ObjectiveSignalBridge = require(script.Parent.ObjectiveSignalBridge)
 
@@ -15,11 +16,15 @@ local currentGlobalIndex = 1
 local activeDefinition
 local activeContext
 local completedObjectives = {}
+local completedRounds = {}
+local highestCompletedRound = 0
+local currentRoundIndex = 1
 local rewardPendingRound
 local finalRewardCommitted = false
 local signalHandler
 local lastRejectedAt = setmetatable({}, { __mode = "k" })
 local reportedTargetsByEvent = {}
+local pacingTransitionSerial = 0
 
 local function now()
 	return workspace:GetServerTimeNow()
@@ -48,12 +53,63 @@ local function completedObjectiveCount()
 	return count
 end
 
+local function completedRoundCount()
+	local count = 0
+	for _, completed in pairs(completedRounds) do
+		if completed == true then
+			count += 1
+		end
+	end
+	return count
+end
+
+local function copyCompletedRounds()
+	local result = {}
+	for roundIndex, completed in pairs(completedRounds) do
+		if completed == true then
+			result[roundIndex] = true
+		end
+	end
+	return result
+end
+
+local function optionalRouteContext(context)
+	return type(context) == "table"
+		and (context.IsOptionalRoute == true or context.GlobalIslandIndex == nil)
+end
+
+local function validateRoundExitContract(context, definition)
+	local contextIsExit = context and context.IsRoundExit == true
+	local definitionIsExit = definition and definition.IsRewardIsland == true
+	if contextIsExit ~= definitionIsExit then
+		workspace:SetAttribute("DungeonRoundExitContractError", string.format(
+			"Island=%s ContextExit=%s DefinitionExit=%s",
+			tostring(context and context.GlobalIslandIndex),
+			tostring(contextIsExit),
+			tostring(definitionIsExit)
+		))
+		return false, "RoundExitContractMismatch"
+	end
+	workspace:SetAttribute("DungeonRoundExitContractError", nil)
+	return true
+end
+
 local function setSequenceAttributes(state)
 	workspace:SetAttribute("DungeonObjectiveSequenceReady", started)
 	workspace:SetAttribute("DungeonObjectiveSequenceState", state)
+	workspace:SetAttribute("DungeonRoundProgressState", state)
 	workspace:SetAttribute("DungeonCurrentObjectiveIsland", currentGlobalIndex)
+	workspace:SetAttribute("DungeonCurrentRoundIndex", currentRoundIndex)
 	workspace:SetAttribute("DungeonCompletedObjectiveCount", completedObjectiveCount())
+	workspace:SetAttribute("DungeonCompletedRoundCount", completedRoundCount())
+	workspace:SetAttribute("DungeonHighestCompletedRound", highestCompletedRound)
 	workspace:SetAttribute("DungeonRewardPendingRound", rewardPendingRound)
+	workspace:SetAttribute("DungeonCurrentIslandIsRoundExit", activeContext and activeContext.IsRoundExit == true or false)
+	workspace:SetAttribute(
+		"DungeonCurrentRoundExitGlobalIsland",
+		activeContext and activeContext.IsRoundExit == true and currentGlobalIndex or nil
+	)
+	workspace:SetAttribute("DungeonCurrentRoundExitCommitted", completedRounds[currentRoundIndex] == true)
 	workspace:SetAttribute("DungeonFinalRewardCommitted", finalRewardCommitted)
 end
 
@@ -155,6 +211,14 @@ local function eventMatchesDefinition(eventName, payload, definition)
 	if definition.RequireElite == true and not targetIsElite(payload) then
 		return false, "TargetNotElite"
 	end
+	if definition.RequiredTargetAttribute then
+		local target = payload.Target
+		if typeof(target) ~= "Instance"
+			or target:GetAttribute(definition.RequiredTargetAttribute) ~= true
+		then
+			return false, "WrongMarkedTarget"
+		end
+	end
 	if eventName == "EnemyDefeated" or eventName == "NestDestroyed" then
 		if targetWasReported(eventName, payload.Target) then
 			return false, "DuplicateTargetEvent"
@@ -235,6 +299,7 @@ local function startObjective(context)
 		return false, "ObjectiveDefinitionMissing"
 	end
 	currentGlobalIndex = globalIndex
+	currentRoundIndex = definition.RoundIndex
 	activeDefinition = definition
 	activeContext = context
 	reportedTargetsByEvent = {}
@@ -252,6 +317,7 @@ local function startObjective(context)
 	end
 	setSequenceAttributes("ObjectiveActive")
 	local snapshot = ObjectiveService.SetObjective(definition)
+	pacingTransitionSerial += 1
 	safeCallback("OnObjectiveStarted", definition, context, snapshot)
 	return true, snapshot
 end
@@ -274,10 +340,14 @@ function ObjectiveSequenceService.Start(startOptions)
 	activeDefinition = nil
 	activeContext = nil
 	completedObjectives = {}
+	completedRounds = {}
+	highestCompletedRound = 0
+	currentRoundIndex = 1
 	rewardPendingRound = nil
 	finalRewardCommitted = false
 	reportedTargetsByEvent = {}
 	lastRejectedAt = setmetatable({}, { __mode = "k" })
+	pacingTransitionSerial += 1
 	signalHandler = function(eventName, payload)
 		return handleObjectiveSignal(eventName, payload)
 	end
@@ -299,6 +369,7 @@ function ObjectiveSequenceService.Stop()
 	activeContext = nil
 	rewardPendingRound = nil
 	signalHandler = nil
+	pacingTransitionSerial += 1
 	setSequenceAttributes("Stopped")
 end
 
@@ -306,17 +377,49 @@ function ObjectiveSequenceService.HandleIslandEntered(player, context)
 	if not started or not player or player.Parent ~= Players or type(context) ~= "table" then
 		return false, "InvalidRouteEntry"
 	end
+	if optionalRouteContext(context) then
+		player:SetAttribute("DungeonOptionalIslandKey", context.Key)
+		player:SetAttribute("DungeonOptionalIslandRound", context.RoundIndex)
+		player:SetAttribute("DungeonOptionalIslandVisitedAt", now())
+		return true, "OptionalRouteExploration"
+	end
 	if context.IsBossSanctuary == true then
-		if finalRewardCommitted then
+		if finalRewardCommitted and completedRounds[highestCompletedRound] == true then
 			return true
 		end
 		rejectFutureIsland(player, ObjectiveCatalog.Count() + 1, "BossSanctuaryLocked")
 		return false, "BossSanctuaryLocked"
 	end
+
 	local requestedIndex = math.floor(tonumber(context.GlobalIslandIndex) or 0)
 	if requestedIndex < 1 or requestedIndex > ObjectiveCatalog.Count() then
 		return false, "InvalidObjectiveIsland"
 	end
+	local requestedDefinition = definitionFor(requestedIndex)
+	if not requestedDefinition then
+		return false, "ObjectiveDefinitionMissing"
+	end
+	local contractValid, contractError = validateRoundExitContract(context, requestedDefinition)
+	if not contractValid then
+		rejectFutureIsland(player, requestedIndex, contractError)
+		return false, contractError
+	end
+
+	local requestedRound = math.floor(tonumber(requestedDefinition.RoundIndex) or 0)
+	if requestedRound > currentRoundIndex then
+		if requestedRound > currentRoundIndex + 1 then
+			rejectFutureIsland(player, requestedIndex, "RoundSequenceSkipped")
+			return false, "RoundSequenceSkipped"
+		end
+		if completedRounds[currentRoundIndex] ~= true then
+			rejectFutureIsland(player, requestedIndex, "RoundExitIncomplete")
+			return false, "RoundExitIncomplete"
+		end
+		currentRoundIndex = requestedRound
+	elseif requestedRound < currentRoundIndex then
+		return true, "PreviousRoundBacktrackingAllowed"
+	end
+
 	if requestedIndex < currentGlobalIndex then
 		return true, "BacktrackingAllowed"
 	end
@@ -352,24 +455,53 @@ function ObjectiveSequenceService.HandleObjectiveCompleted(snapshot)
 	if not started or not activeDefinition or not snapshot or snapshot.Id ~= activeDefinition.Id then
 		return nil, "ObjectiveCompletionOutOfSequence"
 	end
+	local contractValid, contractError = validateRoundExitContract(activeContext, activeDefinition)
+	if not contractValid then
+		applyCurrentGate(true, contractError)
+		setSequenceAttributes("RoundExitContractError")
+		return nil, contractError
+	end
+
 	completedObjectives[currentGlobalIndex] = true
 	setIslandObjectiveState(activeContext, activeDefinition, "Completed")
+	local isRoundExit = activeContext and activeContext.IsRoundExit == true
 	local result = {
 		ObjectiveId = activeDefinition.Id,
 		GlobalIslandIndex = currentGlobalIndex,
 		RoundIndex = activeDefinition.RoundIndex,
 		IsRewardIsland = activeDefinition.IsRewardIsland == true,
+		IsRoundExit = isRoundExit,
+		RoundCompleted = false,
 		IsFinalObjective = activeDefinition.IsFinalObjective == true,
 	}
-	if activeDefinition.IsRewardIsland == true then
+	if isRoundExit then
 		rewardPendingRound = activeDefinition.RoundIndex
 		setIslandObjectiveState(activeContext, activeDefinition, "RewardPending")
-		applyCurrentGate(true, "RoundRewardPending")
-		setSequenceAttributes("RoundRewardPending")
+		applyCurrentGate(true, "RoundExitRewardPending")
+		setSequenceAttributes("RoundExitRewardPending")
+		DungeonPacingService.BeginRewardWindow(result, activeContext)
 		safeCallback("OnRoundRewardPending", result, activeContext, snapshot)
 	else
-		applyCurrentGate(false, "ObjectiveCompleted")
-		setSequenceAttributes("ObjectiveCompleted")
+		pacingTransitionSerial += 1
+		local token = pacingTransitionSerial
+		local completionContext = activeContext
+		local completionGlobalIndex = currentGlobalIndex
+		applyCurrentGate(true, "ObjectiveCompletionPause")
+		setSequenceAttributes("ObjectiveCompletionPause")
+		local delaySeconds = DungeonPacingService.BeginObjectiveCompletion(result, completionContext)
+		task.delay(delaySeconds, function()
+			if not started
+				or token ~= pacingTransitionSerial
+				or activeContext ~= completionContext
+				or currentGlobalIndex ~= completionGlobalIndex
+				or completedObjectives[completionGlobalIndex] ~= true
+			then
+				return
+			end
+			applyCurrentGate(false, "ObjectiveCompletedWithinRound")
+			setSequenceAttributes("ObjectiveCompletedWithinRound")
+			DungeonPacingService.FinishObjectiveCompletion(result, completionContext)
+		end)
 	end
 	safeCallback("OnObjectiveCompleted", result, activeContext, snapshot)
 	return result
@@ -383,19 +515,49 @@ function ObjectiveSequenceService.CommitRoundReward(roundIndex, metadata)
 	if roundIndex ~= rewardPendingRound then
 		return false, "WrongRewardRound"
 	end
-	local isFinal = activeDefinition and activeDefinition.IsFinalObjective == true
+	if not activeContext or activeContext.IsRoundExit ~= true then
+		return false, "RewardOutsideRoundExit"
+	end
+	if not activeDefinition
+		or activeDefinition.RoundIndex ~= roundIndex
+		or activeDefinition.IsRewardIsland ~= true
+	then
+		return false, "RoundExitDefinitionMismatch"
+	end
+
+	local isFinal = activeDefinition.IsFinalObjective == true
 	if isFinal and not safeCallback("OnFinalRewardCommitted", activeContext, metadata) then
 		return false, "FinalRewardContinuationFailed"
 	end
+
+	completedRounds[roundIndex] = true
+	highestCompletedRound = math.max(highestCompletedRound, roundIndex)
+	currentRoundIndex = roundIndex
 	rewardPendingRound = nil
 	finalRewardCommitted = isFinal or finalRewardCommitted
-	applyCurrentGate(false, isFinal and "BossRouteUnlocked" or "RoundRewardCommitted")
+	pacingTransitionSerial += 1
+	local token = pacingTransitionSerial
+	local transitionContext = activeContext
+	applyCurrentGate(true, isFinal and "BossTransition" or "RoundTransition")
 	setIslandObjectiveState(activeContext, activeDefinition, "Completed")
-	setSequenceAttributes(isFinal and "FinalRewardCommitted" or "RoundRewardCommitted")
+	setSequenceAttributes(isFinal and "FinalRoundExitTransition" or "RoundExitTransition")
+	local delaySeconds = DungeonPacingService.BeginRoundTransition(roundIndex, isFinal, transitionContext)
 	safeCallback("OnRoundRewardCommitted", roundIndex, isFinal, activeContext, metadata)
+	task.delay(delaySeconds, function()
+		if not started or token ~= pacingTransitionSerial or activeContext ~= transitionContext then
+			return
+		end
+		applyCurrentGate(false, isFinal and "BossRouteUnlocked" or "NextRoundUnlocked")
+		setSequenceAttributes(isFinal and "FinalRoundExitCommitted" or "RoundExitCommitted")
+		DungeonPacingService.FinishRoundTransition(roundIndex, isFinal, transitionContext)
+	end)
 	return true, {
 		RoundIndex = roundIndex,
+		RoundCompleted = true,
+		HighestCompletedRound = highestCompletedRound,
+		NextRoundIndex = isFinal and nil or roundIndex + 1,
 		IsFinal = isFinal,
+		TransitionSeconds = delaySeconds,
 		GlobalIslandIndex = currentGlobalIndex,
 	}
 end
@@ -460,10 +622,15 @@ function ObjectiveSequenceService.GetSnapshot()
 		Started = started,
 		State = workspace:GetAttribute("DungeonObjectiveSequenceState"),
 		CurrentGlobalIslandIndex = currentGlobalIndex,
+		CurrentRoundIndex = currentRoundIndex,
+		HighestCompletedRound = highestCompletedRound,
+		CompletedRounds = copyCompletedRounds(),
 		CurrentObjective = activeDefinition and table.clone(activeDefinition) or nil,
+		CurrentIslandIsRoundExit = activeContext and activeContext.IsRoundExit == true or false,
 		RewardPendingRound = rewardPendingRound,
 		FinalRewardCommitted = finalRewardCommitted,
 		CompletedCount = completedObjectiveCount(),
+		CompletedRoundCount = completedRoundCount(),
 		IslandContext = activeContext,
 	}
 end

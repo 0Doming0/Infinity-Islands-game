@@ -9,7 +9,7 @@ local SwordCatalog = require(ReplicatedStorage:WaitForChild("SwordCatalog"))
 local EquipmentConfig = require(ReplicatedStorage.Shared.Configs.EquipmentConfig)
 local RemoteRegistry = require(ReplicatedStorage.Shared.Utilities.RemoteRegistry)
 local BlockParkour = script.Parent.Parent:WaitForChild("BlockParkour")
-local PlayerDataService = require(BlockParkour.PlayerDataService_SkyDungeon_V10)
+local PlayerDataService = require(script.Parent.LobbyPlayerDataService)
 
 local LobbyEquipmentService = {}
 local request

@@ -4,7 +4,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RouletteConfig = require(ReplicatedStorage.Shared.Configs.RouletteConfig)
 local RemoteRegistry = require(ReplicatedStorage.Shared.Utilities.RemoteRegistry)
 local BlockParkour = script.Parent.Parent:WaitForChild("BlockParkour")
-local PlayerDataService = require(BlockParkour.PlayerDataService_SkyDungeon_V10)
+local PlayerDataService = require(script.Parent.LobbyPlayerDataService)
 
 local LobbyRouletteService = {}
 local random = Random.new()

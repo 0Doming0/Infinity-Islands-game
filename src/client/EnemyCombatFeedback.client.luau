@@ -1,0 +1,310 @@
+-- Task 30 — UI dos inimigos e números de dano.
+-- Somente apresentação local. Dano continua autoritativo no servidor.
+
+local CollectionService = game:GetService("CollectionService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local RemoteRegistry = require(ReplicatedStorage.Shared.Utilities.RemoteRegistry)
+local feedbackEvent = RemoteRegistry.Get("Combat", "EnemyDamageFeedback", "RemoteEvent")
+
+local VERSION = "EnemyPresentationV1"
+local MAX_DISTANCE = 82
+local DAMAGE_LIFETIME = 0.62
+
+local COLORS = {
+	Text = Color3.fromRGB(245, 250, 255),
+	Muted = Color3.fromRGB(184, 202, 216),
+	Health = Color3.fromRGB(77, 224, 118),
+	Warning = Color3.fromRGB(255, 190, 75),
+	Danger = Color3.fromRGB(255, 84, 92),
+	Gold = Color3.fromRGB(255, 217, 103),
+	Damage = Color3.fromRGB(255, 244, 215),
+	Heavy = Color3.fromRGB(255, 156, 71),
+	Relic = Color3.fromRGB(198, 133, 255),
+	Companion = Color3.fromRGB(116, 227, 255),
+	Glass = Color3.fromRGB(12, 20, 28),
+}
+
+local watched = setmetatable({}, { __mode = "k" })
+local hitSerial = 0
+
+local function getRoot(model)
+	if not model or not model:IsA("Model") then return nil end
+	local root = model:FindFirstChild("HumanoidRootPart", true)
+	if root and root:IsA("BasePart") then return root end
+	if model.PrimaryPart and model.PrimaryPart:IsA("BasePart") then return model.PrimaryPart end
+	return model:FindFirstChildWhichIsA("BasePart", true)
+end
+
+local function getHumanoid(model)
+	return model and model:FindFirstChildWhichIsA("Humanoid", true)
+end
+
+local function healthColor(ratio)
+	if ratio <= 0.28 then
+		return COLORS.Danger
+	elseif ratio <= 0.58 then
+		return COLORS.Warning
+	end
+	return COLORS.Health
+end
+
+local function modelHeight(model)
+	local ok, _, size = pcall(model.GetBoundingBox, model)
+	return ok and size.Y or 4
+end
+
+local function displayName(model, humanoid)
+	local value = model:GetAttribute("DisplayName")
+	if type(value) ~= "string" or value == "" then
+		value = humanoid.DisplayName
+	end
+	if type(value) ~= "string" or value == "" then
+		value = model:GetAttribute("MonsterId") or model.Name
+	end
+	if model:GetAttribute("IsElite") == true then
+		return "★ " .. tostring(value)
+	end
+	return tostring(value)
+end
+
+local function hideLegacyDisplay(model, humanoid)
+	pcall(function()
+		humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+	end)
+	pcall(function()
+		humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
+	end)
+	pcall(function()
+		humanoid.NameDisplayDistance = 0
+	end)
+
+	local old = model:FindFirstChild("MobHealthBar")
+	if old and old:IsA("BillboardGui") then
+		old.Enabled = false
+	end
+end
+
+local function bindEnemy(model)
+	if watched[model] or not model:IsA("Model") then return end
+	if Players:GetPlayerFromCharacter(model) then return end
+
+	local humanoid = getHumanoid(model)
+	local root = getRoot(model)
+	if not humanoid or not root then return end
+
+	watched[model] = true
+	hideLegacyDisplay(model, humanoid)
+
+	local old = model:FindFirstChild("EnemyStatusBillboard")
+	if old then old:Destroy() end
+
+	local billboard = Instance.new("BillboardGui")
+	billboard.Name = "EnemyStatusBillboard"
+	billboard.Adornee = root
+	billboard.Size = UDim2.fromOffset(148, 42)
+	billboard.StudsOffsetWorldSpace = Vector3.new(
+		0,
+		math.max(3.3, modelHeight(model) * 0.55 + 1.2),
+		0
+	)
+	billboard.AlwaysOnTop = true
+	billboard.LightInfluence = 0
+	billboard.MaxDistance = MAX_DISTANCE
+	billboard.Parent = model
+
+	local name = Instance.new("TextLabel")
+	name.Name = "EnemyName"
+	name.Position = UDim2.fromOffset(2, 0)
+	name.Size = UDim2.new(1, -4, 0, 16)
+	name.BackgroundTransparency = 1
+	name.Text = displayName(model, humanoid)
+	name.TextColor3 = model:GetAttribute("IsElite") == true and COLORS.Gold or COLORS.Text
+	name.TextStrokeColor3 = Color3.fromRGB(3, 7, 10)
+	name.TextStrokeTransparency = 0.28
+	name.Font = Enum.Font.GothamBold
+	name.TextSize = 11
+	name.TextTruncate = Enum.TextTruncate.AtEnd
+	name.Parent = billboard
+
+	local track = Instance.new("Frame")
+	track.Name = "HealthTrack"
+	track.Position = UDim2.fromOffset(12, 19)
+	track.Size = UDim2.new(1, -24, 0, 8)
+	track.BackgroundColor3 = COLORS.Glass
+	track.BackgroundTransparency = 0.08
+	track.BorderSizePixel = 0
+	track.ClipsDescendants = true
+	track.Parent = billboard
+	Instance.new("UICorner", track).CornerRadius = UDim.new(1, 0)
+
+	local fill = Instance.new("Frame")
+	fill.Name = "Fill"
+	fill.Size = UDim2.fromScale(1, 1)
+	fill.BackgroundColor3 = COLORS.Health
+	fill.BorderSizePixel = 0
+	fill.Parent = track
+	Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = model:GetAttribute("IsElite") == true and COLORS.Gold or Color3.fromRGB(4, 9, 12)
+	stroke.Thickness = model:GetAttribute("IsElite") == true and 1.4 or 1
+	stroke.Transparency = 0.12
+	stroke.Parent = track
+
+	local healthText = Instance.new("TextLabel")
+	healthText.Name = "HealthText"
+	healthText.Position = UDim2.fromOffset(2, 29)
+	healthText.Size = UDim2.new(1, -4, 0, 12)
+	healthText.BackgroundTransparency = 1
+	healthText.Text = ""
+	healthText.TextColor3 = COLORS.Muted
+	healthText.TextStrokeTransparency = 0.55
+	healthText.Font = Enum.Font.GothamBold
+	healthText.TextSize = 8
+	healthText.Parent = billboard
+
+	local function update()
+		if not humanoid.Parent or humanoid.Health <= 0 then
+			billboard.Enabled = false
+			return
+		end
+		local maximum = math.max(1, humanoid.MaxHealth)
+		local currentHealth = math.clamp(humanoid.Health, 0, maximum)
+		local ratio = currentHealth / maximum
+		billboard.Enabled = true
+		fill.Size = UDim2.fromScale(ratio, 1)
+		fill.BackgroundColor3 = healthColor(ratio)
+		healthText.Text = string.format("%d / %d", math.ceil(currentHealth), math.ceil(maximum))
+		name.Text = displayName(model, humanoid)
+		name.TextColor3 = model:GetAttribute("IsElite") == true and COLORS.Gold or COLORS.Text
+		stroke.Color = model:GetAttribute("IsElite") == true and COLORS.Gold or Color3.fromRGB(4, 9, 12)
+	end
+
+	humanoid.HealthChanged:Connect(update)
+	humanoid:GetPropertyChangedSignal("MaxHealth"):Connect(update)
+	model:GetAttributeChangedSignal("DisplayName"):Connect(update)
+	model:GetAttributeChangedSignal("IsElite"):Connect(update)
+	model.Destroying:Connect(function()
+		watched[model] = nil
+	end)
+	update()
+end
+
+local function damageColor(source, heavy)
+	if heavy then return COLORS.Heavy end
+	local normalized = string.lower(tostring(source or ""))
+	if string.find(normalized, "relic", 1, true)
+		or string.find(normalized, "fire", 1, true)
+		or string.find(normalized, "lightning", 1, true)
+	then
+		return COLORS.Relic
+	elseif string.find(normalized, "companion", 1, true) then
+		return COLORS.Companion
+	end
+	return COLORS.Damage
+end
+
+local function damageNumbersEnabled()
+	local value = player:GetAttribute("ClientSetting_DamageNumbers")
+	if value == nil then
+		value = player:GetAttribute("DungeonHUDDamageNumbersEnabled")
+	end
+	return value ~= false
+end
+
+local function playDamageNumber(payload)
+	if not damageNumbersEnabled() or type(payload) ~= "table" then return end
+	local target = payload.Target
+	if not target or not target:IsA("Model") or not target:IsDescendantOf(workspace) then return end
+
+	local root = getRoot(target)
+	if not root then return end
+
+	local amount = math.max(0, tonumber(payload.Amount) or 0)
+	if amount <= 0 then return end
+
+	hitSerial += 1
+	local serial = hitSerial
+	local heavy = payload.Heavy == true
+	local defeated = payload.Defeated == true
+	local source = payload.Source
+
+	local billboard = Instance.new("BillboardGui")
+	billboard.Name = "LocalDamageNumber"
+	billboard.Adornee = root
+	billboard.Size = UDim2.fromOffset(122, 54)
+	local side = ((serial % 5) - 2) * 0.22
+	local startY = math.max(3.4, modelHeight(target) * 0.55 + 1.5)
+	billboard.StudsOffsetWorldSpace = Vector3.new(side, startY, 0)
+	billboard.AlwaysOnTop = true
+	billboard.LightInfluence = 0
+	billboard.MaxDistance = 100
+	billboard.Parent = playerGui
+
+	local text = Instance.new("TextLabel")
+	text.AnchorPoint = Vector2.new(0.5, 0.5)
+	text.Position = UDim2.fromScale(0.5, 0.5)
+	text.Size = UDim2.fromScale(1, 1)
+	text.BackgroundTransparency = 1
+	text.Text = tostring(math.max(1, math.floor(amount + 0.5)))
+	text.TextColor3 = defeated and COLORS.Gold or damageColor(source, heavy)
+	text.TextStrokeColor3 = Color3.fromRGB(8, 10, 14)
+	text.TextStrokeTransparency = 0.10
+	text.Font = Enum.Font.GothamBlack
+	text.TextSize = defeated and 29 or heavy and 26 or 21
+	text.Rotation = ((serial % 3) - 1) * 4
+	text.Parent = billboard
+
+	local scale = Instance.new("UIScale")
+	scale.Scale = 0.62
+	scale.Parent = text
+
+	TweenService:Create(
+		scale,
+		TweenInfo.new(0.13, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+		{ Scale = 1.08 }
+	):Play()
+
+	TweenService:Create(
+		billboard,
+		TweenInfo.new(DAMAGE_LIFETIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ StudsOffsetWorldSpace = Vector3.new(side * 1.6, startY + 2.25, 0) }
+	):Play()
+
+	task.delay(0.24, function()
+		if not text.Parent then return end
+		TweenService:Create(
+			text,
+			TweenInfo.new(DAMAGE_LIFETIME - 0.24, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+			{ TextTransparency = 1, TextStrokeTransparency = 1 }
+		):Play()
+	end)
+
+	task.delay(DAMAGE_LIFETIME + 0.05, function()
+		if billboard.Parent then billboard:Destroy() end
+	end)
+end
+
+for _, model in ipairs(CollectionService:GetTagged("CombatTarget")) do
+	task.defer(bindEnemy, model)
+end
+
+CollectionService:GetInstanceAddedSignal("CombatTarget"):Connect(function(instance)
+	task.defer(bindEnemy, instance)
+end)
+
+CollectionService:GetInstanceRemovedSignal("CombatTarget"):Connect(function(instance)
+	watched[instance] = nil
+end)
+
+feedbackEvent.OnClientEvent:Connect(playDamageNumber)
+
+player:SetAttribute("EnemyCombatFeedbackReady", true)
+player:SetAttribute("EnemyCombatFeedbackVersion", VERSION)
+workspace:SetAttribute("EnemyCombatFeedbackReady", true)
+workspace:SetAttribute("EnemyCombatFeedbackPolicy", "NameHealthAnimatedDamageV1")

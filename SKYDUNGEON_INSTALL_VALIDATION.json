@@ -1,0 +1,9 @@
+{
+  "repository": "C:\\Projetos\\SkyDungeon",
+  "success": true,
+  "checks": 60,
+  "replacement_files": 30,
+  "legacy_entrypoints_found": 19,
+  "legacy_entrypoints_guarded": 19,
+  "errors": []
+}

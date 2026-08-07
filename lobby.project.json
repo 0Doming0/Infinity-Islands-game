@@ -4,24 +4,31 @@
   "placeId": 73123221454040,
   "tree": {
     "$className": "DataModel",
-
     "ReplicatedStorage": {
-      
-        "$path": "src/lobby/shared"
-      
+      "$path": "src/shared"
     },
-
     "ServerScriptService": {
-      
+      "Lobby": {
         "$path": "src/lobby/server"
-      
+      },
+      "BlockParkour": {
+        "$className": "Folder",
+        "PartyService": {
+          "$path": "src/server/BlockParkour/PartyService.lua"
+        }
+      }
     },
-
     "StarterPlayer": {
       "StarterPlayerScripts": {
-        
-          "$path": "src/lobby/client"
-        
+        "LobbyUI": {
+          "$path": "src/lobby/client/LobbyUI.client.luau"
+        },
+        "PartyUI": {
+          "$path": "src/client/PartyUI.client.luau"
+        },
+        "SettingsUI": {
+          "$path": "src/lobby/client/SkySettingsUI.client.luau"
+        }
       }
     }
   }

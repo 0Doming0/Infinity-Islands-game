@@ -4,7 +4,9 @@ local DEFINITIONS = {
 	{
 		Id = "FirstStrike",
 		Title = "Primeiro golpe",
-		Description = "Acerte qualquer inimigo para iniciar a expedicao.",
+		Description = "Acerte o slime marcado para iniciar a expedicao.",
+		RequiredTargetAttribute = "ObjectiveFocusTarget",
+		GameplayIdentity = "MarkedOpeningTarget",
 		RoundIndex = 1,
 		IslandIndex = 1,
 		GlobalIslandIndex = 1,
@@ -25,6 +27,7 @@ local DEFINITIONS = {
 		TargetPerExtraPlayer = 1,
 		ObjectiveKind = "DefeatEnemies",
 		SpawnProfile = "CommonWave",
+		GameplayIdentity = "OpenCombat",
 	},
 	{
 		Id = "FirstRewardBattle",
@@ -34,10 +37,11 @@ local DEFINITIONS = {
 		IslandIndex = 3,
 		GlobalIslandIndex = 3,
 		ProgressEvent = "EnemyDefeated",
-		BaseTarget = 6,
+		BaseTarget = 5,
 		TargetPerExtraPlayer = 2,
 		ObjectiveKind = "RewardBattle",
 		SpawnProfile = "RewardWave01",
+		GameplayIdentity = "EscalatingRewardWaves",
 		IsRewardIsland = true,
 	},
 	{
@@ -48,10 +52,11 @@ local DEFINITIONS = {
 		IslandIndex = 1,
 		GlobalIslandIndex = 4,
 		ProgressEvent = "EnemyDefeated",
-		BaseTarget = 6,
+		BaseTarget = 5,
 		TargetPerExtraPlayer = 2,
 		ObjectiveKind = "Ambush",
 		SpawnProfile = "SkyAmbush",
+		GameplayIdentity = "HiddenPerimeterAmbush",
 	},
 	{
 		Id = "RangedThreat",
@@ -66,6 +71,7 @@ local DEFINITIONS = {
 		TargetPerExtraPlayer = 1,
 		ObjectiveKind = "DefeatRole",
 		SpawnProfile = "RangedThreat",
+		GameplayIdentity = "PriorityRangedTargets",
 	},
 	{
 		Id = "BreakTheNests",
@@ -78,6 +84,7 @@ local DEFINITIONS = {
 		BaseTarget = 2,
 		ObjectiveKind = "DestroyNests",
 		SpawnProfile = "NestPair",
+		GameplayIdentity = "DestroySpawners",
 	},
 	{
 		Id = "SecondRewardBattle",
@@ -87,10 +94,11 @@ local DEFINITIONS = {
 		IslandIndex = 4,
 		GlobalIslandIndex = 7,
 		ProgressEvent = "EnemyDefeated",
-		BaseTarget = 8,
+		BaseTarget = 7,
 		TargetPerExtraPlayer = 2,
 		ObjectiveKind = "RewardBattle",
 		SpawnProfile = "RewardWave02",
+		GameplayIdentity = "EscalatingRewardWaves",
 		IsRewardIsland = true,
 	},
 	{
@@ -106,6 +114,7 @@ local DEFINITIONS = {
 		TargetPerExtraPlayer = 1,
 		ObjectiveKind = "DefeatRole",
 		SpawnProfile = "GuardLine",
+		GameplayIdentity = "BreakWardsThenGuards",
 	},
 	{
 		Id = "HoldTheBeacon",
@@ -115,10 +124,11 @@ local DEFINITIONS = {
 		IslandIndex = 2,
 		GlobalIslandIndex = 9,
 		ProgressEvent = "BeaconHoldSeconds",
-		BaseTarget = 20,
+		BaseTarget = 16,
 		TargetPerExtraPlayer = 3,
 		ObjectiveKind = "HoldZone",
 		SpawnProfile = "BeaconDefense",
+		GameplayIdentity = "HoldContestedZone",
 	},
 	{
 		Id = "NestCluster",
@@ -132,6 +142,7 @@ local DEFINITIONS = {
 		TargetPerExtraPlayer = 1,
 		ObjectiveKind = "DestroyNests",
 		SpawnProfile = "NestCluster",
+		GameplayIdentity = "DestroySpawners",
 	},
 	{
 		Id = "EliteHunt",
@@ -145,6 +156,7 @@ local DEFINITIONS = {
 		BaseTarget = 1,
 		ObjectiveKind = "EliteHunt",
 		SpawnProfile = "EliteHunt",
+		GameplayIdentity = "DefeatSupportsThenElite",
 	},
 	{
 		Id = "FinalRewardBattle",
@@ -154,10 +166,11 @@ local DEFINITIONS = {
 		IslandIndex = 5,
 		GlobalIslandIndex = 12,
 		ProgressEvent = "EnemyDefeated",
-		BaseTarget = 10,
+		BaseTarget = 8,
 		TargetPerExtraPlayer = 3,
 		ObjectiveKind = "RewardBattle",
 		SpawnProfile = "FinalRewardWave",
+		GameplayIdentity = "EscalatingRewardWaves",
 		IsRewardIsland = true,
 		IsFinalObjective = true,
 	},
@@ -193,10 +206,13 @@ local function cloneDefinition(definition, partySize)
 		ProgressEvent = definition.ProgressEvent,
 		RequiredRole = definition.RequiredRole,
 		RequireElite = definition.RequireElite == true,
+		RequiredTargetAttribute = definition.RequiredTargetAttribute,
+		GameplayIdentity = definition.GameplayIdentity,
 		SpawnProfile = definition.SpawnProfile,
 		ObjectiveKind = definition.ObjectiveKind,
 		IsRewardIsland = definition.IsRewardIsland == true,
 		IsFinalObjective = definition.IsFinalObjective == true,
+		PartyBalanceVersion = 2,
 	}
 	return result
 end
@@ -229,6 +245,7 @@ function ObjectiveCatalog.Validate()
 		assert(type(definition.Id) == "string" and definition.Id ~= "", "Objetivo sem Id")
 		assert(type(definition.ProgressEvent) == "string", "Objetivo sem ProgressEvent")
 		assert(definition.BaseTarget >= 1, "Objetivo com BaseTarget invalido")
+		assert(type(definition.GameplayIdentity) == "string", "Objetivo sem identidade jogavel")
 	end
 	return true
 end

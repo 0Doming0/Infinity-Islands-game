@@ -1,0 +1,17 @@
+{
+  "task": 20,
+  "name": "Dungeon health regeneration and milestone healing",
+  "branch": "agent/lobby-mvp-integration",
+  "backup": "C:\\Projetos\\SkyDungeon\\.task_backups\\task-20-health-recovery-20260807-054023-077240",
+  "files": [
+    "src\\server\\DungeonRuntime\\DungeonRuntimeService.lua",
+    "src\\server\\DungeonRuntime\\DungeonHealthRecoveryService.lua"
+  ],
+  "settings": {
+    "regen_delay_seconds": 5,
+    "regen_percent_per_second": 0.04,
+    "objective_heal_percent": 0.15,
+    "reward_island_heal_percent": 0.4,
+    "boss_preparation_heal_percent": 1.0
+  }
+}

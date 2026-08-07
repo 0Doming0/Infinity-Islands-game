@@ -1,0 +1,9 @@
+{
+  "task": "task-19-route-safety-validation",
+  "repository": "C:\\Projetos\\SkyDungeon",
+  "backup": "C:\\Projetos\\SkyDungeon\\.task_backups\\task-19-route-safety-validation-20260807-024022",
+  "files": [
+    "src\\server\\DungeonRuntime\\DungeonGenerator.lua",
+    "src\\server\\DungeonRuntime\\DungeonRouteSafetyValidator.lua"
+  ]
+}

@@ -62,6 +62,7 @@ local MonetizationService = require(script.Parent.Parent.MVPSystems.Monetization
 local ContentResolver = require(script.Parent.Parent.DungeonRuntime.ContentResolver)
 local PartyScalingService = require(script.Parent.Parent.DungeonRuntime.PartyScalingService)
 local ObjectiveSignalBridge = require(script.Parent.Parent.DungeonRuntime.ObjectiveSignalBridge)
+local MobCollectibleService = require(script.Parent.Parent.DungeonRuntime.MobCollectibleService)
 
 ScoreService.Start()
 InventoryService.Start()
@@ -78,7 +79,7 @@ local CONFIG = {
 	DEFAULT_SPAWN_WEIGHT = 10,
 	DEFAULT_GROUP_MIN = 2,
 	DEFAULT_GROUP_MAX = 4,
-	DEFAULT_GROUP_SPACING = 5,
+	DEFAULT_GROUP_SPACING = 7,
 	DEFAULT_MAX_HEALTH = 50,
 	DEFAULT_SCORE_VALUE = 3,
 	DEFAULT_COIN_VALUE = 5,
@@ -302,7 +303,7 @@ local function createPrototypeMonster(folder)
 	model:SetAttribute("SpawnMode", "Group")
 	model:SetAttribute("GroupMin", 2)
 	model:SetAttribute("GroupMax", 3)
-	model:SetAttribute("GroupSpacing", 5)
+	model:SetAttribute("GroupSpacing", 7)
 	model:SetAttribute("Peaceful", false)
 	model:SetAttribute("UseCentralAI", true)
 	-- A chance autoritativa vem do CompanionCatalog; este Attribute permanece
@@ -460,18 +461,145 @@ local function selectSpawnCells(cells, amount, spacing, random)
 		end
 	end
 
-	-- Em salas compactas, relaxa o espacamento, mas continua usando celulas diferentes.
+	-- Em salas compactas, relaxa o espacamento sem escolher celulas aleatorias
+	-- coladas umas nas outras: cada nova celula e a mais distante possivel das
+	-- que ja foram reservadas.
+	while #selected < amount do
+		local bestCandidate
+		local bestDistance = -1
+		for _, candidate in ipairs(candidates) do
+			if not selectedSet[candidate] then
+				local nearest = math.huge
+				for _, existing in ipairs(selected) do
+					nearest = math.min(
+						nearest,
+						horizontalDistance(candidate.SurfacePosition, existing.SurfacePosition)
+					)
+				end
+				if #selected == 0 then
+					nearest = math.huge
+				end
+				if nearest > bestDistance then
+					bestDistance = nearest
+					bestCandidate = candidate
+				end
+			end
+		end
+		if not bestCandidate then
+			break
+		end
+		table.insert(selected, bestCandidate)
+		selectedSet[bestCandidate] = true
+	end
+
+	return selected
+end
+
+local OBJECTIVE_MIN_MONSTER_SPACING = 6.5
+local OBJECTIVE_MIN_PLAYER_SPACING = 8
+local OBJECTIVE_RING_STEP = 5.5
+local OBJECTIVE_RING_COUNT = 3
+local OBJECTIVE_RING_SLOTS = 8
+
+local function sameIslandMonsterPosition(island, candidate, minimumDistance)
+	for model, entry in pairs(activeMonsters) do
+		if model.Parent
+			and entry.Island == island
+			and entry.Humanoid
+			and entry.Humanoid.Health > 0
+			and entry.Root
+			and entry.Root.Parent
+			and horizontalDistance(entry.Root.Position, candidate) < minimumDistance
+		then
+			return false
+		end
+	end
+	return true
+end
+
+local function farFromPlayers(candidate, minimumDistance)
+	for _, player in ipairs(Players:GetPlayers()) do
+		local character = player.Character
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		local root = character and character:FindFirstChild("HumanoidRootPart")
+		if humanoid and humanoid.Health > 0 and root
+			and horizontalDistance(root.Position, candidate) < minimumDistance
+		then
+			return false
+		end
+	end
+	return true
+end
+
+local function objectiveGroundPoint(island, horizontalPoint)
+	local exclude = {}
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player.Character then
+			table.insert(exclude, player.Character)
+		end
+	end
+	for model in pairs(activeMonsters) do
+		if model.Parent then
+			table.insert(exclude, model)
+		end
+	end
+
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = exclude
+	params.IgnoreWater = true
+
+	local origin = horizontalPoint + Vector3.new(0, 18, 0)
+	local result = workspace:Raycast(origin, Vector3.new(0, -42, 0), params)
+	if result and result.Instance and result.Instance:IsDescendantOf(island) then
+		return result.Position
+	end
+	return nil
+end
+
+local function objectiveSpawnSurfacePosition(island, spawnMarker, sequence)
+	local base = spawnMarker.Position
+	local candidates = { base }
+	local angleOffset = sequence * 2.399963229728653
+
+	for ring = 1, OBJECTIVE_RING_COUNT do
+		local radius = OBJECTIVE_RING_STEP * ring
+		for slot = 1, OBJECTIVE_RING_SLOTS do
+			local angle = angleOffset + ((slot - 1) / OBJECTIVE_RING_SLOTS) * math.pi * 2
+			table.insert(
+				candidates,
+				base + Vector3.new(math.cos(angle) * radius, 0, math.sin(angle) * radius)
+			)
+		end
+	end
+
+	local bestFallback
+	local bestFallbackDistance = -1
+
 	for _, candidate in ipairs(candidates) do
-		if not selectedSet[candidate] then
-			table.insert(selected, candidate)
-			selectedSet[candidate] = true
-			if #selected >= amount then
-				break
+		local ground = objectiveGroundPoint(island, candidate)
+		if ground then
+			local nearest = math.huge
+			for model, entry in pairs(activeMonsters) do
+				if model.Parent and entry.Island == island and entry.Root and entry.Root.Parent then
+					nearest = math.min(nearest, horizontalDistance(entry.Root.Position, ground))
+				end
+			end
+
+			if nearest > bestFallbackDistance and farFromPlayers(ground, 4) then
+				bestFallback = ground
+				bestFallbackDistance = nearest
+			end
+
+			if sameIslandMonsterPosition(island, ground, OBJECTIVE_MIN_MONSTER_SPACING)
+				and farFromPlayers(ground, OBJECTIVE_MIN_PLAYER_SPACING)
+			then
+				return ground, horizontalDistance(ground, base) > 0.75
 			end
 		end
 	end
 
-	return selected
+	return bestFallback or base, bestFallback ~= nil and horizontalDistance(bestFallback, base) > 0.75
 end
 
 local function ensureMaterials(player)
@@ -484,9 +612,9 @@ local function ensureMaterials(player)
 	return folder
 end
 
-local function awardRewards(player, scoreAmount, coinAmount, worldPosition)
+local function awardMonsterScore(player, scoreAmount)
 	if player then
-		ScoreService.AwardRewards(player, scoreAmount, coinAmount, "Monster", worldPosition)
+		ScoreService.Award(player, scoreAmount, "Monster")
 	end
 end
 
@@ -708,6 +836,15 @@ local function spawnClone(
 	clone:SetAttribute("AttackDamage", attackDamage)
 	clone:SetAttribute("DifficultyTier", difficultyTier)
 	clone:SetAttribute("IsElite", elite)
+	clone:SetAttribute("GlobalIslandIndex", island:GetAttribute("GlobalIslandIndex"))
+	clone:SetAttribute("RouteIslandIndex", island:GetAttribute("IslandIndex"))
+	clone:SetAttribute("RouteRoundIndex", island:GetAttribute("RoundIndex"))
+	clone:SetAttribute(
+		"MonsterRole",
+		clone:GetAttribute("MonsterRole")
+			or template:GetAttribute("MonsterRole")
+			or (elite and "Elite" or "Common")
+	)
 	clone:SetAttribute(
 		"GlobalIslandIndex",
 		spawnOptions.GlobalIslandIndex or island:GetAttribute("GlobalIslandIndex")
@@ -866,12 +1003,20 @@ local function spawnClone(
 					tonumber(MonetizationCatalog.Get("EliteExpedition").RewardMultiplier) or 2
 				)
 			end
-			awardRewards(
+			awardMonsterScore(
 				damager,
-				entry.ScoreValue * monetizationRewardMultiplier,
-				entry.CoinValue * monetizationRewardMultiplier,
-				deathPosition
+				entry.ScoreValue * monetizationRewardMultiplier
 			)
+			MobCollectibleService.Drop({
+				Position = deathPosition,
+				Amount = math.max(1, math.floor(entry.CoinValue * monetizationRewardMultiplier)),
+				RoundIndex = tonumber(clone:GetAttribute("RouteRoundIndex"))
+					or tonumber(entry.Island:GetAttribute("RoundIndex"))
+					or 1,
+				PreferredUserId = damager.UserId,
+				SourceMonsterId = clone:GetAttribute("MonsterId") or clone.Name,
+				IsElite = clone:GetAttribute("IsElite") == true,
+			})
 			PartyService.RecordMissionProgress(damager, "MobDefeated", 1, clone)
 			CompanionService.RecordDefeat(damager, clone)
 			if clone:GetAttribute("SpawnMode") == "Boss" then
@@ -1014,6 +1159,10 @@ local function initialize()
 		return
 	end
 	initialized = true
+	workspace:SetAttribute("DungeonMobMinimumGroupSpacing", CONFIG.DEFAULT_GROUP_SPACING)
+	workspace:SetAttribute("DungeonObjectiveMobMinimumSpacing", OBJECTIVE_MIN_MONSTER_SPACING)
+	workspace:SetAttribute("DungeonObjectiveMobPlayerSpawnClearance", OBJECTIVE_MIN_PLAYER_SPACING)
+	workspace:SetAttribute("DungeonObjectiveSpawnSpreadPolicy", "ObjectiveSpawnSpreadV1")
 	Players.PlayerAdded:Connect(setupPlayer)
 	for _, player in ipairs(Players:GetPlayers()) do
 		setupPlayer(player)
@@ -1099,7 +1248,10 @@ function MonsterSpawner.PopulateIsland(island, freeCells, context)
 	end
 	amount = math.min(amount, getSpawnLimit(eliteIsland) - monsterCount)
 	local spacing = spawnMode == "Group"
-		and math.max(0, numberAttribute(template, "GroupSpacing", CONFIG.DEFAULT_GROUP_SPACING))
+		and math.max(
+			CONFIG.DEFAULT_GROUP_SPACING,
+			numberAttribute(template, "GroupSpacing", CONFIG.DEFAULT_GROUP_SPACING)
+		)
 		or 0
 	local selectedCells = selectSpawnCells(freeCells, spawnMode == "Group" and amount or 1, spacing, random)
 
@@ -1267,10 +1419,9 @@ function MonsterSpawner.SpawnObjectiveMonster(island, spawnMarker, spawnOptions)
 		monsterFolder.Parent = encounterFolder
 	end
 	local sequence = math.max(1, math.floor(tonumber(spawnOptions.SpawnSequence) or (#pointsFolder:GetChildren() + 1)))
-	local angle = sequence * 2.399963229728653
-	local offsetRadius = math.min(3.5, math.max(0, sequence - 1) * 0.35)
-	local surfacePosition = spawnMarker.Position
-		+ Vector3.new(math.cos(angle) * offsetRadius, 0, math.sin(angle) * offsetRadius)
+	local surfacePosition, spreadAdjusted = objectiveSpawnSurfacePosition(island, spawnMarker, sequence)
+	spawnMarker:SetAttribute("LastSpawnSpreadAdjusted", spreadAdjusted)
+	spawnMarker:SetAttribute("LastSpawnSurfacePosition", surfacePosition)
 	local cellRecord = {
 		Cell = Vector3.new(
 			tonumber(spawnMarker:GetAttribute("GridX")) or 0,

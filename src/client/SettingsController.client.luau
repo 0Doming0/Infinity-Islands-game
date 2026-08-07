@@ -26,7 +26,8 @@ gui.Parent = playerGui
 local button = Instance.new("TextButton")
 button.Name = "SettingsButton"
 button.AnchorPoint = Vector2.new(1, 0)
-button.Position = UDim2.new(1, -68, 0, 12)
+button.Position = UDim2.new(1, -18, 0, 318)
+button:SetAttribute("PositionedForCrystalCelestialHUD", true)
 button.Size = UDim2.fromOffset(48, 38)
 button.BackgroundColor3 = Color3.fromRGB(23, 31, 48)
 button.BackgroundTransparency = 0.18

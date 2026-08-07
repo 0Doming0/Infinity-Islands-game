@@ -148,7 +148,8 @@ dangerSound.Parent = SoundService
 
 local sessionTimer = Instance.new("TextLabel")
 sessionTimer.Name = "SessionTimer"
-sessionTimer.Position = UDim2.fromOffset(12, 91)
+sessionTimer.Position = UDim2.fromOffset(22, 198)
+sessionTimer:SetAttribute("PositionedForCrystalCelestialHUD", true)
 sessionTimer.Size = UDim2.fromOffset(92, 25)
 sessionTimer.BackgroundColor3 = Color3.fromRGB(12, 18, 29)
 sessionTimer.BackgroundTransparency = 0.42

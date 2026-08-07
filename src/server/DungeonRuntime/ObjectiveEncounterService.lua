@@ -3,6 +3,8 @@ local HttpService = game:GetService("HttpService")
 local MonsterSpawner = require(script.Parent.Parent.BlockParkour.MonsterSpawner)
 local EncounterCatalog = require(script.Parent.EncounterCatalog)
 local ObjectiveActorService = require(script.Parent.ObjectiveActorService)
+local ObjectiveMechanicService = require(script.Parent.ObjectiveMechanicService)
+local DungeonPacingService = require(script.Parent.DungeonPacingService)
 
 local ObjectiveEncounterService = {}
 
@@ -59,6 +61,7 @@ local function stopEncounter(encounter, reason)
 	end
 	encounter.Active = false
 	encounter.StopReason = reason
+	ObjectiveMechanicService.EndEncounter(encounter, reason)
 	ObjectiveActorService.DestroyEncounter(encounter.Id)
 	MonsterSpawner.DespawnObjectiveMonsters(encounter.Id)
 	if encounter.Context and encounter.Context.IslandModel then
@@ -144,6 +147,13 @@ local function spawnOne(encounter, enemy, waveIndex, sequenceIndex)
 		)
 		if model then
 			encounter.SpawnedCount += 1
+			ObjectiveMechanicService.RegisterSpawnedEnemy(
+				encounter,
+				model,
+				enemy,
+				waveIndex,
+				sequenceIndex
+			)
 			workspace:SetAttribute("DungeonEncounterSpawnedCount", encounter.SpawnedCount)
 			return model
 		end
@@ -187,18 +197,27 @@ end
 
 local function startWaveWorker(encounter)
 	task.spawn(function()
+		local waveCount = #(encounter.Plan.Waves or {})
 		for waveIndex, wave in ipairs(encounter.Plan.Waves or {}) do
 			if not waitWhileAlive(encounter, wave.DelaySeconds) then
 				return
 			end
+			if waveIndex > 1 then
+				local breakSeconds = DungeonPacingService.BeginWaveBreak(encounter, waveIndex, waveCount)
+				if not waitWhileAlive(encounter, breakSeconds) then
+					return
+				end
+			end
 			encounter.WaveIndex = waveIndex
 			workspace:SetAttribute("DungeonEncounterWaveIndex", waveIndex)
-			workspace:SetAttribute("DungeonEncounterWaveCount", #(encounter.Plan.Waves or {}))
+			workspace:SetAttribute("DungeonEncounterWaveCount", waveCount)
+			DungeonPacingService.BeginWave(encounter, waveIndex, waveCount)
 			spawnEnemyList(encounter, wave.Enemies, waveIndex)
-			if wave.WaitForClear and waveIndex < #(encounter.Plan.Waves or {}) then
+			if wave.WaitForClear and waveIndex < waveCount then
 				if not waitForEncounterClear(encounter) then
 					return
 				end
+				DungeonPacingService.MarkWaveCleared(encounter, waveIndex, waveCount)
 			end
 		end
 		if encounterAlive(encounter) then
@@ -286,6 +305,28 @@ local function startBeaconDefense(encounter, initialProgress)
 	end)
 end
 
+local function activateEncounter(encounter, beginOptions)
+	if not encounterAlive(encounter) then
+		return false
+	end
+	encounter.Preparing = false
+	encounter.Paused = false
+	ObjectiveMechanicService.SetEncounterActive(encounter, true)
+	DungeonPacingService.BeginCombat(encounter)
+	if encounter.Plan.Mode == "Nests" then
+		createNests(encounter)
+	elseif encounter.Plan.Mode == "Beacon" then
+		startBeaconDefense(
+			encounter,
+			math.max(0, math.floor(tonumber(beginOptions.InitialProgress) or 0))
+		)
+	else
+		startWaveWorker(encounter)
+	end
+	updateAttributes(encounter, "Active")
+	return true
+end
+
 function ObjectiveEncounterService.Start(startOptions)
 	if started then
 		return
@@ -296,6 +337,7 @@ function ObjectiveEncounterService.Start(startOptions)
 	options.ParticipantUserIds = type(options.ParticipantUserIds) == "table"
 		and table.clone(options.ParticipantUserIds)
 		or {}
+	ObjectiveMechanicService.Start()
 	workspace:SetAttribute("DungeonEncounterServiceReady", true)
 	updateAttributes(nil, "Idle")
 end
@@ -306,6 +348,7 @@ function ObjectiveEncounterService.Stop()
 	end
 	current = nil
 	ObjectiveActorService.DestroyAll()
+	ObjectiveMechanicService.Stop()
 	MonsterSpawner.DespawnObjectiveMonsters(nil)
 	started = false
 	options = {}
@@ -353,6 +396,7 @@ function ObjectiveEncounterService.BeginObjective(definition, context, beginOpti
 	}
 	current = encounter
 	ObjectiveActorService.BeginEncounter(encounter.Id, encounter.Token)
+	ObjectiveMechanicService.BeginEncounter(encounter)
 	context.IslandModel:SetAttribute("ObjectiveEncounterManaged", true)
 	context.IslandModel:SetAttribute("ObjectiveEncounterActive", true)
 	context.IslandModel:SetAttribute("ObjectiveEncounterId", encounter.Id)
@@ -364,16 +408,28 @@ function ObjectiveEncounterService.BeginObjective(definition, context, beginOpti
 	workspace:SetAttribute("DungeonEncounterWaveCount", #(plan.Waves or {}))
 	workspace:SetAttribute("DungeonEncounterAllWavesSpawned", false)
 	workspace:SetAttribute("DungeonEncounterLastSpawnError", nil)
-	updateAttributes(encounter, encounter.Recovery and "Recovering" or "Starting")
+	local preparationSeconds = DungeonPacingService.BeginObjectivePreparation(
+		definition,
+		context,
+		plan,
+		encounter.Recovery
+	)
+	encounter.Preparing = preparationSeconds > 0
+	encounter.Paused = preparationSeconds > 0
+	context.IslandModel:SetAttribute("ObjectivePreparationSeconds", preparationSeconds)
+	context.IslandModel:SetAttribute(
+		"ObjectivePreparationEndsAt",
+		preparationSeconds > 0 and (now() + preparationSeconds) or nil
+	)
+	updateAttributes(encounter, encounter.Recovery and "Recovering" or (preparationSeconds > 0 and "Preparing" or "Starting"))
 
-	if plan.Mode == "Nests" then
-		createNests(encounter)
-	elseif plan.Mode == "Beacon" then
-		startBeaconDefense(encounter, math.max(0, math.floor(tonumber(beginOptions.InitialProgress) or 0)))
+	if preparationSeconds > 0 then
+		task.delay(preparationSeconds, function()
+			activateEncounter(encounter, beginOptions)
+		end)
 	else
-		startWaveWorker(encounter)
+		activateEncounter(encounter, beginOptions)
 	end
-	updateAttributes(encounter, "Active")
 	return true, encounter.Id
 end
 
@@ -421,8 +477,13 @@ function ObjectiveEncounterService.SetCombatEnabled(enabled)
 		return false
 	end
 	enabled = enabled == true
+	if enabled and encounter.Preparing == true then
+		updateAttributes(encounter, "Preparing")
+		return true
+	end
 	encounter.Paused = not enabled
 	ObjectiveActorService.SetEncounterActive(encounter.Id, enabled)
+	ObjectiveMechanicService.SetEncounterActive(encounter, enabled)
 	MonsterSpawner.SetObjectiveMonstersActive(encounter.Id, enabled)
 	updateAttributes(encounter, enabled and "Active" or "Paused")
 	return true
@@ -452,6 +513,7 @@ function ObjectiveEncounterService.GetSnapshot()
 		ActiveEnemyCount = MonsterSpawner.GetObjectiveActiveCount(encounter.Id),
 		AliveNestCount = ObjectiveActorService.GetAliveNestCount(encounter.Id),
 		Recovery = encounter.Recovery,
+		Mechanic = ObjectiveMechanicService.GetSnapshot(encounter),
 		StartedAt = encounter.StartedAt,
 	}
 end

@@ -1,0 +1,13 @@
+{
+  "project_name": "Infinity Islands Dungeon Runtime",
+  "bootstrap_hardened": true,
+  "invalid_escaped_indentation": 0,
+  "player_data_result_api": true,
+  "backup": "C:\\Projetos\\SkyDungeon\\.skydungeon_backups\\before-dungeon-runtime-fix-20260807T024018.zip",
+  "escaped_tabs_replaced": 340,
+  "changed_source_files": [
+    "src/server/BlockParkour/PlayerDataService_SkyDungeon_V10.lua"
+  ],
+  "bootstrap_changed": true,
+  "installer_changed": false
+}

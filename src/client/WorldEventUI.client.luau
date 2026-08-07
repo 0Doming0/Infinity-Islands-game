@@ -57,7 +57,7 @@ text.TextWrapped = true
 text.Parent = card
 
 -- Configurações da animação.
-local TOP_MARGIN = -15
+local TOP_MARGIN = 138
 local HIDDEN_MARGIN = 60
 
 local CENTER_DISPLAY_TIME = 3
