@@ -27,6 +27,20 @@ Config.DamageLimits = {
 
 Config.MaxTargetsPerSwing = 7
 Config.MaxHitboxDimension = 14
+
+-- Tolerancia melee compartilhada. O servidor continua sendo a autoridade.
+-- A largura recebe o maior ganho para favorecer portrait/touch sem transformar
+-- a espada em ataque radial. RearTolerance limita explicitamente a area atras.
+Config.MeleeHitbox = {
+	WidthMultiplier = 1.18,
+	HeightMultiplier = 1.04,
+	DepthMultiplier = 1.08,
+	LateralPadding = 0.55,
+	VerticalPadding = 1.10,
+	DepthPadding = 0.35,
+	RearTolerance = 0.45,
+}
+
 -- Desativado por padrao: em mapas procedurais, grama, decoracoes e mobs baixos
 -- podem fazer o raycast tocar o piso antes do alvo. A hitbox curta ja limita o golpe.
 Config.RequireLineOfSight = false
