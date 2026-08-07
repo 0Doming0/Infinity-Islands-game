@@ -1,6 +1,7 @@
 local DataStoreService = game:GetService("DataStoreService")
 local HttpService = game:GetService("HttpService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 local PhaseConfig = require(ReplicatedStorage.Shared.Configs.PhaseConfig)
 
@@ -35,9 +36,19 @@ function LobbyPhaseCatalogService.Load()
 		PhaseConfig.Install(definitions, "PublishedDungeonCatalog")
 		workspace:SetAttribute("LobbyPhaseCatalogSource", "PublishedDungeonCatalog")
 		workspace:SetAttribute("LobbyPhaseCatalogUpdatedAt", tonumber(catalog.UpdatedAt) or 0)
+		workspace:SetAttribute("LobbyPaidTestCatalogReady", true)
+		workspace:SetAttribute("LobbyPaidTestCatalogReason", "PublishedDungeonCatalog")
 	else
 		PhaseConfig.UseBootstrapDefaults("BootstrapDefaults")
 		workspace:SetAttribute("LobbyPhaseCatalogSource", "BootstrapDefaults")
+		-- Bootstrap defaults continuam úteis no Studio, mas produção deve
+		-- falhar fechada: catálogo ausente não prova que a Dungeon publicada
+		-- possui GameContent/Phase01 válido.
+		workspace:SetAttribute("LobbyPaidTestCatalogReady", RunService:IsStudio())
+		workspace:SetAttribute(
+			"LobbyPaidTestCatalogReason",
+			RunService:IsStudio() and "StudioBootstrapAllowed" or "PublishedCatalogUnavailable"
+		)
 		if not ok then
 			warn("[LobbyPhaseCatalog] Falha ao ler catalogo: " .. tostring(catalog))
 		else
@@ -46,6 +57,7 @@ function LobbyPhaseCatalogService.Load()
 	end
 	workspace:SetAttribute("LobbyRegisteredPhaseCount", PhaseConfig.Count())
 	return PhaseConfig.Count() > 0
+		and (RunService:IsStudio() or workspace:GetAttribute("LobbyPaidTestCatalogReady") == true)
 end
 
 return LobbyPhaseCatalogService

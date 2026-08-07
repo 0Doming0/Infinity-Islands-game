@@ -55,6 +55,14 @@ local function mitigatedDamage(model, rawAmount)
 	return math.max(1, (raw - defense) * multiplier)
 end
 
+local function runDamageMultiplier(player)
+	return math.clamp(
+		tonumber(player and player:GetAttribute("RunDamageDealtMultiplier")) or 1,
+		0.05,
+		5
+	)
+end
+
 local function tagCreator(humanoid, player)
 	local old = humanoid:FindFirstChild("creator")
 	if old then
@@ -227,7 +235,7 @@ function DamageService.ApplyEffectDamage(attacker, target, amount, source)
 	then
 		return false, false
 	end
-	local damage = mitigatedDamage(model, amount)
+	local damage = mitigatedDamage(model, math.max(0, tonumber(amount) or 0) * runDamageMultiplier(attacker))
 	if damage <= 0 then
 		return false, false
 	end
@@ -268,7 +276,16 @@ local function applyKnockback(attackerRoot, model, humanoid, root, attack)
 
 	local comboScale = 1 + math.min(2, hitCount - 1) * 0.18
 	local resistanceScale = 1 - math.clamp(tonumber(model:GetAttribute("KnockbackResistance")) or 0, 0, 1)
-	local horizontalForce = math.max(0, tonumber(attack.Knockback) or 12) * 1.8 * comboScale * resistanceScale
+	local runKnockbackMultiplier = math.clamp(
+		tonumber(attacker:GetAttribute("RunKnockbackMultiplier")) or 1,
+		0.25,
+		5
+	)
+	local horizontalForce = math.max(0, tonumber(attack.Knockback) or 12)
+		* runKnockbackMultiplier
+		* 1.8
+		* comboScale
+		* resistanceScale
 	local upwardForce = math.max(0, tonumber(attack.UpwardKnockback) or 2) * comboScale * resistanceScale
 	if resistanceScale <= 0 or horizontalForce <= 0 then
 		return
@@ -379,7 +396,10 @@ function DamageService.ApplySwordHit(attacker, attackerRoot, target, attack)
 		return false, false
 	end
 
-	local damage = mitigatedDamage(model, attack.Damage)
+	local damage = mitigatedDamage(
+		model,
+		math.max(0, tonumber(attack.Damage) or 0) * runDamageMultiplier(attacker)
+	)
 	if damage <= 0 then
 		return false, false
 	end
@@ -440,12 +460,7 @@ function DamageService.ApplyDirectHit(attacker, target, amount, source, alreadyR
 	then
 		return false, false
 	end
-	local runMultiplier = alreadyRunScaled == true and 1
-		or math.clamp(
-			tonumber(attacker:GetAttribute("RunDamageDealtMultiplier")) or 1,
-			0.05,
-			1
-		)
+	local runMultiplier = alreadyRunScaled == true and 1 or runDamageMultiplier(attacker)
 	local damage = mitigatedDamage(model, math.max(0, tonumber(amount) or 0) * runMultiplier)
 	if damage <= 0 then
 		return false, false

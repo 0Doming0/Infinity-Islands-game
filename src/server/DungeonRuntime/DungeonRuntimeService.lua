@@ -32,10 +32,13 @@ local ObjectiveEncounterService = require(script.Parent.ObjectiveEncounterServic
 local ObjectiveSequenceService = require(script.Parent.ObjectiveSequenceService)
 local ObjectiveService = require(script.Parent.ObjectiveService)
 local RewardIslandService = require(script.Parent.RewardIslandService)
+local RunUpgradeService = require(script.Parent.RunUpgradeService)
 local RunRewardLedgerService = require(script.Parent.RunRewardLedgerService)
 local MobCollectibleService = require(script.Parent.MobCollectibleService)
 local PhaseRegistry = require(script.Parent.PhaseRegistry)
+local PaidTestReadinessService = require(script.Parent.PaidTestReadinessService)
 local RuntimeFolders = require(script.Parent.RuntimeFolders)
+local DungeonRunAnalytics = require(script.Parent.DungeonRunAnalyticsService)
 
 local DungeonRuntimeService = {}
 local started = false
@@ -44,8 +47,35 @@ local stateMachine
 local resultEvent
 local objectiveEvent
 local rewardEvent
+local runUpgradeEvent
 local lifeEvent
 local bossEvent
+
+local function forEachSessionPlayer(callback)
+	for _, player in ipairs(sessionPlayers()) do
+		callback(player)
+	end
+end
+
+local function runStage()
+	return tostring(
+		workspace:GetAttribute("DungeonObjectiveId")
+			or workspace:GetAttribute("DungeonPhaseState")
+			or "UnknownStage"
+	)
+end
+
+local function updateRunStage(stageName)
+	forEachSessionPlayer(function(player)
+		DungeonRunAnalytics.UpdateStage(player, stageName)
+	end)
+end
+
+local function runMilestone(eventName, stageName, detail)
+	forEachSessionPlayer(function(player)
+		DungeonRunAnalytics.Milestone(player, eventName, stageName, detail)
+	end)
+end
 
 local function copyUserIds(raw)
 	local result = {}
@@ -76,6 +106,9 @@ local function developmentSession(player)
 		LeaderUserId = player.UserId,
 		PartyUserIds = { player.UserId },
 		Seed = Random.new():NextInteger(1, 2147483646),
+		ReplayRequested = false,
+		ReplayOfSessionId = nil,
+		ReplayDepth = 0,
 		DevelopmentMode = true,
 	}
 end
@@ -108,6 +141,13 @@ local function sanitizeTeleportData(player, raw)
 		PartyUserIds = userIds,
 		PartyUserSet = userSet,
 		Seed = math.clamp(math.floor(tonumber(raw.Seed) or 1), 1, 2147483646),
+		ReplayRequested = raw.ReplayRequested == true,
+		ReplayOfSessionId = type(raw.ReplayOfSessionId) == "string"
+			and raw.ReplayOfSessionId
+			or nil,
+		ReplayDepth = raw.ReplayRequested == true
+			and math.max(1, math.floor(tonumber(raw.ReplayDepth) or 1))
+			or math.max(0, math.floor(tonumber(raw.ReplayDepth) or 0)),
 		DevelopmentMode = false,
 	}
 end
@@ -215,6 +255,9 @@ local function loadSessionPlayer(player)
 	if workspace:GetAttribute("DungeonObjectiveServiceReady") == true then
 		ObjectiveService.SetParticipantConnected(player.UserId, true)
 	end
+	if workspace:GetAttribute("DungeonRunUpgradeServiceReady") == true then
+		RunUpgradeService.SyncPlayer(player)
+	end
 	return true
 end
 
@@ -227,6 +270,8 @@ local function resultPayloadFor(userId, definition, elapsed, returnDelay, return
 		Error = "MissingCommitResult",
 	}
 	local record = committed.Record or {}
+	local endSummary = session.EndRunSummary or {}
+	local resultPlayer = Players:GetPlayerByUserId(userId)
 	return {
 		Action = "Result",
 		Result = session.Result,
@@ -246,6 +291,15 @@ local function resultPayloadFor(userId, definition, elapsed, returnDelay, return
 		ReturnDelay = returnDelay,
 		ReturnAt = returnAt,
 		ManualReturnAt = session.ResultManualReturnAt,
+		ReplayAvailable = PlaceConfig.DungeonPlaceId > 0,
+		EndObjectiveId = endSummary.ObjectiveId,
+		EndObjectiveTitle = endSummary.ObjectiveTitle,
+		EndObjectiveProgress = endSummary.ObjectiveProgress,
+		EndObjectiveTarget = endSummary.ObjectiveTarget,
+		EndGlobalIslandIndex = endSummary.GlobalIslandIndex,
+		CommittedRound = endSummary.CommittedRound,
+		DefeatReason = session.DefeatReason,
+		LastDamageSource = resultPlayer and resultPlayer:GetAttribute("LastEnemyDamageSource") or nil,
 	}
 end
 
@@ -312,6 +366,20 @@ finishSession = function(reason)
 	if not session or session.Completed then
 		return
 	end
+	local objectiveSnapshot = ObjectiveService.GetSnapshot()
+	session.EndRunSummary = {
+		ObjectiveId = objectiveSnapshot and objectiveSnapshot.Id
+			or workspace:GetAttribute("DungeonObjectiveId"),
+		ObjectiveTitle = objectiveSnapshot and objectiveSnapshot.Title
+			or workspace:GetAttribute("DungeonObjectiveTitle"),
+		ObjectiveProgress = objectiveSnapshot and objectiveSnapshot.Progress
+			or workspace:GetAttribute("DungeonObjectiveProgress"),
+		ObjectiveTarget = objectiveSnapshot and objectiveSnapshot.Target
+			or workspace:GetAttribute("DungeonObjectiveTarget"),
+		GlobalIslandIndex = objectiveSnapshot and objectiveSnapshot.GlobalIslandIndex
+			or workspace:GetAttribute("DungeonObjectiveGlobalIslandIndex"),
+		CommittedRound = workspace:GetAttribute("DungeonLastCommittedRewardRound") or 0,
+	}
 	local resultState = reason == "Victory"
 		and DungeonStateMachine.States.Victory
 		or DungeonStateMachine.States.Defeat
@@ -322,6 +390,9 @@ finishSession = function(reason)
 	session.Completed = true
 	session.Active = false
 	session.Result = reason
+	forEachSessionPlayer(function(player)
+		DungeonRunAnalytics.Complete(player, reason)
+	end)
 	local bossEligibleUserIds = reason == "Victory"
 		and BossService.GetEligibleUserIds()
 		or {}
@@ -335,6 +406,7 @@ finishSession = function(reason)
 	DungeonPartyLifeService.Stop()
 	ObjectiveEncounterService.Stop()
 	RewardIslandService.Stop()
+	RunUpgradeService.Stop()
 	MobCollectibleService.Stop()
 	RunRewardLedgerService.Stop()
 	ObjectiveSequenceService.Stop()
@@ -376,7 +448,7 @@ finishSession = function(reason)
 	workspace:SetAttribute("DungeonResultSaved", allCommitted == true)
 	workspace:SetAttribute("DungeonResultSaveError", commitError)
 
-	local returnDelay = allCommitted and 8 or 16
+	local returnDelay = allCommitted and 12 or 18
 	local resultNow = workspace:GetServerTimeNow()
 	local returnAt = resultNow + returnDelay
 	session.ResultReturnAt = returnAt
@@ -401,6 +473,7 @@ finishSession = function(reason)
 		PhaseId = session.PhaseId,
 		Result = reason,
 		ResultSaved = allCommitted == true,
+		ReplayDepth = math.max(0, math.floor(tonumber(session.ReplayDepth) or 0)),
 		ParticipantUserIds = session.PartyUserIds,
 		ReturnAt = returnAt,
 		ManualReturnAt = session.ResultManualReturnAt,
@@ -469,12 +542,16 @@ local function startBossEncounter(arenaContext)
 				Reason = "BossArenaActivated",
 				BossId = snapshot and snapshot.BossId,
 			})
+			runMilestone("BossStarted", "Boss", tostring(snapshot and snapshot.BossId or "Boss"))
 		end,
 		OnDefeated = function(boss, snapshot)
 			if session.Completed or session.BossVictoryPending then
 				return
 			end
 			session.BossVictoryPending = true
+			runMilestone("BossDefeated", "BossDefeated", tostring(
+				snapshot and snapshot.BossId or boss and boss.Name or "Boss"
+			))
 			local rewardDelay = BossEncounterDirector.HandleDefeated(boss, snapshot)
 			workspace:SetAttribute("DungeonBossVictoryPending", true)
 			workspace:SetAttribute(
@@ -576,6 +653,9 @@ local function beginWorld()
 		ParticipantUserIds = session.PartyUserIds,
 		RemoteEvent = objectiveEvent,
 		OnObjectiveCompleted = function(snapshot)
+			if snapshot.Id == "FirstStrike" then
+				runMilestone("FirstStrikeCompleted", "FirstStrike", "Objective1")
+			end
 			local sequenceResult = ObjectiveSequenceService.HandleObjectiveCompleted(snapshot)
 			ObjectiveEncounterService.CompleteObjective(snapshot.Id)
 			if sequenceResult and sequenceResult.IsRewardIsland ~= true then
@@ -613,6 +693,19 @@ local function beginWorld()
 	DungeonPartyLifeService.Start({
 		ParticipantUserIds = session.PartyUserIds,
 		RemoteEvent = lifeEvent,
+		OnParticipantStateChanged = function(record)
+			if not record or record.State ~= DungeonPartyLifeService.States.Eliminated then
+				return
+			end
+			local player = Players:GetPlayerByUserId(record.UserId)
+			if player then
+				DungeonRunAnalytics.PlayerDied(
+					player,
+					record.LastReason or player:GetAttribute("LastEnemyDamageSource") or "Unknown",
+					runStage()
+				)
+			end
+		end,
 		OnWipePending = function(reason)
 			local current = stateMachine:GetState()
 			if current ~= DungeonStateMachine.States.WipePending then
@@ -644,6 +737,7 @@ local function beginWorld()
 		end,
 		OnAllEliminated = function(reason)
 			if not session.Completed then
+				session.DefeatReason = tostring(reason or "AllParticipantsEliminated")
 				finishSession(reason == "AllParticipantsDisconnected" and "Disconnected" or "Defeat")
 			end
 		end,
@@ -657,6 +751,11 @@ local function beginWorld()
 	RunRewardLedgerService.Start({
 		SessionId = session.SessionId,
 		ParticipantUserIds = session.PartyUserIds,
+	})
+	RunUpgradeService.Start({
+		SessionId = session.SessionId,
+		ParticipantUserIds = session.PartyUserIds,
+		RemoteEvent = runUpgradeEvent,
 	})
 	MobCollectibleService.Start({
 		SessionId = session.SessionId,
@@ -676,6 +775,12 @@ local function beginWorld()
 		PhaseId = session.PhaseId,
 		ParticipantUserIds = session.PartyUserIds,
 		RemoteEvent = rewardEvent,
+		BeginUpgradeChoice = function(player, roundIndex)
+			return RunUpgradeService.BeginChoice(player, roundIndex)
+		end,
+		IsUpgradeChoiceResolved = function(player, roundIndex)
+			return RunUpgradeService.IsResolved(player, roundIndex)
+		end,
 		CommitRoundReward = function(roundIndex, metadata)
 			return ObjectiveSequenceService.CommitRoundReward(roundIndex, metadata)
 		end,
@@ -687,6 +792,10 @@ local function beginWorld()
 		GetIslandContext = DungeonGenerator.GetRouteIslandContext,
 		RequestRouteThrough = DungeonGenerator.RequestRouteThrough,
 		OnObjectiveStarted = function(definition, islandContext)
+			updateRunStage(tostring(definition.Id))
+			if definition.Id == "EliteHunt" then
+				runMilestone("EliteReached", "EliteHunt", "Objective11")
+			end
 			DungeonEntrySafetyService.ProtectParticipants(
 				islandContext,
 				"ObjectiveIslandEntered:" .. tostring(definition.Id),
@@ -710,6 +819,12 @@ local function beginWorld()
 			end
 		end,
 		OnRoundRewardPending = function(result, islandContext)
+			local roundIndex = math.clamp(math.floor(tonumber(result.RoundIndex) or 1), 1, 3)
+			runMilestone(
+				"Reward" .. tostring(roundIndex) .. "Reached",
+				"Reward" .. tostring(roundIndex),
+				"RoundRewardIsland"
+			)
 			MobCollectibleService.AttractRound(
 				result.RoundIndex,
 				"RoundObjectiveCompleted"
@@ -851,6 +966,18 @@ local function beginWorld()
 			StuckSeconds = 6.5,
 			ProtectionSeconds = 4,
 		})
+		local liveReadiness = PaidTestReadinessService.ValidateLiveWorld(
+			session.PhaseId,
+			initialContext
+		)
+		if not liveReadiness.Ready and not RunService:IsStudio() then
+			workspace:SetAttribute("DungeonGenerationState", "ReadinessFailed")
+			finishSession("ReadinessFailed")
+			return
+		end
+		forEachSessionPlayer(function(player)
+			DungeonRunAnalytics.RunStarted(player)
+		end)
 		transitionState(DungeonStateMachine.States.Active, {
 			Reason = "InitialWorldReady",
 		})
@@ -862,11 +989,74 @@ local function beginWorld()
 	end
 end
 
+local function loadedParticipantCount()
+	if not session then
+		return 0
+	end
+	local count = 0
+	for _, userId in ipairs(session.PartyUserIds) do
+		local player = Players:GetPlayerByUserId(userId)
+		if player
+			and player:GetAttribute("DungeonSessionId") == session.SessionId
+		then
+			count += 1
+		end
+	end
+	return count
+end
+
+local function queueBeginWorld()
+	if not session or session.Completed or session.WorldStarted then
+		return
+	end
+	local loaded = loadedParticipantCount()
+	workspace:SetAttribute("DungeonWorldStartExpectedPlayers", session.PartySize)
+	workspace:SetAttribute("DungeonWorldStartReadyPlayers", loaded)
+	workspace:SetAttribute("DungeonWorldStartWaitingForPlayers", loaded < session.PartySize)
+
+	if loaded >= session.PartySize then
+		if session.WorldStartQueued then
+			return
+		end
+		session.WorldStartQueued = true
+		workspace:SetAttribute("DungeonWorldStartReason", "AllParticipantsLoaded")
+		task.defer(function()
+			if session then
+				session.WorldStartQueued = false
+				if not session.WorldStarted and not session.Completed then
+					beginWorld()
+				end
+			end
+		end)
+		return
+	end
+
+	if session.WorldStartFallbackScheduled then
+		return
+	end
+	session.WorldStartFallbackScheduled = true
+	session.WorldStartDeadline = workspace:GetServerTimeNow() + 8
+	workspace:SetAttribute("DungeonWorldStartDeadline", session.WorldStartDeadline)
+	task.delay(8, function()
+		if not session or session.WorldStarted or session.Completed then
+			return
+		end
+		workspace:SetAttribute("DungeonWorldStartReason", "PartyArrivalTimeout")
+		workspace:SetAttribute("DungeonWorldStartWaitingForPlayers", false)
+		beginWorld()
+	end)
+end
+
 local function acceptPlayer(player)
 	local joinData = player:GetJoinData()
 	local parsed, errorMessage = sanitizeTeleportData(player, joinData and joinData.TeleportData)
 	if not parsed then
 		teleportBack(player, errorMessage)
+		return false
+	end
+	local readiness = PaidTestReadinessService.ValidateStatic(parsed.PhaseId)
+	if not readiness.Ready and not RunService:IsStudio() then
+		teleportBack(player, "Dungeon indisponível: validação pré-teste falhou")
 		return false
 	end
 	if session and session.DevelopmentMode and parsed.DevelopmentMode then
@@ -893,7 +1083,17 @@ local function acceptPlayer(player)
 		teleportBack(player, "Jogador fora da lista da sessao")
 		return false
 	end
-	return loadSessionPlayer(player)
+	local loaded = loadSessionPlayer(player)
+	if loaded then
+		DungeonRunAnalytics.BeginPlayer(player, {
+			SessionId = session.SessionId,
+			PhaseId = session.PhaseId,
+			PartySize = session.PartySize,
+			ReplayDepth = session.ReplayDepth,
+			ReplayOfSessionId = session.ReplayOfSessionId,
+		})
+	end
+	return loaded
 end
 
 function DungeonRuntimeService.Start()
@@ -909,15 +1109,24 @@ function DungeonRuntimeService.Start()
 	})
 	ContentResolver.EnsureStructure()
 	PhaseRegistry.Refresh()
+	local startupReadiness = PaidTestReadinessService.ValidateStatic()
+	if not startupReadiness.Ready then
+		warn(
+			"[DungeonRuntime] Paid-test readiness bloqueada: "
+			.. table.concat(startupReadiness.Errors, " | ")
+		)
+	end
 	RuntimeFolders.Ensure()
 	resultEvent = RemoteRegistry.Get("Notifications", "DungeonResult", "RemoteEvent")
 	objectiveEvent = RemoteRegistry.Get("Dungeon", "ObjectiveState", "RemoteEvent")
 	rewardEvent = RemoteRegistry.Get("Dungeon", "RewardState", "RemoteEvent")
+	runUpgradeEvent = RemoteRegistry.Get("Dungeon", "RunUpgradeState", "RemoteEvent")
 	lifeEvent = RemoteRegistry.Get("Dungeon", "LifeState", "RemoteEvent")
 	bossEvent = RemoteRegistry.Get("Dungeon", "BossState", "RemoteEvent")
 	DungeonReturnService.Start({
 		RemoteEvent = resultEvent,
 		LobbyPlaceId = PlaceConfig.LobbyPlaceId,
+		DungeonPlaceId = PlaceConfig.DungeonPlaceId,
 		OnReturning = function(returnReason)
 			transitionState(DungeonStateMachine.States.Returning, {
 				Reason = returnReason,
@@ -986,11 +1195,14 @@ function DungeonRuntimeService.Start()
 				sendResultToPlayer(player)
 			end)
 		elseif not session.WorldStarted then
-			task.delay(8, beginWorld)
+			queueBeginWorld()
 		end
 	end)
 	Players.PlayerRemoving:Connect(function(player)
 		if session and session.PartyUserSet and session.PartyUserSet[player.UserId] then
+			if not session.Completed then
+				DungeonRunAnalytics.Abandoned(player, runStage(), "PlayerRemoving")
+			end
 			ObjectiveService.SetParticipantConnected(player.UserId, false)
 			if not session.Completed then
 				DungeonPartyLifeService.MarkDisconnected(player.UserId, "PlayerRemoving")
@@ -1006,7 +1218,7 @@ function DungeonRuntimeService.Start()
 					sendResultToPlayer(player)
 				end)
 			elseif not session.WorldStarted then
-				task.delay(8, beginWorld)
+				queueBeginWorld()
 			end
 		end
 	end

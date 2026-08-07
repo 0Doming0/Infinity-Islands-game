@@ -57,12 +57,19 @@ local function resolveBossDefinition(template, bossId)
 			configured.ArenaRescueProtection or 3,
 			0
 		),
-		PhaseThresholds = configured.PhaseThresholds or { 0.66, 0.33 },
+		PhaseCount = math.clamp(
+			math.floor(tonumber(configured.PhaseCount) or 2),
+			2,
+			3
+		),
+		PhaseThresholds = configured.PhaseThresholds or { 0.50 },
 		PhaseAttackCooldowns = configured.PhaseAttackCooldowns or {
 			configured.AttackCooldown,
-			configured.AttackCooldown * 0.85,
-			configured.AttackCooldown * 0.7,
+			configured.AttackCooldown * 0.78,
 		},
+		MusicSoundId = tostring(configured.MusicSoundId or ""),
+		MusicVolume = math.clamp(tonumber(configured.MusicVolume) or 0.55, 0, 1),
+		BasicSlam = configured.BasicSlam or {},
 		LeapSlam = configured.LeapSlam or {},
 		GroundPulse = configured.GroundPulse or {},
 		Shockwave = configured.Shockwave or {},
@@ -530,6 +537,9 @@ local function currentPhase(state)
 		and state.Humanoid.Health / state.Humanoid.MaxHealth
 		or 0
 	local thresholds = state.Definition.PhaseThresholds
+	if state.Definition.PhaseCount <= 2 then
+		return ratio <= (thresholds[1] or 0.50) and 2 or 1
+	end
 	if ratio <= (thresholds[2] or 0.33) then
 		return 3
 	elseif ratio <= (thresholds[1] or 0.66) then
@@ -557,8 +567,10 @@ local function snapshot(state)
 		MaxHealth = maximum,
 		HealthRatio = health / maximum,
 		Phase = state.Phase,
+		PhaseCount = state.Definition.PhaseCount,
 		Attack = state.AttackName,
 		AttackEndsAt = state.AttackEndsAt,
+		ActivationEndsAt = state.Boss:GetAttribute("BossActivationEndsAt"),
 		ArenaSealed = state.ArenaSealed == true,
 		CombatEnabled = state.CombatEnabled == true,
 		EligibleUserIds = table.clone(state.EligibleUserIds),
@@ -580,8 +592,11 @@ local function publish(state, action, targetPlayer, extra)
 	workspace:SetAttribute("DungeonBossHealth", payload.Health)
 	workspace:SetAttribute("DungeonBossMaxHealth", payload.MaxHealth)
 	workspace:SetAttribute("DungeonBossPhase", payload.Phase)
+	workspace:SetAttribute("DungeonBossPhaseCount", payload.PhaseCount)
+	workspace:SetAttribute("DungeonBossDisplayName", payload.DisplayName)
 	workspace:SetAttribute("DungeonBossAttack", payload.Attack)
 	workspace:SetAttribute("DungeonBossAttackEndsAt", payload.AttackEndsAt)
+	workspace:SetAttribute("DungeonBossActivationEndsAt", payload.ActivationEndsAt)
 	local remote = state.RemoteEvent
 	if remote then
 		if targetPlayer and targetPlayer.Parent == Players then
@@ -706,6 +721,36 @@ local function beginAttack(state, attackName, duration)
 	state.Humanoid:Move(Vector3.zero)
 	publish(state, "AttackStarted")
 	return state.AttackToken
+end
+
+local function attackBasicSlam(state)
+	local config = state.Definition.BasicSlam
+	local phaseScale = state.Phase >= 2 and 0.88 or 1
+	local windup = numberFromTable(config, "Windup", 0.42) * phaseScale
+	local radius = numberFromTable(config, "Radius", 7.5)
+	local token = beginAttack(state, "BasicSlam", windup + 0.22)
+	if not token then
+		return
+	end
+	local position = state.Root.Position
+	createTelegraph(state, position, radius, windup, "BasicSlam")
+	task.delay(windup, function()
+		if activeState ~= state or state.Completed or state.AttackToken ~= token then
+			return
+		end
+		if state.CombatEnabled then
+			damagePlayersInRadius(
+				state,
+				position,
+				radius,
+				state.Boss:GetAttribute("AttackDamage")
+					* numberFromTable(config, "DamageMultiplier", 0.62),
+				"BossBasicSlam"
+			)
+			createShockwaveVisual(state, position, radius, 0.22)
+		end
+		finishAttack(state, token)
+	end)
 end
 
 local function attackGroundPulse(state)
@@ -883,16 +928,17 @@ local function attackSummon(state)
 end
 
 local ATTACK_ROTATIONS = {
-	[1] = { "LeapSlam", "GroundPulse", "LeapSlam" },
-	[2] = { "LeapSlam", "SummonSlimes", "GroundPulse", "LeapSlam" },
-	[3] = { "Shockwave", "LeapSlam", "SummonSlimes", "GroundPulse" },
+	[1] = { "BasicSlam", "LeapSlam", "BasicSlam", "GroundPulse" },
+	[2] = { "BasicSlam", "LeapSlam", "SummonSlimes", "Shockwave", "GroundPulse" },
 }
 
 local function selectAndRunAttack(state, targetRoot)
 	local rotation = ATTACK_ROTATIONS[state.Phase] or ATTACK_ROTATIONS[1]
 	state.AttackRotationIndex = (state.AttackRotationIndex % #rotation) + 1
 	local attack = rotation[state.AttackRotationIndex]
-	if attack == "LeapSlam" then
+	if attack == "BasicSlam" then
+		attackBasicSlam(state)
+	elseif attack == "LeapSlam" then
 		attackLeapSlam(state, targetRoot)
 	elseif attack == "GroundPulse" then
 		attackGroundPulse(state)
@@ -903,6 +949,51 @@ local function selectAndRunAttack(state, targetRoot)
 	end
 end
 
+
+local function prepareBossMusic(state)
+	local existing = state.Boss:FindFirstChild("BossMusic", true)
+	if existing and existing:IsA("Sound") then
+		existing.Looped = true
+		existing.Volume = math.clamp(existing.Volume, 0, 1)
+		state.Music = existing
+		workspace:SetAttribute("DungeonBossMusicConfigured", true)
+		workspace:SetAttribute("DungeonBossMusicSource", "BossTemplate")
+		return true
+	end
+	local soundId = tostring(state.Definition.MusicSoundId or "")
+	if soundId == "" then
+		workspace:SetAttribute("DungeonBossMusicConfigured", false)
+		workspace:SetAttribute("DungeonBossMusicSource", "MissingAsset")
+		return false
+	end
+	local sound = Instance.new("Sound")
+	sound.Name = "BossMusic"
+	sound.SoundId = soundId
+	sound.Volume = state.Definition.MusicVolume
+	sound.Looped = true
+	sound.RollOffMaxDistance = 220
+	sound.Parent = state.ArenaContract.Content
+	state.Music = sound
+	workspace:SetAttribute("DungeonBossMusicConfigured", true)
+	workspace:SetAttribute("DungeonBossMusicSource", "BossConfig")
+	return true
+end
+
+local function playBossMusic(state)
+	local music = state.Music
+	if music and music.Parent and not music.IsPlaying then
+		music:Play()
+		workspace:SetAttribute("DungeonBossMusicPlaying", true)
+	end
+end
+
+local function stopBossMusic(state)
+	local music = state and state.Music
+	if music and music.Parent then
+		music:Stop()
+	end
+	workspace:SetAttribute("DungeonBossMusicPlaying", false)
+end
 local function changePhase(state, nextPhase)
 	if nextPhase == state.Phase then
 		return
@@ -931,6 +1022,7 @@ local function activate(state, triggeringPlayer)
 	teleportParticipants(state, "BossActivation")
 	state.Boss:SetAttribute("BossActivationStartedAt", serverTime())
 	state.Boss:SetAttribute("BossActivationEndsAt", serverTime() + state.Definition.ActivationDelay)
+	playBossMusic(state)
 	publish(state, "Activating")
 	local function completeActivation()
 		if activeState ~= state or state.Completed then
@@ -1135,6 +1227,7 @@ function BossService.Create(options)
 		MinionEncounterId = string.format("Boss:%s", tostring(options.SessionId or "Dungeon")),
 	}
 	activeState = state
+	prepareBossMusic(state)
 	setGateSealed(state, false)
 	arenaContract.Arena:SetAttribute("PhaseId", options.PhaseId)
 	arenaContract.Arena:SetAttribute("BossId", bossId)
@@ -1168,6 +1261,7 @@ function BossService.Create(options)
 		state.CombatEnabled = false
 		state.Boss:SetAttribute("BossActive", false)
 		state.Boss:SetAttribute("BossDefeated", true)
+		stopBossMusic(state)
 		CollectionService:RemoveTag(state.Boss, "CombatTarget")
 		MonsterSpawner.DespawnObjectiveMonsters(state.MinionEncounterId)
 		setGateSealed(state, false)
@@ -1237,6 +1331,7 @@ function BossService.Stop()
 		return
 	end
 	local wasDefeated = state.Defeated == true
+	stopBossMusic(state)
 	state.Completed = true
 	state.Active = false
 	state.Activating = false

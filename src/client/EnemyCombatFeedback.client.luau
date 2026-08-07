@@ -11,9 +11,11 @@ local playerGui = player:WaitForChild("PlayerGui")
 local RemoteRegistry = require(ReplicatedStorage.Shared.Utilities.RemoteRegistry)
 local feedbackEvent = RemoteRegistry.Get("Combat", "EnemyDamageFeedback", "RemoteEvent")
 
-local VERSION = "EnemyPresentationV1"
+local VERSION = "EnemyPresentationV2"
 local MAX_DISTANCE = 82
 local DAMAGE_LIFETIME = 0.62
+local HIT_CONFIRM_LIFETIME = 0.18
+local KILL_CONFIRM_LIFETIME = 0.82
 
 local COLORS = {
 	Text = Color3.fromRGB(245, 250, 255),
@@ -31,6 +33,59 @@ local COLORS = {
 
 local watched = setmetatable({}, { __mode = "k" })
 local hitSerial = 0
+local hitConfirmSerial = 0
+local killConfirmSerial = 0
+
+local oldOverlay = playerGui:FindFirstChild("EnemyCombatFeedbackOverlay")
+if oldOverlay then
+	oldOverlay:Destroy()
+end
+
+local overlay = Instance.new("ScreenGui")
+overlay.Name = "EnemyCombatFeedbackOverlay"
+overlay.ResetOnSpawn = false
+overlay.IgnoreGuiInset = true
+overlay.DisplayOrder = 86
+overlay.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+overlay.Parent = playerGui
+
+local hitMarker = Instance.new("TextLabel")
+hitMarker.Name = "HitMarker"
+hitMarker.AnchorPoint = Vector2.new(0.5, 0.5)
+hitMarker.Position = UDim2.fromScale(0.5, 0.5)
+hitMarker.Size = UDim2.fromOffset(54, 54)
+hitMarker.BackgroundTransparency = 1
+hitMarker.Text = "×"
+hitMarker.TextColor3 = COLORS.Damage
+hitMarker.TextStrokeColor3 = Color3.fromRGB(5, 8, 12)
+hitMarker.TextStrokeTransparency = 0.16
+hitMarker.TextTransparency = 1
+hitMarker.Font = Enum.Font.GothamBlack
+hitMarker.TextSize = 31
+hitMarker.ZIndex = 90
+hitMarker.Parent = overlay
+local hitMarkerScale = Instance.new("UIScale")
+hitMarkerScale.Scale = 1
+hitMarkerScale.Parent = hitMarker
+
+local killConfirm = Instance.new("TextLabel")
+killConfirm.Name = "KillConfirm"
+killConfirm.AnchorPoint = Vector2.new(0.5, 0)
+killConfirm.Position = UDim2.new(0.5, 0, 0.57, 0)
+killConfirm.Size = UDim2.fromOffset(390, 40)
+killConfirm.BackgroundTransparency = 1
+killConfirm.Text = ""
+killConfirm.TextColor3 = COLORS.Gold
+killConfirm.TextStrokeColor3 = Color3.fromRGB(5, 8, 12)
+killConfirm.TextStrokeTransparency = 0.16
+killConfirm.TextTransparency = 1
+killConfirm.Font = Enum.Font.GothamBlack
+killConfirm.TextSize = 16
+killConfirm.ZIndex = 90
+killConfirm.Parent = overlay
+local killConfirmScale = Instance.new("UIScale")
+killConfirmScale.Scale = 1
+killConfirmScale.Parent = killConfirm
 
 local function getRoot(model)
 	if not model or not model:IsA("Model") then return nil end
@@ -176,7 +231,11 @@ local function bindEnemy(model)
 		local maximum = math.max(1, humanoid.MaxHealth)
 		local currentHealth = math.clamp(humanoid.Health, 0, maximum)
 		local ratio = currentHealth / maximum
-		billboard.Enabled = true
+		local importantTarget = model:GetAttribute("IsElite") == true
+			or model:GetAttribute("ObjectiveFocusTarget") == true
+			or model:GetAttribute("ObjectivePriorityTarget") == true
+			or model:GetAttribute("ObjectiveWaypointEscalated") == true
+		billboard.Enabled = importantTarget or currentHealth < maximum
 		fill.Size = UDim2.fromScale(ratio, 1)
 		fill.BackgroundColor3 = healthColor(ratio)
 		healthText.Text = string.format("%d / %d", math.ceil(currentHealth), math.ceil(maximum))
@@ -189,6 +248,9 @@ local function bindEnemy(model)
 	humanoid:GetPropertyChangedSignal("MaxHealth"):Connect(update)
 	model:GetAttributeChangedSignal("DisplayName"):Connect(update)
 	model:GetAttributeChangedSignal("IsElite"):Connect(update)
+	model:GetAttributeChangedSignal("ObjectiveFocusTarget"):Connect(update)
+	model:GetAttributeChangedSignal("ObjectivePriorityTarget"):Connect(update)
+	model:GetAttributeChangedSignal("ObjectiveWaypointEscalated"):Connect(update)
 	model.Destroying:Connect(function()
 		watched[model] = nil
 	end)
@@ -215,6 +277,102 @@ local function damageNumbersEnabled()
 		value = player:GetAttribute("DungeonHUDDamageNumbersEnabled")
 	end
 	return value ~= false
+end
+
+local function sourceIsCompanion(source)
+	return string.find(string.lower(tostring(source or "")), "companion", 1, true) ~= nil
+end
+
+local function playHitConfirm(payload)
+	if type(payload) ~= "table" or sourceIsCompanion(payload.Source) then
+		return
+	end
+
+	hitConfirmSerial += 1
+	local serial = hitConfirmSerial
+	local defeated = payload.Defeated == true
+	local heavy = payload.Heavy == true
+
+	hitMarker.Text = defeated and "✦" or "×"
+	hitMarker.TextColor3 = defeated and COLORS.Gold or heavy and COLORS.Heavy or COLORS.Damage
+	hitMarker.TextSize = defeated and 38 or heavy and 35 or 30
+	hitMarker.TextTransparency = 0
+	hitMarker.TextStrokeTransparency = 0.12
+	hitMarkerScale.Scale = defeated and 0.54 or 0.66
+
+	TweenService:Create(
+		hitMarkerScale,
+		TweenInfo.new(0.09, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+		{ Scale = defeated and 1.26 or heavy and 1.16 or 1 }
+	):Play()
+
+	task.delay(HIT_CONFIRM_LIFETIME, function()
+		if hitConfirmSerial ~= serial then
+			return
+		end
+		TweenService:Create(
+			hitMarker,
+			TweenInfo.new(0.10, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+			{
+				TextTransparency = 1,
+				TextStrokeTransparency = 1,
+			}
+		):Play()
+	end)
+end
+
+local function playKillConfirm(payload)
+	if type(payload) ~= "table" or payload.Defeated ~= true then
+		return
+	end
+	local target = payload.Target
+	if not target or not target:IsA("Model") then
+		return
+	end
+
+	local humanoid = getHumanoid(target)
+	local name = humanoid and displayName(target, humanoid)
+		or target:GetAttribute("DisplayName")
+		or target:GetAttribute("MonsterId")
+		or target.Name
+	local elite = target:GetAttribute("IsElite") == true
+
+	killConfirmSerial += 1
+	local serial = killConfirmSerial
+	killConfirm.Text = elite
+		and ("★ ELITE DERROTADO • " .. string.upper(tostring(name)))
+		or ("DERROTADO • " .. string.upper(tostring(name)))
+	killConfirm.TextColor3 = elite and COLORS.Gold or COLORS.Text
+	killConfirm.TextTransparency = 0
+	killConfirm.TextStrokeTransparency = 0.14
+	killConfirm.Position = UDim2.new(0.5, 0, 0.57, 8)
+	killConfirmScale.Scale = 0.84
+
+	TweenService:Create(
+		killConfirmScale,
+		TweenInfo.new(0.12, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+		{ Scale = elite and 1.08 or 1 }
+	):Play()
+	TweenService:Create(
+		killConfirm,
+		TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ Position = UDim2.new(0.5, 0, 0.57, 0) }
+	):Play()
+
+	task.delay(KILL_CONFIRM_LIFETIME * 0.58, function()
+		if killConfirmSerial ~= serial then
+			return
+		end
+		TweenService:Create(
+			killConfirm,
+			TweenInfo.new(KILL_CONFIRM_LIFETIME * 0.42, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+			{
+				TextTransparency = 1,
+				TextStrokeTransparency = 1,
+				Position = UDim2.new(0.5, 0, 0.57, -8),
+			}
+		):Play()
+	end)
 end
 
 local function playDamageNumber(payload)
@@ -251,7 +409,9 @@ local function playDamageNumber(payload)
 	text.Position = UDim2.fromScale(0.5, 0.5)
 	text.Size = UDim2.fromScale(1, 1)
 	text.BackgroundTransparency = 1
-	text.Text = tostring(math.max(1, math.floor(amount + 0.5)))
+	text.Text = defeated
+		and string.format("%d!", math.max(1, math.floor(amount + 0.5)))
+		or tostring(math.max(1, math.floor(amount + 0.5)))
 	text.TextColor3 = defeated and COLORS.Gold or damageColor(source, heavy)
 	text.TextStrokeColor3 = Color3.fromRGB(8, 10, 14)
 	text.TextStrokeTransparency = 0.10
@@ -302,9 +462,13 @@ CollectionService:GetInstanceRemovedSignal("CombatTarget"):Connect(function(inst
 	watched[instance] = nil
 end)
 
-feedbackEvent.OnClientEvent:Connect(playDamageNumber)
+feedbackEvent.OnClientEvent:Connect(function(payload)
+	playHitConfirm(payload)
+	playKillConfirm(payload)
+	playDamageNumber(payload)
+end)
 
 player:SetAttribute("EnemyCombatFeedbackReady", true)
 player:SetAttribute("EnemyCombatFeedbackVersion", VERSION)
 workspace:SetAttribute("EnemyCombatFeedbackReady", true)
-workspace:SetAttribute("EnemyCombatFeedbackPolicy", "NameHealthAnimatedDamageV1")
+workspace:SetAttribute("EnemyCombatFeedbackPolicy", "FocusedHealthHitConfirmKillFeedbackV2")

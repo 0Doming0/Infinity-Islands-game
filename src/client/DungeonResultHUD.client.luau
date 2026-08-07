@@ -13,8 +13,8 @@ local RemoteRegistry = require(ReplicatedStorage.Shared.Utilities.RemoteRegistry
 local resultEvent = RemoteRegistry.Get("Notifications", "DungeonResult", "RemoteEvent")
 
 local HUD_NAME = "DungeonUnifiedHUD"
-local VERSION = "CrystalCelestialResultsReturnV1"
-local UPDATE_INTERVAL = 0.10
+local VERSION = "CrystalCelestialResultsReplayV2"
+local UPDATE_INTERVAL = 0.20
 
 local COLORS = {
 	Text = Color3.fromRGB(240, 247, 252),
@@ -72,6 +72,10 @@ card.BorderSizePixel = 0
 card.ZIndex = 301
 card.Parent = overlay
 Instance.new("UICorner", card).CornerRadius = UDim.new(0, 22)
+local cardScale = Instance.new("UIScale")
+cardScale.Name = "ResponsiveScale"
+cardScale.Scale = 1
+cardScale.Parent = card
 
 local cardStroke = Instance.new("UIStroke")
 cardStroke.Color = COLORS.Gold
@@ -263,14 +267,37 @@ returnInfo.TextSize = 10
 returnInfo.ZIndex = 302
 returnInfo.Parent = card
 
+local replayButton = Instance.new("TextButton")
+replayButton.Name = "ReplayButton"
+replayButton.AnchorPoint = Vector2.new(0, 1)
+replayButton.Position = UDim2.new(0, 26, 1, -25)
+replayButton.Size = UDim2.fromOffset(444, 68)
+replayButton.BackgroundColor3 = Color3.fromRGB(35, 94, 74)
+replayButton.BackgroundTransparency = 0.01
+replayButton.BorderSizePixel = 0
+replayButton.Text = "JOGAR NOVAMENTE"
+replayButton.TextColor3 = COLORS.Green
+replayButton.Font = Enum.Font.GothamBlack
+replayButton.TextSize = 14
+replayButton.AutoButtonColor = true
+replayButton.ZIndex = 303
+replayButton.Parent = card
+Instance.new("UICorner", replayButton).CornerRadius = UDim.new(0, 15)
+local replayStroke = Instance.new("UIStroke")
+replayStroke.Color = COLORS.Gold
+replayStroke.Transparency = 0.12
+replayStroke.Thickness = 1.4
+replayStroke.Parent = replayButton
+
 local returnButton = Instance.new("TextButton")
-returnButton.AnchorPoint = Vector2.new(0.5, 1)
-returnButton.Position = UDim2.new(0.5, 0, 1, -25)
-returnButton.Size = UDim2.fromOffset(390, 60)
+returnButton.Name = "LobbyButton"
+returnButton.AnchorPoint = Vector2.new(1, 1)
+returnButton.Position = UDim2.new(1, -26, 1, -25)
+returnButton.Size = UDim2.fromOffset(238, 68)
 returnButton.BackgroundColor3 = Color3.fromRGB(29, 71, 83)
 returnButton.BackgroundTransparency = 0.02
 returnButton.BorderSizePixel = 0
-returnButton.Text = "RETORNAR AO LOBBY"
+returnButton.Text = "LOBBY"
 returnButton.TextColor3 = COLORS.CyanSoft
 returnButton.Font = Enum.Font.GothamBlack
 returnButton.TextSize = 14
@@ -289,7 +316,37 @@ local currentResult
 local returnSnapshot
 local shown = false
 local returnRequested = false
+local replayRequested = false
 local lastRequestAt = 0
+
+local viewportConnection
+local function updateResponsive()
+	local camera = workspace.CurrentCamera
+	local viewport = camera and camera.ViewportSize or Vector2.new(1280, 720)
+	cardScale.Scale = math.clamp(
+		math.min(
+			1,
+			(viewport.X - 20) / 760,
+			(viewport.Y - 20) / 548
+		),
+		0.38,
+		1
+	)
+	player:SetAttribute("DungeonHUDResultScale", cardScale.Scale)
+end
+
+local function bindViewport()
+	if viewportConnection then
+		viewportConnection:Disconnect()
+	end
+	local camera = workspace.CurrentCamera
+	if camera then
+		viewportConnection = camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateResponsive)
+	end
+	updateResponsive()
+end
+workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(bindViewport)
+bindViewport()
 
 local function serverTime()
 	return workspace:GetServerTimeNow()
@@ -389,7 +446,45 @@ local function updateHeader()
 	local name = tostring(currentResult.PhaseName or currentResult.PhaseId or "Dungeon")
 	phaseName.Text = victory
 		and ("Mundo concluído • " .. name)
-		or ("Resultado • " .. name)
+		or ("Você chegou até • " .. name)
+end
+
+local FAILURE_LABELS = {
+	AllParticipantsEliminated = "A equipe inteira foi eliminada.",
+	AllParticipantsDisconnected = "A equipe saiu da expedição.",
+	Water = "Você caiu na água antes de concluir a run.",
+	SlimeMelee = "Um ataque corpo a corpo encerrou sua tentativa.",
+	SlimeProjectile = "Um projétil inimigo encerrou sua tentativa.",
+	BossGroundPulse = "O Pulso de Solo do Boss encerrou a tentativa.",
+	BossLeapSlam = "O Salto Esmagador do Boss encerrou a tentativa.",
+	BossShockwave = "A Onda de Choque do Boss encerrou a tentativa.",
+	BossBasicSlam = "O golpe do Boss encerrou sua tentativa.",
+}
+
+local function defeatSummary()
+	if not currentResult or resultIsVictory() then
+		return nil
+	end
+	local objectiveTitle = tostring(currentResult.EndObjectiveTitle or "")
+	local progress = math.max(0, math.floor(tonumber(currentResult.EndObjectiveProgress) or 0))
+	local target = math.max(0, math.floor(tonumber(currentResult.EndObjectiveTarget) or 0))
+	local source = tostring(currentResult.LastDamageSource or currentResult.DefeatReason or "")
+	local cause = FAILURE_LABELS[source]
+		or FAILURE_LABELS[tostring(currentResult.DefeatReason or "")]
+		or "A expedição terminou, mas seu progresso anterior continua seguro."
+	if objectiveTitle ~= "" then
+		if target > 0 then
+			return string.format(
+				"%s • Último objetivo: %s (%d/%d)",
+				cause,
+				objectiveTitle,
+				progress,
+				target
+			)
+		end
+		return cause .. " • Último objetivo: " .. objectiveTitle
+	end
+	return cause
 end
 
 local function updateStats()
@@ -415,6 +510,16 @@ local function updateStats()
 
 	if resultIsVictory() then
 		progressValue.Text = "3/3 ROUNDS • BOSS"
+	elseif tonumber(currentResult.CommittedRound) and tonumber(currentResult.CommittedRound) > 0 then
+		progressValue.Text = string.format(
+			"ROUND %d CONCLUÍDO",
+			math.clamp(math.floor(tonumber(currentResult.CommittedRound) or 0), 1, 3)
+		)
+	elseif tonumber(currentResult.EndGlobalIslandIndex) and tonumber(currentResult.EndGlobalIslandIndex) > 0 then
+		progressValue.Text = string.format(
+			"OBJETIVO %d/12",
+			math.clamp(math.floor(tonumber(currentResult.EndGlobalIslandIndex) or 0), 1, 12)
+		)
 	elseif committedRound > 0 then
 		progressValue.Text = string.format("ROUND %d SALVO", committedRound)
 	elseif globalIndex > 0 then
@@ -444,6 +549,10 @@ local function updateSave()
 		saveDetail.Text = currentResult.AlreadyProcessed == true
 			and "Este resultado já havia sido processado com segurança."
 			or "Recompensas, conclusão e melhor tempo foram confirmados."
+		local failure = defeatSummary()
+		if failure then
+			saveDetail.Text = failure
+		end
 		saveStroke.Color = COLORS.Green
 	else
 		local errorText = tostring(currentResult.SaveError or workspace:GetAttribute("DungeonResultSaveError") or "")
@@ -482,6 +591,11 @@ local function updateReturn()
 		returnButton.Text = "AGUARDANDO RESULTADO"
 		returnButton.BackgroundColor3 = Color3.fromRGB(39, 51, 60)
 		buttonStroke.Color = COLORS.Muted
+		replayButton.Active = false
+		replayButton.AutoButtonColor = false
+		replayButton.Text = "AGUARDANDO RESULTADO"
+		replayButton.BackgroundColor3 = Color3.fromRGB(39, 51, 60)
+		replayStroke.Color = COLORS.Muted
 		return
 	end
 
@@ -495,12 +609,18 @@ local function updateReturn()
 		or "Pending")
 
 	if state == "Teleporting" then
-		returnInfo.Text = "Teleportando para o Lobby..."
-		returnButton.Text = "RETORNANDO..."
+		local replaying = returnSnapshot and returnSnapshot.Reason == "ReplayRequest"
+		returnInfo.Text = replaying and "Abrindo uma nova expedição..." or "Teleportando para o Lobby..."
+		returnButton.Text = replaying and "AGUARDE" or "RETORNANDO..."
 		returnButton.Active = false
 		returnButton.AutoButtonColor = false
 		returnButton.BackgroundColor3 = Color3.fromRGB(39, 67, 70)
 		buttonStroke.Color = COLORS.Green
+		replayButton.Text = replaying and "INICIANDO NOVA RUN..." or "AGUARDE"
+		replayButton.Active = false
+		replayButton.AutoButtonColor = false
+		replayButton.BackgroundColor3 = Color3.fromRGB(39, 67, 70)
+		replayStroke.Color = COLORS.Green
 		return
 	elseif state == "RetryScheduled" then
 		returnInfo.Text = "O teleporte falhou temporariamente. Nova tentativa automática foi agendada."
@@ -548,12 +668,25 @@ local function updateReturn()
 		returnButton.AutoButtonColor = false
 		returnButton.BackgroundColor3 = Color3.fromRGB(45, 55, 63)
 		buttonStroke.Color = COLORS.Muted
+		replayButton.Text = string.format("SALVANDO • %ds", math.ceil(manualRemaining))
+		replayButton.Active = false
+		replayButton.AutoButtonColor = false
+		replayButton.BackgroundColor3 = Color3.fromRGB(45, 55, 63)
+		replayStroke.Color = COLORS.Muted
 	else
-		returnButton.Text = returnRequested and "SOLICITANDO RETORNO..." or "RETORNAR AO LOBBY AGORA"
+		returnButton.Text = returnRequested and "RETORNANDO..." or "LOBBY"
 		returnButton.Active = not returnRequested
 		returnButton.AutoButtonColor = not returnRequested
 		returnButton.BackgroundColor3 = Color3.fromRGB(29, 71, 83)
 		buttonStroke.Color = currentResult.Saved == true and COLORS.Green or COLORS.Gold
+		local replayAvailable = currentResult.ReplayAvailable ~= false
+		replayButton.Text = replayRequested and "INICIANDO..." or "JOGAR NOVAMENTE"
+		replayButton.Active = replayAvailable and not replayRequested and not returnRequested
+		replayButton.AutoButtonColor = replayButton.Active
+		replayButton.BackgroundColor3 = replayButton.Active
+			and Color3.fromRGB(35, 94, 74)
+			or Color3.fromRGB(45, 55, 63)
+		replayStroke.Color = replayButton.Active and COLORS.Gold or COLORS.Muted
 	end
 end
 
@@ -626,7 +759,39 @@ resultEvent.OnClientEvent:Connect(function(payload)
 			math.floor(tonumber(payload.Attempt) or 0)
 		)
 		updateReturn()
+	elseif action == "ReplayBlocked" then
+		replayRequested = false
+		if tonumber(payload.AvailableAt) then
+			currentResult = currentResult or {}
+			currentResult.ManualReturnAt = tonumber(payload.AvailableAt)
+		end
+		saveDetail.Text = "A nova run será liberada assim que o resultado atual estiver seguro."
+		saveStroke.Color = COLORS.Orange
+		updateReturn()
+	elseif action == "ReplayFailed" then
+		replayRequested = false
+		returnInfo.Text = "Não foi possível abrir a nova run. Você pode tentar novamente ou voltar ao Lobby."
+		replayStroke.Color = COLORS.Orange
+		updateReturn()
 	end
+end)
+
+replayButton.Activated:Connect(function()
+	if not currentResult or not replayButton.Active then return end
+	if os.clock() - lastRequestAt < 1.3 then return end
+	lastRequestAt = os.clock()
+	replayRequested = true
+	returnRequested = false
+	updateReturn()
+	resultEvent:FireServer({
+		Action = "ReplayDungeon",
+	})
+	task.delay(3, function()
+		if replayRequested then
+			replayRequested = false
+			updateReturn()
+		end
+	end)
 end)
 
 returnButton.Activated:Connect(function()
@@ -634,6 +799,7 @@ returnButton.Activated:Connect(function()
 	if os.clock() - lastRequestAt < 1.3 then return end
 	lastRequestAt = os.clock()
 	returnRequested = true
+	replayRequested = false
 	updateReturn()
 	resultEvent:FireServer({
 		Action = "ReturnToLobby",
@@ -679,7 +845,8 @@ gui:SetAttribute("ResultReturnVersion", VERSION)
 player:SetAttribute("DungeonHUDResultReady", true)
 player:SetAttribute("DungeonHUDResultVersion", VERSION)
 workspace:SetAttribute("DungeonHUDResultReady", true)
-workspace:SetAttribute("DungeonHUDResultPolicy", "SavedResultSafeLobbyReturnV1")
+workspace:SetAttribute("DungeonHUDResultPolicy", "SavedResultFastReplayV2")
+workspace:SetAttribute("DungeonHUDResultPerformancePolicy", "ResponsiveResult5HzV2")
 
 if player:GetAttribute("DungeonResultShown") == true
 	or workspace:GetAttribute("DungeonPhaseState") == "Victory"

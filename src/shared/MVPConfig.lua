@@ -10,7 +10,9 @@ local Config = {
 	},
 
 	Progression = {
-		DeathCoinLossPercent = 0.20,
+		-- Paid-test MVP: morrer não remove moeda permanente. A derrota já custa
+		-- tempo/progresso da run; uma perda de saldo aumenta churn sem ensinar.
+		DeathCoinLossPercent = 0,
 		LegacyScoreDivisor = 1000,
 		GlobalLeaderboardSize = 25,
 		GlobalLeaderboardRefreshSeconds = 60,

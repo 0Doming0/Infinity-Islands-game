@@ -9,9 +9,9 @@ local TweenService = game:GetService("TweenService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local VERSION = "CrystalCelestialRewardsV1"
+local VERSION = "CrystalCelestialRewardsV2"
 local HUD_NAME = "DungeonUnifiedHUD"
-local UPDATE_INTERVAL = 0.10
+local UPDATE_INTERVAL = 0.20
 
 local COLORS = {
 	Text = Color3.fromRGB(239, 247, 252),
@@ -140,6 +140,10 @@ rewardPanel.Visible = false
 rewardPanel.ZIndex = 70
 rewardPanel.Parent = root
 Instance.new("UICorner", rewardPanel).CornerRadius = UDim.new(0, 18)
+local rewardScale = Instance.new("UIScale")
+rewardScale.Name = "ResponsiveScale"
+rewardScale.Scale = 1
+rewardScale.Parent = rewardPanel
 
 local rewardStroke = Instance.new("UIStroke")
 rewardStroke.Color = COLORS.Gold
@@ -239,8 +243,8 @@ local function chestCard(name, x, titleText, glyph, color)
 	return { Card = card, Stroke = s, State = state, Detail = detail, Color = color }
 end
 
-local coreCard = chestCard("CoreChest", 22, "CORE CHEST", "◆", COLORS.Cyan)
-local bonusCard = chestCard("BonusChest", 292, "BONUS CHEST", "✦", COLORS.Gold)
+local coreCard = chestCard("CoreChest", 22, "CORE CHEST • AVANÇAR", "◆", COLORS.Cyan)
+local bonusCard = chestCard("BonusChest", 292, "BÔNUS • AUTO", "✦", COLORS.Gold)
 
 local coinsState = Instance.new("Frame")
 coinsState.Name = "CoinsCommit"
@@ -274,7 +278,7 @@ local coinsDetail = Instance.new("TextLabel")
 coinsDetail.Position = UDim2.fromOffset(10, 23)
 coinsDetail.Size = UDim2.new(0.7, 0, 0, 18)
 coinsDetail.BackgroundTransparency = 1
-coinsDetail.Text = "Abra os dois baús para confirmar."
+coinsDetail.Text = "Abra o CORE CHEST para confirmar e avançar."
 coinsDetail.TextColor3 = COLORS.Muted
 coinsDetail.Font = Enum.Font.GothamMedium
 coinsDetail.TextSize = 8
@@ -317,10 +321,88 @@ local lastMagnetAt = tonumber(workspace:GetAttribute("DungeonMobCollectibleMagne
 local lastOptionalClaimAt = tonumber(player:GetAttribute("DungeonOptionalLastClaimAt")) or 0
 local optionalToastSerial = 0
 
+local viewportConnection
+local function updateResponsive()
+	local camera = workspace.CurrentCamera
+	local viewport = camera and camera.ViewportSize or Vector2.new(1280, 720)
+	rewardScale.Scale = math.clamp(
+		math.min(
+			1,
+			(viewport.X - 18) / 560,
+			(viewport.Y - 18) / 252
+		),
+		0.55,
+		1
+	)
+end
+
+local function bindViewport()
+	if viewportConnection then
+		viewportConnection:Disconnect()
+	end
+	local camera = workspace.CurrentCamera
+	if camera then
+		viewportConnection = camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateResponsive)
+	end
+	updateResponsive()
+end
+workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(bindViewport)
+bindViewport()
+local rewardCompletionSerial = 0
+
+local rewardCompleteToast = Instance.new("TextLabel")
+rewardCompleteToast.Name = "RewardRoundCompleteToast"
+rewardCompleteToast.AnchorPoint = Vector2.new(0.5, 0)
+rewardCompleteToast.Position = UDim2.new(0.5, 0, 0, 150)
+rewardCompleteToast.Size = UDim2.fromOffset(430, 52)
+rewardCompleteToast.BackgroundColor3 = COLORS.Glass
+rewardCompleteToast.BackgroundTransparency = 0.04
+rewardCompleteToast.BorderSizePixel = 0
+rewardCompleteToast.Text = ""
+rewardCompleteToast.TextColor3 = COLORS.Green
+rewardCompleteToast.Font = Enum.Font.GothamBlack
+rewardCompleteToast.TextSize = 13
+rewardCompleteToast.Visible = false
+rewardCompleteToast.ZIndex = 86
+rewardCompleteToast.Parent = root
+Instance.new("UICorner", rewardCompleteToast).CornerRadius = UDim.new(0, 13)
+local rewardCompleteStroke = Instance.new("UIStroke")
+rewardCompleteStroke.Color = COLORS.Gold
+rewardCompleteStroke.Transparency = 0.18
+rewardCompleteStroke.Thickness = 1.3
+rewardCompleteStroke.Parent = rewardCompleteToast
+
+local function showRewardRoundComplete(roundIndex)
+	rewardCompletionSerial += 1
+	local serial = rewardCompletionSerial
+	rewardCompleteToast.Text = string.format(
+		"✓ RECOMPENSAS DO ROUND %d COLETADAS • ROTA LIBERANDO",
+		math.max(1, math.floor(tonumber(roundIndex) or 1))
+	)
+	rewardCompleteToast.TextTransparency = 0
+	rewardCompleteToast.BackgroundTransparency = 0.04
+	rewardCompleteToast.Visible = true
+	task.delay(2.4, function()
+		if serial ~= rewardCompletionSerial then return end
+		local tween = TweenService:Create(rewardCompleteToast, TweenInfo.new(0.25), {
+			TextTransparency = 1,
+			BackgroundTransparency = 1,
+		})
+		tween:Play()
+		tween.Completed:Wait()
+		if serial == rewardCompletionSerial then
+			rewardCompleteToast.Visible = false
+		end
+	end)
+end
+
 local function statePresentation(raw, role)
 	raw = tostring(raw or "Available")
 	if raw == "Available" then
-		return "DISPONÍVEL", "Aproxime-se e abra o baú.", role == "Core" and COLORS.Cyan or COLORS.Gold
+		if role == "Core" then
+			return "OBRIGATÓRIO", "Abra este baú para confirmar o round e avançar.", COLORS.Cyan
+		end
+		return "BÔNUS OPCIONAL", "Será coletado automaticamente junto do Core.", COLORS.Gold
 	elseif raw == "Granting" then
 		return "ABRINDO...", "Recompensa sendo concedida.", COLORS.CyanSoft
 	elseif raw == "Saving" then
@@ -409,7 +491,10 @@ local function refreshRewardPanel()
 	local remaining = math.max(0, math.ceil(autoResolveAt - serverTime()))
 	rewardTitle.Text = string.format("ILHA DE RECOMPENSA — ROUND %d", round)
 	if remaining > 0 then
-		rewardTimer.Text = string.format("Abra seus baús • resolução automática em %ds", remaining)
+		rewardTimer.Text = string.format(
+			"Abra o CORE CHEST para avançar • resolução automática em %ds",
+			remaining
+		)
 	else
 		rewardTimer.Text = "Resolução automática em andamento..."
 	end
@@ -442,7 +527,7 @@ local function refreshRewardPanel()
 	else
 		coinsTitle.Text = "MOEDAS DO ROUND"
 		coinsTitle.TextColor3 = COLORS.Text
-		coinsDetail.Text = "Abra os dois baús para confirmar o saldo."
+		coinsDetail.Text = "Abra o CORE CHEST • o bônus será coletado automaticamente."
 		pendingValue.TextColor3 = COLORS.GoldSoft
 		coinsStateStroke.Color = COLORS.Gold
 	end
@@ -489,6 +574,7 @@ if rewardEvent and rewardEvent:IsA("RemoteEvent") then
 		if type(payload) ~= "table" then return end
 		currentReward = payload
 		if payload.Action == "RewardRoundCommitted" then
+			showRewardRoundComplete(payload.RoundIndex)
 			currentReward.Active = false
 		elseif payload.Active == false then
 			currentReward.Active = false
@@ -532,17 +618,19 @@ RunService.RenderStepped:Connect(function()
 	local clock = os.clock()
 	if clock < nextUpdate then return end
 	nextUpdate = clock + UPDATE_INTERVAL
-	refreshCurrencyStatus()
-	refreshCollectibles()
-	refreshRewardPanel()
-	flashOptionalReward()
+	-- Currency/collectible/optional state already refreshes through attributes.
+	-- O loop fica apenas para o countdown visível da Reward Island.
+	if rewardPanel.Visible then
+		refreshRewardPanel()
+	end
 end)
 
 gui:SetAttribute("RewardsInventoryVersion", VERSION)
 player:SetAttribute("DungeonHUDRewardsReady", true)
 player:SetAttribute("DungeonHUDRewardsVersion", VERSION)
 workspace:SetAttribute("DungeonHUDRewardsReady", true)
-workspace:SetAttribute("DungeonHUDRewardsPolicy", "PhysicalCollectiblesRewardIslandInventoryV1")
+workspace:SetAttribute("DungeonHUDRewardsPolicy", "CoreRequiredBonusAutoCollectV2")
+workspace:SetAttribute("DungeonHUDRewardsPerformancePolicy", "ResponsiveEventDrivenV2")
 
 refreshCurrencyStatus()
 refreshCollectibles()

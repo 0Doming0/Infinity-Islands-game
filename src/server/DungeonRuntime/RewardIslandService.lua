@@ -6,9 +6,11 @@ local RunRewardLedgerService = require(script.Parent.RunRewardLedgerService)
 
 local RewardIslandService = {}
 
-local AUTO_RESOLVE_SECONDS = 45
+local AUTO_RESOLVE_SECONDS = 20
 local RETRY_INTERVAL_SECONDS = 3
 local CHEST_ROLES = table.freeze({ "Core", "Bonus" })
+local REQUIRED_CHEST_ROLE = "Core"
+local OPTIONAL_CHEST_ROLE = "Bonus"
 
 local started = false
 local options = {}
@@ -58,6 +60,9 @@ local function ownSnapshot(player)
 		GlobalIslandIndex = currentRound.GlobalIslandIndex,
 		StartedAt = currentRound.StartedAt,
 		AutoResolveAt = currentRound.AutoResolveAt,
+		RequiredChestRole = REQUIRED_CHEST_ROLE,
+		OptionalChestRole = OPTIONAL_CHEST_ROLE,
+		RequiredClaimComplete = record.Claims[REQUIRED_CHEST_ROLE].State == "Claimed",
 		Core = table.clone(record.Claims.Core),
 		Bonus = table.clone(record.Claims.Bonus),
 		CoinsState = record.CoinsState,
@@ -82,6 +87,9 @@ local function updateWorldAttributes()
 	workspace:SetAttribute("DungeonRewardIslandIndex", currentRound and currentRound.GlobalIslandIndex or nil)
 	workspace:SetAttribute("DungeonRewardIslandStartedAt", currentRound and currentRound.StartedAt or nil)
 	workspace:SetAttribute("DungeonRewardIslandAutoResolveAt", currentRound and currentRound.AutoResolveAt or nil)
+	workspace:SetAttribute("DungeonRewardRequiredChestRole", currentRound and REQUIRED_CHEST_ROLE or nil)
+	workspace:SetAttribute("DungeonRewardOptionalChestRole", currentRound and OPTIONAL_CHEST_ROLE or nil)
+	workspace:SetAttribute("DungeonRewardProgressionPolicy", "CoreRequiredBonusAutoCollectV1")
 end
 
 local function createChestPart(parent, name, size, cframe, color, material)
@@ -132,12 +140,15 @@ local function buildChest(marker, role, parent)
 	local prompt = Instance.new("ProximityPrompt")
 	prompt.Name = "OpenPersonalReward"
 	prompt.ActionText = "Abrir"
-	prompt.ObjectText = role == "Core" and "Core Chest" or "Bonus Chest"
+	prompt.ObjectText = role == REQUIRED_CHEST_ROLE
+		and "Core Chest - avance"
+		or "Bonus Chest - opcional"
 	prompt.HoldDuration = 0.35
 	prompt.MaxActivationDistance = 11
 	prompt.RequiresLineOfSight = false
 	prompt:SetAttribute("RewardChestRole", role)
 	prompt:SetAttribute("RoundIndex", currentRound.RoundIndex)
+	prompt:SetAttribute("ProgressionRequired", role == REQUIRED_CHEST_ROLE)
 	prompt.Parent = base
 	local billboard = Instance.new("BillboardGui")
 	billboard.Name = "RewardChestLabel"
@@ -152,7 +163,7 @@ local function buildChest(marker, role, parent)
 	label.BackgroundColor3 = Color3.fromRGB(16, 20, 28)
 	label.BackgroundTransparency = 0.2
 	label.BorderSizePixel = 0
-	label.Text = role == "Core" and "CORE CHEST" or "BONUS CHEST"
+	label.Text = role == REQUIRED_CHEST_ROLE and "CORE CHEST • AVANÇAR" or "BONUS CHEST"
 	label.TextColor3 = metalColor
 	label.Font = Enum.Font.GothamBold
 	label.TextSize = 15
@@ -165,6 +176,12 @@ end
 local function allClaimsCommitted(record)
 	return record.Claims.Core.State == "Claimed" and record.Claims.Bonus.State == "Claimed"
 end
+
+local function requiredClaimCommitted(record)
+	return record.Claims[REQUIRED_CHEST_ROLE].State == "Claimed"
+end
+
+local ensureOptionalReward
 
 local function claimChest(player, role, automatic)
 	if not currentRound or currentRound.Committed then
@@ -219,13 +236,48 @@ local function claimChest(player, role, automatic)
 	return true, resultOrError
 end
 
+ensureOptionalReward = function(player, reason)
+	if not currentRound or currentRound.Committed then
+		return false, "RewardRoundInactive"
+	end
+	local record = playerRecord(player.UserId)
+	if not record then
+		return false, "PlayerRewardRecordMissing"
+	end
+	local claim = record.Claims[OPTIONAL_CHEST_ROLE]
+	if claim.State == "Claimed" then
+		return true
+	end
+	if claim.State == "Granting" then
+		return false, "GrantInProgress"
+	end
+	local granted, resultOrError = claimChest(player, OPTIONAL_CHEST_ROLE, true)
+	if granted then
+		claim.AutoCollectReason = tostring(reason or "RequiredChestClaimed")
+		publish(player, "OptionalRewardAutoCollected", {
+			ChestRole = OPTIONAL_CHEST_ROLE,
+			Reason = claim.AutoCollectReason,
+		})
+	end
+	return granted, resultOrError
+end
+
+local ensureUpgradeChoice
+
 local function commitPlayerCoins(player)
 	local record = playerRecord(player.UserId)
 	if record.CoinsState == "Committed" then
+		ensureUpgradeChoice(player)
 		return true
 	end
+	if not requiredClaimCommitted(record) then
+		return false, "RequiredChestPending"
+	end
 	if not allClaimsCommitted(record) then
-		return false, "PersonalChestsPending"
+		local optionalReady, optionalReason = ensureOptionalReward(player, "CoreClaimed")
+		if not optionalReady then
+			return false, optionalReason or "OptionalRewardPending"
+		end
 	end
 	record.CoinsState = "Committing"
 	local committed, resultOrError = RunRewardLedgerService.CommitRound(player, currentRound.RoundIndex)
@@ -239,6 +291,7 @@ local function commitPlayerCoins(player)
 	record.CoinsError = nil
 	record.CoinsResult = resultOrError
 	publish(player, "RoundCoinsCommitted", { Coins = resultOrError })
+	ensureUpgradeChoice(player)
 	return true
 end
 
@@ -253,6 +306,36 @@ local function onlineEligiblePlayers()
 	return result
 end
 
+ensureUpgradeChoice = function(player)
+	if not currentRound or not player then
+		return false, "RewardRoundInactive"
+	end
+	if type(options.BeginUpgradeChoice) ~= "function" then
+		return true
+	end
+	local ok, result, reason = pcall(
+		options.BeginUpgradeChoice,
+		player,
+		currentRound.RoundIndex
+	)
+	if not ok then
+		return false, tostring(result)
+	end
+	return result ~= false, reason
+end
+
+local function upgradeChoiceResolved(player)
+	if not currentRound or type(options.IsUpgradeChoiceResolved) ~= "function" then
+		return true
+	end
+	local ok, resolved = pcall(
+		options.IsUpgradeChoiceResolved,
+		player,
+		currentRound.RoundIndex
+	)
+	return ok and resolved == true
+end
+
 local function tryCommitRound()
 	if not currentRound or currentRound.Committed or currentRound.CommitInProgress then
 		return false
@@ -260,6 +343,9 @@ local function tryCommitRound()
 	for _, player in ipairs(onlineEligiblePlayers()) do
 		local record = playerRecord(player.UserId)
 		if not allClaimsCommitted(record) or record.CoinsState ~= "Committed" then
+			return false
+		end
+		if not upgradeChoiceResolved(player) then
 			return false
 		end
 	end
@@ -319,12 +405,22 @@ local function servicePass(token)
 		local record = playerRecord(player.UserId)
 		for _, role in ipairs(CHEST_ROLES) do
 			local state = record.Claims[role].State
-			if state == "Saving" or state == "RetryPending" or (shouldAutoResolve and state == "Available") then
+			local optionalCanAutoCollect = role == OPTIONAL_CHEST_ROLE
+				and requiredClaimCommitted(record)
+				and state == "Available"
+			if state == "Saving"
+				or state == "RetryPending"
+				or optionalCanAutoCollect
+				or (shouldAutoResolve and state == "Available")
+			then
 				claimChest(player, role, shouldAutoResolve)
 			end
 		end
 		if allClaimsCommitted(record) and record.CoinsState ~= "Committed" then
 			commitPlayerCoins(player)
+		end
+		if record.CoinsState == "Committed" and not upgradeChoiceResolved(player) then
+			ensureUpgradeChoice(player)
 		end
 	end
 	tryCommitRound()
@@ -432,8 +528,13 @@ function RewardIslandService.BeginRound(result, islandContext)
 		prompt.Triggered:Connect(function(player)
 			claimChest(player, role, false)
 			local record = playerRecord(player.UserId)
-			if record and allClaimsCommitted(record) then
-				commitPlayerCoins(player)
+			if record and requiredClaimCommitted(record) then
+				if not allClaimsCommitted(record) then
+					ensureOptionalReward(player, "CoreClaimed")
+				end
+				if allClaimsCommitted(record) then
+					commitPlayerCoins(player)
+				end
 			end
 			tryCommitRound()
 		end)
@@ -441,6 +542,8 @@ function RewardIslandService.BeginRound(result, islandContext)
 	island:SetAttribute("RoundRewardActive", true)
 	island:SetAttribute("RoundRewardIndex", roundIndex)
 	island:SetAttribute("RoundRewardAutoResolveAt", currentRound.AutoResolveAt)
+	island:SetAttribute("RoundRewardRequiredChestRole", REQUIRED_CHEST_ROLE)
+	island:SetAttribute("RoundRewardOptionalAutoCollect", true)
 	updateWorldAttributes()
 	for _, player in ipairs(onlineEligiblePlayers()) do
 		publish(player, "RewardRoundStarted")

@@ -413,17 +413,28 @@ function ObjectiveActorService.SetEncounterActive(encounterId, active)
 	return changed
 end
 
-function ObjectiveActorService.GetAliveNestCount(encounterId)
+function ObjectiveActorService.GetAliveActorCount(encounterId, actorType)
 	local count = 0
 	for actor in pairs(actorsByEncounter[encounterId] or {}) do
-		if actor.Parent and actor:GetAttribute("ObjectiveActorType") == "Nest" then
+		if actor.Parent
+			and (actorType == nil or actor:GetAttribute("ObjectiveActorType") == actorType)
+			and actor:GetAttribute("ObjectiveTargetCompleted") ~= true
+		then
 			local humanoid = actor:FindFirstChildWhichIsA("Humanoid", true)
-			if humanoid and humanoid.Health > 0 then
+			if not humanoid or humanoid.Health > 0 then
 				count += 1
 			end
 		end
 	end
 	return count
+end
+
+function ObjectiveActorService.GetAliveNestCount(encounterId)
+	return ObjectiveActorService.GetAliveActorCount(encounterId, "Nest")
+end
+
+function ObjectiveActorService.GetAliveBeaconCount(encounterId)
+	return ObjectiveActorService.GetAliveActorCount(encounterId, "Beacon")
 end
 
 function ObjectiveActorService.DestroyEncounter(encounterId)

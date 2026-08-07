@@ -4,14 +4,21 @@ local MonsterSpawner = require(script.Parent.Parent.BlockParkour.MonsterSpawner)
 local EncounterCatalog = require(script.Parent.EncounterCatalog)
 local ObjectiveActorService = require(script.Parent.ObjectiveActorService)
 local ObjectiveMechanicService = require(script.Parent.ObjectiveMechanicService)
+local ObjectiveService = require(script.Parent.ObjectiveService)
 local DungeonPacingService = require(script.Parent.DungeonPacingService)
 
 local ObjectiveEncounterService = {}
+
+local IMPOSSIBLE_CHECK_INTERVAL_SECONDS = 1
+local IMPOSSIBLE_CONFIRM_SECONDS = 2.5
+local IMPOSSIBLE_GRACE_SECONDS = 4
+local MAX_PROACTIVE_RECOVERIES_PER_OBJECTIVE = 2
 
 local started = false
 local options = {}
 local current
 local tokenSerial = 0
+local proactiveRecoveryAttempts = {}
 
 local function now()
 	return workspace:GetServerTimeNow()
@@ -311,20 +318,145 @@ local function activateEncounter(encounter, beginOptions)
 	end
 	encounter.Preparing = false
 	encounter.Paused = false
+	encounter.ActivatedAt = now()
 	ObjectiveMechanicService.SetEncounterActive(encounter, true)
 	DungeonPacingService.BeginCombat(encounter)
 	if encounter.Plan.Mode == "Nests" then
 		createNests(encounter)
+		encounter.ObjectiveActorsCreated = true
 	elseif encounter.Plan.Mode == "Beacon" then
 		startBeaconDefense(
 			encounter,
 			math.max(0, math.floor(tonumber(beginOptions.InitialProgress) or 0))
 		)
+		encounter.ObjectiveActorsCreated = true
 	else
 		startWaveWorker(encounter)
 	end
 	updateAttributes(encounter, "Active")
 	return true
+end
+
+local function currentObjectiveProgress(encounter)
+	if workspace:GetAttribute("DungeonObjectiveId") ~= encounter.Definition.Id then
+		return nil
+	end
+	local target = math.max(
+		1,
+		math.floor(tonumber(workspace:GetAttribute("DungeonObjectiveTarget")) or encounter.Definition.Target or 1)
+	)
+	local progress = math.clamp(
+		math.floor(tonumber(workspace:GetAttribute("DungeonObjectiveProgress")) or 0),
+		0,
+		target
+	)
+	return progress, target
+end
+
+local function impossibleEncounterReason(encounter)
+	if not encounterAlive(encounter)
+		or encounter.Preparing
+		or encounter.Paused
+		or encounter.RecoveryInProgress
+		or not encounter.ActivatedAt
+		or now() - encounter.ActivatedAt < IMPOSSIBLE_GRACE_SECONDS
+	then
+		return nil
+	end
+
+	local progress, target = currentObjectiveProgress(encounter)
+	if not progress or progress >= target then
+		return nil
+	end
+
+	if encounter.Plan.Mode == "Waves" then
+		if encounter.AllWavesSpawned == true
+			and MonsterSpawner.GetObjectiveActiveCount(encounter.Id) <= 0
+		then
+			return "WavesExhaustedBeforeTarget"
+		end
+	elseif encounter.Plan.Mode == "Nests" then
+		if encounter.ObjectiveActorsCreated == true
+			and ObjectiveActorService.GetAliveNestCount(encounter.Id) <= 0
+		then
+			return "NestsExhaustedBeforeTarget"
+		end
+	elseif encounter.Plan.Mode == "Beacon" then
+		if encounter.ObjectiveActorsCreated == true
+			and ObjectiveActorService.GetAliveBeaconCount(encounter.Id) <= 0
+		then
+			return "BeaconMissingBeforeTarget"
+		end
+	end
+
+	return nil
+end
+
+local function startImpossibleEncounterWatchdog(encounter)
+	task.spawn(function()
+		while encounterAlive(encounter) do
+			task.wait(IMPOSSIBLE_CHECK_INTERVAL_SECONDS)
+			if not encounterAlive(encounter) then
+				return
+			end
+
+			local reason = impossibleEncounterReason(encounter)
+			if not reason then
+				encounter.ImpossibleReason = nil
+				encounter.ImpossibleSince = nil
+				continue
+			end
+
+			if encounter.ImpossibleReason ~= reason then
+				encounter.ImpossibleReason = reason
+				encounter.ImpossibleSince = now()
+				continue
+			end
+			if now() - (encounter.ImpossibleSince or now()) < IMPOSSIBLE_CONFIRM_SECONDS then
+				continue
+			end
+
+			local objectiveId = encounter.Definition.Id
+			local attemptCount = proactiveRecoveryAttempts[objectiveId] or 0
+			if attemptCount >= MAX_PROACTIVE_RECOVERIES_PER_OBJECTIVE then
+				workspace:SetAttribute("DungeonEncounterProactiveRecoveryExhausted", true)
+				workspace:SetAttribute("DungeonEncounterProactiveRecoveryExhaustedId", objectiveId)
+				workspace:SetAttribute("DungeonEncounterProactiveRecoveryExhaustedReason", reason)
+				return
+			end
+
+			local snapshot = ObjectiveService.GetSnapshot()
+			if snapshot.State ~= "Active" or snapshot.Id ~= objectiveId then
+				return
+			end
+
+			encounter.RecoveryInProgress = true
+			proactiveRecoveryAttempts[objectiveId] = attemptCount + 1
+			workspace:SetAttribute("DungeonEncounterProactiveRecoveryReason", reason)
+			workspace:SetAttribute("DungeonEncounterProactiveRecoveryId", objectiveId)
+			workspace:SetAttribute("DungeonEncounterProactiveRecoveryAttempt", attemptCount + 1)
+			workspace:SetAttribute("DungeonEncounterProactiveRecoveryRequestedAt", now())
+
+			local recovered = ObjectiveEncounterService.Recover(
+				encounter.Definition,
+				encounter.Context,
+				snapshot
+			)
+			if recovered then
+				ObjectiveService.MarkRecovered("ImpossibleEncounter:" .. reason, {
+					Reason = reason,
+					RecoverySource = "EncounterViabilityWatchdog",
+					RecoveryAttempt = attemptCount + 1,
+				})
+				workspace:SetAttribute("DungeonEncounterProactiveRecoveredAt", now())
+				return
+			end
+
+			encounter.RecoveryInProgress = false
+			workspace:SetAttribute("DungeonEncounterProactiveRecoveryError", "EncounterRestartFailed")
+			encounter.ImpossibleSince = now()
+		end
+	end)
 end
 
 function ObjectiveEncounterService.Start(startOptions)
@@ -337,8 +469,11 @@ function ObjectiveEncounterService.Start(startOptions)
 	options.ParticipantUserIds = type(options.ParticipantUserIds) == "table"
 		and table.clone(options.ParticipantUserIds)
 		or {}
+	proactiveRecoveryAttempts = {}
 	ObjectiveMechanicService.Start()
 	workspace:SetAttribute("DungeonEncounterServiceReady", true)
+	workspace:SetAttribute("DungeonEncounterViabilityPolicy", "ProactiveImpossibleStateRecoveryV1")
+	workspace:SetAttribute("DungeonEncounterProactiveRecoveryExhausted", false)
 	updateAttributes(nil, "Idle")
 end
 
@@ -352,6 +487,7 @@ function ObjectiveEncounterService.Stop()
 	MonsterSpawner.DespawnObjectiveMonsters(nil)
 	started = false
 	options = {}
+	proactiveRecoveryAttempts = {}
 	tokenSerial += 1
 	workspace:SetAttribute("DungeonEncounterServiceReady", false)
 	updateAttributes(nil, "Stopped")
@@ -430,6 +566,7 @@ function ObjectiveEncounterService.BeginObjective(definition, context, beginOpti
 	else
 		activateEncounter(encounter, beginOptions)
 	end
+	startImpossibleEncounterWatchdog(encounter)
 	return true, encounter.Id
 end
 

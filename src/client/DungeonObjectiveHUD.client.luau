@@ -10,9 +10,9 @@ local TweenService = game:GetService("TweenService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local VERSION = "CrystalCelestialObjectivesV1"
+local VERSION = "CrystalCelestialObjectivesV2"
 local HUD_NAME = "DungeonUnifiedHUD"
-local UPDATE_INTERVAL = 0.10
+local UPDATE_INTERVAL = 0.20
 
 local gui = playerGui:WaitForChild(HUD_NAME, 20)
 if not gui or not gui:IsA("ScreenGui") then
@@ -41,6 +41,10 @@ context.Visible = false
 context.ZIndex = 30
 context.Parent = root
 Instance.new("UICorner", context).CornerRadius = UDim.new(0, 15)
+local contextScale = Instance.new("UIScale")
+contextScale.Name = "ResponsiveScale"
+contextScale.Scale = 1
+contextScale.Parent = context
 
 local stroke = Instance.new("UIStroke")
 stroke.Color = Color3.fromRGB(225, 190, 101)
@@ -165,6 +169,10 @@ recoveryToast.Visible = false
 recoveryToast.ZIndex = 40
 recoveryToast.Parent = root
 Instance.new("UICorner", recoveryToast).CornerRadius = UDim.new(0, 10)
+local recoveryScale = Instance.new("UIScale")
+recoveryScale.Name = "ResponsiveScale"
+recoveryScale.Scale = 1
+recoveryScale.Parent = recoveryToast
 local recoveryStroke = Instance.new("UIStroke")
 recoveryStroke.Color = Color3.fromRGB(235, 184, 86)
 recoveryStroke.Transparency = 0.2
@@ -211,7 +219,7 @@ local MECHANICS = {
 	PriorityRangedTargets = {
 		Icon = "⌖",
 		Title = "ALVOS PRIORITÁRIOS",
-		Detail = "Elimine primeiro os inimigos de ataque à distância.",
+		Detail = "Feche a distância • a linha azul avisa antes do disparo.",
 		Color = COLORS.Cyan,
 	},
 	DestroySpawners = {
@@ -223,7 +231,7 @@ local MECHANICS = {
 	BreakWardsThenGuards = {
 		Icon = "◆",
 		Title = "QUEBRE OS CRISTAIS",
-		Detail = "Os guardas permanecem protegidos até os cristais caírem.",
+		Detail = "Destrua os cristais azuis antes de atacar os Guardas.",
 		Color = COLORS.Cyan,
 	},
 	HoldContestedZone = {
@@ -235,7 +243,7 @@ local MECHANICS = {
 	DefeatSupportsThenElite = {
 		Icon = "♛",
 		Title = "CAÇADA ELITE",
-		Detail = "Elimine os protetores antes de atacar o Elite.",
+		Detail = "Elimine os protetores laranja • depois enfrente o Elite.",
 		Color = COLORS.Gold,
 	},
 }
@@ -258,6 +266,36 @@ local PACING_LABELS = {
 local function serverTime()
 	return workspace:GetServerTimeNow()
 end
+
+local viewportConnection
+local function updateResponsive()
+	local camera = workspace.CurrentCamera
+	local viewport = camera and camera.ViewportSize or Vector2.new(1280, 720)
+	local margin = 12
+	contextScale.Scale = math.clamp(
+		math.min(1, (viewport.X - margin * 2) / 690),
+		0.46,
+		1
+	)
+	recoveryScale.Scale = math.clamp(
+		math.min(1, (viewport.X - margin * 2) / 360),
+		0.70,
+		1
+	)
+end
+
+local function bindViewport()
+	if viewportConnection then
+		viewportConnection:Disconnect()
+	end
+	local camera = workspace.CurrentCamera
+	if camera then
+		viewportConnection = camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateResponsive)
+	end
+	updateResponsive()
+end
+workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(bindViewport)
+bindViewport()
 
 local function setStyle(color)
 	icon.TextColor3 = color
@@ -316,6 +354,20 @@ local function livingNests()
 	return count
 end
 
+
+local function livingPriorityTargets()
+	local count = 0
+	for _, model in ipairs(CollectionService:GetTagged("DungeonObjectivePriorityTarget")) do
+		if model:IsA("Model") and model.Parent and model:GetAttribute("ObjectiveTargetCompleted") ~= true then
+			local humanoid = model:FindFirstChildOfClass("Humanoid")
+				or model:FindFirstChildWhichIsA("Humanoid", true)
+			if not humanoid or humanoid.Health > 0 then
+				count += 1
+			end
+		end
+	end
+	return count
+end
 local function showRecovery(count)
 	recoverySerial += 1
 	local serial = recoverySerial
@@ -373,15 +425,15 @@ local function mechanicStatus(mechanic, pacing, pacingRemaining)
 	elseif mechanic == "BreakWardsThenGuards" then
 		local wards = math.max(0, math.floor(tonumber(workspace:GetAttribute("DungeonGuardWardsRemaining")) or 0))
 		if wards > 0 then
-			return string.format("CRISTAIS %d", wards), "Guardas ainda invulneráveis", COLORS.Cyan
+			return string.format("CRISTAIS %d", wards), "SIGA O DESTAQUE AZUL • ignore os Guardas", COLORS.Cyan
 		end
-		return "GUARDAS VULNERÁVEIS", string.format("%d inimigos ativos", activeEnemies), COLORS.Green
+		return "GUARDAS VULNERÁVEIS", "AGORA ATAQUE OS GUARDAS", COLORS.Green
 	elseif mechanic == "DefeatSupportsThenElite" then
 		local supports = math.max(0, math.floor(tonumber(workspace:GetAttribute("DungeonEliteShieldSupportsRemaining")) or 0))
 		if supports > 0 then
-			return string.format("PROTETORES %d", supports), "Elite ainda protegido", COLORS.Orange
+			return string.format("PROTETORES %d", supports), "ELITE SELADO • elimine os laranjas", COLORS.Orange
 		end
-		return "ELITE VULNERÁVEL", "Ataque o alvo principal", COLORS.Gold
+		return "ELITE LIBERADO", "ALVO DOURADO • ataque agora", COLORS.Gold
 	elseif mechanic == "HoldContestedZone" then
 		local beacon = activeBeacon()
 		if beacon then
@@ -407,7 +459,10 @@ local function mechanicStatus(mechanic, pacing, pacingRemaining)
 			focus and "Ataque somente o alvo destacado" or "Aguarde o alvo aparecer",
 			COLORS.Gold
 	elseif mechanic == "PriorityRangedTargets" then
-		return "PRIORIDADE: DISTÂNCIA", string.format("%d inimigos ativos", activeEnemies), COLORS.Cyan
+		local priority = livingPriorityTargets()
+		return string.format("ATIRADORES %d", priority),
+			"LINHA AZUL = DISPARO • APROXIME-SE",
+			COLORS.Cyan
 	end
 
 	if waveCount > 0 then
@@ -538,13 +593,15 @@ RunService.RenderStepped:Connect(function()
 	local clock = os.clock()
 	if clock < nextUpdate then return end
 	nextUpdate = clock + UPDATE_INTERVAL
-	refresh()
+	if context.Visible or recoveryToast.Visible then
+		refresh()
+	end
 end)
 
 gui:SetAttribute("ObjectiveContextVersion", VERSION)
 player:SetAttribute("DungeonHUDObjectivesReady", true)
 player:SetAttribute("DungeonHUDObjectivesVersion", VERSION)
 workspace:SetAttribute("DungeonHUDObjectivesReady", true)
-workspace:SetAttribute("DungeonHUDObjectivesPolicy", "MechanicSpecificObjectivePresentationV1")
+workspace:SetAttribute("DungeonHUDObjectivesPolicy", "MechanicSpecificMobileThrottledV2")
 
 refresh()

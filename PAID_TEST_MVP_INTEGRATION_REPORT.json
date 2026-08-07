@@ -1,0 +1,31 @@
+{
+  "success": true,
+  "integrated_at_utc": "2026-08-07T17:05:26.309884+00:00",
+  "branch": "agent/lobby-mvp-integration",
+  "task_count": 13,
+  "affected_file_count": 29,
+  "applied_hunks": 226,
+  "already_present_hunks": 0,
+  "context_only_hunks": 65,
+  "ambiguous_hunks_resolved": 6,
+  "relaxed_whitespace_matches": 0,
+  "resumed_existing_new_files": 0,
+  "package_audit": {
+    "total_hunks": 291,
+    "mutating_hunks": 222,
+    "context_only_hunks": 65,
+    "new_file_hunks": 4,
+    "structural_function_insertions": 3,
+    "table_entry_insertions": 1
+  },
+  "engine_fuzz": {
+    "mutating_hunks_tested": 222,
+    "idempotence_cases": 222,
+    "ambiguity_cases": 222,
+    "whitespace_cases": 218
+  },
+  "backup": "C:\\Projetos\\SkyDungeon\\.skydungeon_backups\\before-paid-test-mvp-tasks-01-13-20260807T170525Z.zip",
+  "git_diff_check_ok": true,
+  "git_diff_check_output": "warning: in the working copy of 'src/client/DungeonBossCombatHUD.client.luau', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'src/client/DungeonObjectiveHUD.client.luau', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'src/client/DungeonResultHUD.client.luau', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'src/client/DungeonRewardsHUD.client.luau', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'src/client/DungeonUnifiedHUD.client.luau', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'src/client/EnemyCombatFeedback.client.luau', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'src/lobby/server/LobbyPhaseCatalogService.lua', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'src/lobby/server/TeleportCoordinator.lua', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'src/server/BlockParkour/MonsterSpawner.lua', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'src/server/BlockParkour/SlimeController.lua', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'src/server/DungeonRuntime/BossEncounterDirector.lua', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'src/server/DungeonRuntime/BossService.lua', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'src/server/DungeonRuntime/DungeonReturnService.lua', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'src/server/DungeonRuntime/DungeonRuntimeService.lua', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'src/server/DungeonRuntime/IslandVariationService.lua', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'src/server/DungeonRuntime/ObjectiveActorService.lua', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'src/server/DungeonRuntime/ObjectiveCatalog.lua', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'src/server/DungeonRuntime/ObjectiveEncounterService.lua', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'src/server/DungeonRuntime/ObjectiveMechanicService.lua', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'src/server/DungeonRuntime/ObjectiveService.lua', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'src/server/DungeonRuntime/RewardIslandService.lua', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'src/server/GameplayAnalyticsService.lua', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'src/server/MVPSystems/CombatDamageService.lua', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'src/shared/MVPConfig.lua', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'src/shared/Shared/Configs/BossConfig.lua', LF will be replaced by CRLF the next time Git touches it\n",
+  "git_status": " M src/client/DungeonBossCombatHUD.client.luau\n M src/client/DungeonObjectiveHUD.client.luau\n M src/client/DungeonResultHUD.client.luau\n M src/client/DungeonRewardsHUD.client.luau\n M src/client/DungeonUnifiedHUD.client.luau\n M src/client/EnemyCombatFeedback.client.luau\n M src/lobby/server/LobbyPhaseCatalogService.lua\n M src/lobby/server/TeleportCoordinator.lua\n M src/server/BlockParkour/MonsterSpawner.lua\n M src/server/BlockParkour/SlimeController.lua\n M src/server/DungeonRuntime/BossEncounterDirector.lua\n M src/server/DungeonRuntime/BossService.lua\n M src/server/DungeonRuntime/DungeonReturnService.lua\n M src/server/DungeonRuntime/DungeonRuntimeService.lua\n M src/server/DungeonRuntime/IslandVariationService.lua\n M src/server/DungeonRuntime/ObjectiveActorService.lua\n M src/server/DungeonRuntime/ObjectiveCatalog.lua\n M src/server/DungeonRuntime/ObjectiveEncounterService.lua\n M src/server/DungeonRuntime/ObjectiveMechanicService.lua\n M src/server/DungeonRuntime/ObjectiveService.lua\n M src/server/DungeonRuntime/RewardIslandService.lua\n M src/server/GameplayAnalyticsService.lua\n M src/server/MVPSystems/CombatDamageService.lua\n M src/shared/MVPConfig.lua\n M src/shared/Shared/Configs/BossConfig.lua\n?? .skydungeon_backups/before-paid-test-mvp-tasks-01-13-20260807T170525Z.zip\n?? src/client/DungeonRunUpgradeHUD.client.luau\n?? src/server/DungeonRuntime/DungeonRunAnalyticsService.lua\n?? src/server/DungeonRuntime/PaidTestReadinessService.lua\n?? src/server/DungeonRuntime/RunUpgradeService.lua\n"
+}

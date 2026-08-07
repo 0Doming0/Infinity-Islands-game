@@ -1,4 +1,5 @@
 -- HUD especial: Estilo D — Cristal Celestial
+local CollectionService = game:GetService("CollectionService")
 local GuiService = game:GetService("GuiService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -122,7 +123,7 @@ local objectivePanel = Components.GlassPanel(root, "Objective", UDim2.new(0.5, 0
 	Radius = 18,
 	Transparency = 0.08,
 })
-trackScale(objectivePanel)
+local objectivePanelScale = trackScale(objectivePanel)
 
 local roundCaption = Components.Label(objectivePanel, "RoundCaption", "RODADA", UDim2.fromOffset(22, 8), UDim2.fromOffset(95, 20), {
 	TextSize = 11,
@@ -649,6 +650,7 @@ end
 
 local function objectiveSnapshot()
 	return {
+		Id = workspace:GetAttribute("DungeonObjectiveId"),
 		State = workspace:GetAttribute("DungeonObjectiveState") or "Inactive",
 		Title = workspace:GetAttribute("DungeonObjectiveTitle"),
 		Description = workspace:GetAttribute("DungeonObjectiveDescription"),
@@ -676,6 +678,7 @@ local function bossSnapshot()
 end
 
 local BOSS_ATTACKS = {
+	BasicSlam = "GOLPE DO REI — AFASTE-SE",
 	LeapSlam = "SALTO ESMAGADOR — SAIA DO CÍRCULO",
 	GroundPulse = "PULSO PRÓXIMO — AFASTE-SE",
 	Shockwave = "ONDA DE CHOQUE — REPOSICIONE-SE",
@@ -690,12 +693,14 @@ local function applyObjective(snapshot)
 	local boss = bossSnapshot()
 	local bossVisible = boss.State == "Ready" or boss.State == "Activating" or boss.State == "Active"
 	if bossVisible then
-		local phase = math.max(1, math.floor(tonumber(boss.Phase) or 1))
+		local phase = math.clamp(math.floor(tonumber(boss.Phase) or 1), 1, 2)
 		roundCaption.Text = "CHEFE"
 		roundValue.Text = string.format("F%d", phase)
 		islandCaption.Text = "ARENA"
 		islandValue.Text = "BOSS"
-		objectiveTitle.Text = "REI SLIME COLOSSAL"
+		objectiveTitle.Text = string.upper(tostring(
+			workspace:GetAttribute("DungeonBossDisplayName") or "REI SLIME COLOSSAL"
+		))
 		if boss.Transitioning then
 			objectiveDetail.Text = "TRANSIÇÃO DE FASE — CHEFE INVULNERÁVEL"
 		else
@@ -704,7 +709,7 @@ local function applyObjective(snapshot)
 		objectiveProgress.Text = string.format("%d / %d", math.floor(boss.Health), math.floor(boss.MaxHealth))
 		if bossTween then bossTween:Cancel() end
 		bossTween = tweenRatio(objectiveBar.Fill, boss.HealthRatio, 0.14)
-		objectiveBar.Fill.BackgroundColor3 = phase >= 3 and Colors.Danger or phase == 2 and Colors.Warning or Colors.Cyan
+		objectiveBar.Fill.BackgroundColor3 = phase == 2 and Colors.Danger or Colors.Cyan
 		return
 	end
 
@@ -970,8 +975,39 @@ playerGui:GetAttributeChangedSignal("SkyDungeonExclusivePanel"):Connect(function
 	end
 end)
 
+local function focusTargetPosition()
+	local objectiveId = tostring(
+		currentObjective.Id
+			or workspace:GetAttribute("DungeonObjectiveId")
+			or ""
+	)
+	if objectiveId ~= "FirstStrike" then
+		return nil
+	end
+
+	for _, targetModel in ipairs(CollectionService:GetTagged("CombatTarget")) do
+		if targetModel:IsA("Model")
+			and targetModel.Parent
+			and targetModel:GetAttribute("ObjectiveFocusTarget") == true
+		then
+			local humanoid = targetModel:FindFirstChildOfClass("Humanoid")
+				or targetModel:FindFirstChildWhichIsA("Humanoid", true)
+			if not humanoid or humanoid.Health > 0 then
+				local targetPart = targetModel:FindFirstChild("HumanoidRootPart", true)
+					or targetModel.PrimaryPart
+					or targetModel:FindFirstChildWhichIsA("BasePart", true)
+				if targetPart and targetPart:IsA("BasePart") then
+					return targetPart.Position
+				end
+			end
+		end
+	end
+	return nil
+end
+
 local function updateWaypoint()
-	local target = workspace:GetAttribute("DungeonObjectiveWaypointPosition")
+	local target = focusTargetPosition()
+		or workspace:GetAttribute("DungeonObjectiveWaypointPosition")
 	local rootPart = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
 	if typeof(target) ~= "Vector3" or not rootPart then
 		waypointDistanceTop.Text = "--m"
@@ -980,7 +1016,20 @@ local function updateWaypoint()
 	end
 	local distance = math.floor((target - rootPart.Position).Magnitude + 0.5)
 	waypointDistanceTop.Text = string.format("%dm", distance)
-	local escalated = currentObjective.WaypointEscalated == true
+	local objectiveId = tostring(
+		currentObjective.Id
+			or workspace:GetAttribute("DungeonObjectiveId")
+			or ""
+	)
+	local objectiveState = tostring(
+		currentObjective.State
+			or workspace:GetAttribute("DungeonObjectiveState")
+			or "Inactive"
+	)
+	local immediateOpeningGuidance = objectiveId == "FirstStrike"
+		and objectiveState == "Active"
+	local escalated = immediateOpeningGuidance
+		or currentObjective.WaypointEscalated == true
 		or workspace:GetAttribute("DungeonObjectiveWaypointEscalated") == true
 	if not escalated then
 		waypointArrow.Visible = false
@@ -1014,6 +1063,20 @@ local function updateResponsiveLayout()
 		record.Scale.Scale = responsive.Scale
 	end
 	local margin = responsive.Margin
+	if responsive.Phone then
+		-- O HUD foi desenhado em 800 px. Em portrait/split-screen, o clamp
+		-- global de 0.58 ainda pode cortar o objetivo. Apenas o painel superior
+		-- recebe um fit extra; hotbar/vitals mantêm alvos touch maiores.
+		objectivePanelScale.Scale = math.min(
+			objectivePanelScale.Scale,
+			math.clamp((viewport.X - margin * 2) / 800, 0.42, 1)
+		)
+	end
+	player:SetAttribute(
+		"DungeonHUDDeviceClass",
+		responsive.Phone and "Phone" or (responsive.Compact and "Compact" or "Desktop")
+	)
+	player:SetAttribute("DungeonHUDResponsiveScale", responsive.Scale)
 	if responsive.Phone then
 		currencies.Position = UDim2.fromOffset(margin, margin)
 		objectivePanel.Position = UDim2.new(0.5, 0, 0, 112)
@@ -1175,20 +1238,35 @@ end
 workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(bindCamera)
 bindCamera()
 
-local elapsed = 0
+local waypointElapsed = 0
+local statusElapsed = 0
+local partyElapsed = 0
 RunService.Heartbeat:Connect(function(deltaTime)
-	elapsed += deltaTime
-	if elapsed < 0.1 then return end
-	elapsed = 0
-	updateWaypoint()
-	updateBuffs()
-	updateStateBanner()
-	updateCurrencies()
-	updateVitals()
-	updateParty()
-	local detail = pacingDetail()
-	if detail and tostring(workspace:GetAttribute("DungeonBossState") or "") ~= "Active" then
-		objectiveDetail.Text = detail
+	waypointElapsed += deltaTime
+	statusElapsed += deltaTime
+	partyElapsed += deltaTime
+
+	if waypointElapsed >= 0.10 then
+		waypointElapsed = 0
+		updateWaypoint()
+	end
+
+	if statusElapsed >= 0.20 then
+		statusElapsed = 0
+		updateBuffs()
+		updateStateBanner()
+		local detail = pacingDetail()
+		if detail and tostring(workspace:GetAttribute("DungeonBossState") or "") ~= "Active" then
+			objectiveDetail.Text = detail
+		end
+	end
+
+	-- Vida local, stamina e moedas já possuem sinais próprios. Party health
+	-- remoto não possui um listener central, então mantém apenas uma amostra
+	-- leve de 2 Hz em vez de redesenhar toda a interface a 10 Hz.
+	if partyElapsed >= 0.50 then
+		partyElapsed = 0
+		updateParty()
 	end
 end)
 
@@ -1197,7 +1275,8 @@ player:SetAttribute("DungeonHUDStyle", Theme.StyleId)
 player:SetAttribute("DungeonHUDStyleVersion", Theme.Version)
 workspace:SetAttribute("DungeonHUDSpecialTaskStarted", true)
 workspace:SetAttribute("DungeonHUDFoundationReady", true)
-workspace:SetAttribute("DungeonHUDFoundationPolicy", "CrystalCelestialFoundationV1")
+workspace:SetAttribute("DungeonHUDFoundationPolicy", "CrystalCelestialEventDrivenMobileV2")
+workspace:SetAttribute("DungeonHUDClientRefreshPolicy", "Waypoint10Hz_Status5Hz_Party2Hz")
 workspace:SetAttribute("DungeonHUDLegacyVisualSystemsPreserved", true)
 
 applyObjective(objectiveSnapshot())

@@ -82,6 +82,21 @@ local function teleport(pending)
 end
 
 function TeleportCoordinator.Schedule(leader, phaseId)
+	if not RunService:IsStudio()
+		and workspace:GetAttribute("LobbyPaidTestCatalogReady") ~= true
+	then
+		return false, "Dungeon temporariamente indisponível. O catálogo publicado ainda não foi validado."
+	end
+	local runtimeError = workspace:GetAttribute("LobbyRuntimeError")
+	if type(runtimeError) == "string" and runtimeError ~= "" then
+		return false, "Lobby temporariamente indisponível. Tente entrar novamente."
+	end
+	if PlaceConfig.LobbyPlaceId <= 0
+		or PlaceConfig.DungeonPlaceId <= 0
+		or PlaceConfig.LobbyPlaceId == PlaceConfig.DungeonPlaceId
+	then
+		return false, "Configuração de Places inválida. Teleporte bloqueado."
+	end
 	local phase = PhaseConfig.Get(phaseId)
 	if not phase then
 		return false, "Fase invalida."

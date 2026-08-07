@@ -10,8 +10,16 @@ return table.freeze({
 		ActivationDelay = 2.5,
 		ArenaRescueDepth = 24,
 		ArenaRescueProtection = 3,
-		PhaseThresholds = table.freeze({ 0.66, 0.33 }),
-		PhaseAttackCooldowns = table.freeze({ 2.4, 2.05, 1.7 }),
+		PhaseCount = 2,
+		PhaseThresholds = table.freeze({ 0.50 }),
+		PhaseAttackCooldowns = table.freeze({ 2.4, 1.85 }),
+		MusicSoundId = "",
+		MusicVolume = 0.55,
+		BasicSlam = table.freeze({
+			Windup = 0.42,
+			Radius = 7.5,
+			DamageMultiplier = 0.62,
+		}),
 		LeapSlam = table.freeze({
 			Windup = 0.9,
 			Radius = 12,

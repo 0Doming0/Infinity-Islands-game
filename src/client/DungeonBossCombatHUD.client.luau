@@ -15,8 +15,8 @@ if not gui or not gui:IsA("ScreenGui") then
 	return
 end
 
-local VERSION = "CrystalCelestialBossCombatV1"
-local UPDATE_INTERVAL = 0.08
+local VERSION = "CrystalCelestialBossCombatV2"
+local UPDATE_INTERVAL = 0.15
 local root = gui:WaitForChild("Root")
 
 local COLORS = {
@@ -89,11 +89,11 @@ phaseTitle.ZIndex = 38
 phaseTitle.Parent = phaseStrip
 
 local pips = {}
-for i = 1, 3 do
+for i = 1, 2 do
 	local pip = Instance.new("Frame")
 	pip.Name = "Phase" .. i
-	pip.Position = UDim2.fromOffset(10 + (i - 1) * 53, 28)
-	pip.Size = UDim2.fromOffset(44, 29)
+	pip.Position = UDim2.fromOffset(18 + (i - 1) * 76, 28)
+	pip.Size = UDim2.fromOffset(64, 29)
 	pip.BackgroundColor3 = Color3.fromRGB(31, 48, 60)
 	pip.BackgroundTransparency = 0.04
 	pip.BorderSizePixel = 0
@@ -364,12 +364,81 @@ rewardTimer.TextXAlignment = Enum.TextXAlignment.Left
 rewardTimer.ZIndex = 93
 rewardTimer.Parent = reward
 
+local intro = Instance.new("Frame")
+intro.Name = "BossIntroduction"
+intro.AnchorPoint = Vector2.new(0.5, 0.5)
+intro.Position = UDim2.fromScale(0.5, 0.43)
+intro.Size = UDim2.fromOffset(610, 146)
+intro.BackgroundColor3 = Color3.fromRGB(18, 15, 28)
+intro.BackgroundTransparency = 0.035
+intro.BorderSizePixel = 0
+intro.Visible = false
+intro.ZIndex = 96
+intro.Parent = root
+Instance.new("UICorner", intro).CornerRadius = UDim.new(0, 20)
+local introStroke = Instance.new("UIStroke")
+introStroke.Color = COLORS.Gold
+introStroke.Transparency = 0.05
+introStroke.Thickness = 2
+introStroke.Parent = intro
+
+local introCaption = Instance.new("TextLabel")
+introCaption.Position = UDim2.fromOffset(18, 14)
+introCaption.Size = UDim2.new(1, -36, 0, 24)
+introCaption.BackgroundTransparency = 1
+introCaption.Text = "CHEFE FINAL"
+introCaption.TextColor3 = COLORS.Red
+introCaption.Font = Enum.Font.GothamBlack
+introCaption.TextSize = 13
+introCaption.ZIndex = 97
+introCaption.Parent = intro
+
+local introTitle = Instance.new("TextLabel")
+introTitle.Position = UDim2.fromOffset(18, 39)
+introTitle.Size = UDim2.new(1, -36, 0, 48)
+introTitle.BackgroundTransparency = 1
+introTitle.Text = "REI SLIME COLOSSAL"
+introTitle.TextColor3 = COLORS.GoldSoft
+introTitle.Font = Enum.Font.GothamBlack
+introTitle.TextSize = 28
+introTitle.ZIndex = 97
+introTitle.Parent = intro
+
+local introDetail = Instance.new("TextLabel")
+introDetail.Position = UDim2.fromOffset(18, 91)
+introDetail.Size = UDim2.new(1, -36, 0, 23)
+introDetail.BackgroundTransparency = 1
+introDetail.Text = "FASE 1 • aprenda os ataques • aos 50% ele desperta"
+introDetail.TextColor3 = COLORS.Text
+introDetail.Font = Enum.Font.GothamBold
+introDetail.TextSize = 11
+introDetail.ZIndex = 97
+introDetail.Parent = intro
+
+local introTimer = Instance.new("TextLabel")
+introTimer.Position = UDim2.fromOffset(18, 116)
+introTimer.Size = UDim2.new(1, -36, 0, 18)
+introTimer.BackgroundTransparency = 1
+introTimer.Text = ""
+introTimer.TextColor3 = COLORS.CyanSoft
+introTimer.Font = Enum.Font.GothamBold
+introTimer.TextSize = 9
+introTimer.ZIndex = 97
+introTimer.Parent = intro
+
 local ATTACKS = {
 	Idle = {
 		Title = "OBSERVE O BOSS",
 		Instruction = "Ataque e prepare-se para o próximo movimento.",
 		Glyph = "◆",
 		Color = COLORS.Cyan,
+	},
+	BasicSlam = {
+		Title = "GOLPE DO REI",
+		Instruction = "AFASTE-SE do círculo curto ao redor do Boss.",
+		Glyph = "◆",
+		Color = COLORS.Orange,
+		Danger = true,
 	},
 	LeapSlam = {
 		Title = "SALTO ESMAGADOR",
@@ -436,12 +505,64 @@ local function serverTime()
 	return workspace:GetServerTimeNow()
 end
 
+local responsiveScales = {}
+local function fitObject(object, baseSize)
+	if not object or not object:IsA("GuiObject") then
+		return
+	end
+	local scale = responsiveScales[object]
+	if not scale or not scale.Parent then
+		scale = object:FindFirstChild("ResponsiveScale")
+		if not scale or not scale:IsA("UIScale") then
+			scale = Instance.new("UIScale")
+			scale.Name = "ResponsiveScale"
+			scale.Parent = object
+		end
+		responsiveScales[object] = scale
+	end
+	local camera = workspace.CurrentCamera
+	local viewport = camera and camera.ViewportSize or Vector2.new(1280, 720)
+	scale.Scale = math.clamp(
+		math.min(
+			1,
+			(viewport.X - 18) / baseSize.X,
+			(viewport.Y - 18) / baseSize.Y
+		),
+		0.48,
+		1
+	)
+end
+
+local function updateResponsive()
+	fitObject(panel, Vector2.new(700, 102))
+	fitObject(bigWarning, Vector2.new(530, 76))
+	fitObject(reward, Vector2.new(500, 118))
+	-- Existe depois da Tarefa 8. Find por nome mantém esta tarefa compatível
+	-- com a branch antes ou depois da aplicação do patch do Boss.
+	local intro = root:FindFirstChild("BossIntroduction")
+	if intro and intro:IsA("GuiObject") then
+		fitObject(intro, Vector2.new(610, 146))
+	end
+end
+
+local viewportConnection
+local function bindViewport()
+	if viewportConnection then
+		viewportConnection:Disconnect()
+	end
+	local camera = workspace.CurrentCamera
+	if camera then
+		viewportConnection = camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateResponsive)
+	end
+	updateResponsive()
+end
+workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(bindViewport)
+bindViewport()
+
 local function bossVisible()
 	local state = tostring(workspace:GetAttribute("DungeonBossState") or "Unavailable")
 	local director = tostring(workspace:GetAttribute("DungeonBossDirectorState") or "")
-	return state == "Ready"
-		or state == "Activating"
-		or state == "Active"
+	return state == "Active"
 		or director == "PhaseTransition"
 		or string.sub(director, 1, 16) == "SignatureAttack:"
 end
@@ -482,8 +603,8 @@ local function updatePips(phase)
 			if label then label.TextColor3 = COLORS.Green end
 			if stroke then stroke.Color = COLORS.Green; stroke.Transparency = 0.18 end
 		elseif i == phase then
-			local color = phase == 1 and COLORS.Cyan or phase == 2 and COLORS.Gold or COLORS.Red
-			pip.BackgroundColor3 = phase == 3 and Color3.fromRGB(66, 25, 37) or Color3.fromRGB(37, 61, 70)
+			local color = phase == 1 and COLORS.Cyan or COLORS.Red
+			pip.BackgroundColor3 = phase == 2 and Color3.fromRGB(66, 25, 37) or Color3.fromRGB(37, 61, 70)
 			if label then label.TextColor3 = color end
 			if stroke then stroke.Color = color; stroke.Transparency = 0.02; stroke.Thickness = 1.7 end
 		else
@@ -527,14 +648,14 @@ end
 
 local function phaseTransitionVisual(phase, remaining)
 	phasePulseSerial += 1
-	local color = phase == 2 and COLORS.Cyan or COLORS.Pink
+	local color = COLORS.Red
 	phaseStatus.Text = remaining > 0
 		and string.format("TRANSIÇÃO • %ds", remaining)
 		or "TRANSIÇÃO"
 	phaseStatus.TextColor3 = color
 	panelStroke.Color = color
-	attackTitle.Text = string.format("FASE %d DESPERTANDO", phase)
-	attackInstruction.Text = "BOSS INVULNERÁVEL — reposicione-se para a próxima sequência."
+	attackTitle.Text = "50% DE VIDA • O REI DESPERTOU"
+	attackInstruction.Text = "BOSS INVULNERÁVEL — novos ataques estão chegando."
 	attackGlyph.Text = "▲"
 	attackGlyph.TextColor3 = color
 	attackStroke.Color = color
@@ -569,7 +690,7 @@ local function refreshAttack()
 end
 
 local function refreshPhase()
-	local phase = math.clamp(math.floor(tonumber(workspace:GetAttribute("DungeonBossPhase")) or 1), 1, 3)
+	local phase = math.clamp(math.floor(tonumber(workspace:GetAttribute("DungeonBossPhase")) or 1), 1, 2)
 	updatePips(phase)
 
 	local transitioning = workspace:GetAttribute("DungeonBossPhaseTransitioning") == true
@@ -580,7 +701,7 @@ local function refreshPhase()
 		local transitionPhase = math.clamp(
 			math.floor(tonumber(workspace:GetAttribute("DungeonBossPhaseTransitionPhase")) or phase),
 			1,
-			3
+			2
 		)
 		phaseTransitionVisual(transitionPhase, remaining)
 	elseif bossInvulnerable() then
@@ -589,9 +710,25 @@ local function refreshPhase()
 		panelStroke.Color = COLORS.Gold
 	else
 		phaseStatus.Text = string.format("FASE %d • COMBATE", phase)
-		phaseStatus.TextColor3 = phase == 3 and COLORS.Red or phase == 2 and COLORS.Gold or COLORS.Cyan
-		panelStroke.Color = phase == 3 and COLORS.Red or phase == 2 and COLORS.Gold or COLORS.Cyan
+		phaseStatus.TextColor3 = phase == 2 and COLORS.Red or COLORS.Cyan
+		panelStroke.Color = phase == 2 and COLORS.Red or COLORS.Cyan
 	end
+end
+
+local function refreshIntroduction()
+	local state = tostring(workspace:GetAttribute("DungeonBossState") or "Unavailable")
+	local activating = state == "Activating"
+	intro.Visible = activating
+	if not activating then
+		return
+	end
+	local name = tostring(workspace:GetAttribute("DungeonBossDisplayName") or "Rei Slime Colossal")
+	local endsAt = tonumber(workspace:GetAttribute("DungeonBossActivationEndsAt")) or 0
+	local remaining = math.max(0, endsAt - serverTime())
+	introTitle.Text = string.upper(name)
+	introTimer.Text = remaining > 0
+		and string.format("BATALHA COMEÇA EM %.1fs", remaining)
+		or "BATALHA COMEÇANDO..."
 end
 
 local function refreshArena()
@@ -624,12 +761,12 @@ local function refreshArena()
 		end
 	end
 
-	local covers = 0
-	for _, descendant in ipairs(workspace:GetDescendants()) do
-		if descendant:IsA("BasePart") and descendant:GetAttribute("BossArenaCover") == true then
-			covers += 1
-		end
-	end
+	-- O servidor cria e publica o número de coberturas. Evita
+	-- workspace:GetDescendants() ~12x/segundo durante toda a luta.
+	local covers = math.max(
+		0,
+		math.floor(tonumber(workspace:GetAttribute("DungeonBossArenaCoverCount")) or 0)
+	)
 	coverState.Text = covers > 0 and string.format("%d PILARES DE COBERTURA", covers) or "SEM COBERTURA EXTRA"
 end
 
@@ -671,6 +808,7 @@ end
 
 local function refresh()
 	refreshVisibility()
+	refreshIntroduction()
 	refreshReward()
 	if not panel.Visible then return end
 	refreshPhase()
@@ -695,6 +833,7 @@ for _, attribute in ipairs({
 	"DungeonBossDirectorState",
 	"DungeonBossDirectorStateEndsAt",
 	"DungeonBossDirectorArenaReady",
+	"DungeonBossArenaCoverCount",
 	"DungeonBossVictoryPending",
 	"DungeonBossVictoryFinalizeAt",
 	"DungeonBossRewardDropCount",
@@ -709,13 +848,18 @@ RunService.RenderStepped:Connect(function()
 	local clock = os.clock()
 	if clock < nextUpdate then return end
 	nextUpdate = clock + UPDATE_INTERVAL
-	refresh()
+	if panel.Visible or reward.Visible or bigWarning.Visible
+		or tostring(workspace:GetAttribute("DungeonBossState") or "") == "Activating"
+	then
+		refresh()
+	end
 end)
 
 gui:SetAttribute("BossCombatVersion", VERSION)
 player:SetAttribute("DungeonHUDBossReady", true)
 player:SetAttribute("DungeonHUDBossVersion", VERSION)
 workspace:SetAttribute("DungeonHUDBossReady", true)
-workspace:SetAttribute("DungeonHUDBossPolicy", "ThreePhaseSignatureAttackRewardV1")
+workspace:SetAttribute("DungeonHUDBossPolicy", "TwoPhaseBossIntroRewardV2")
+workspace:SetAttribute("DungeonHUDBossPerformancePolicy", "PublishedCoverCountVisibleOnlyRefreshV2")
 
 refresh()

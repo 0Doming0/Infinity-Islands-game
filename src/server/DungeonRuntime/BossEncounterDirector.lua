@@ -10,11 +10,11 @@ local MobCollectibleService = require(script.Parent.MobCollectibleService)
 
 local BossEncounterDirector = {}
 
-local POLICY = "ThreePhaseArenaDirectorV1"
+local POLICY = "TwoPhaseBossMVPV2"
 local CONFIG = {
 	PhaseTransitionSeconds = 1.65,
 	PhaseRecoverySeconds = 1.15,
-	SignatureIntervals = { 99, 10.5, 7.5 },
+	SignatureIntervals = { 99, 8.5 },
 	SkyfallWindup = 1.05,
 	SkyfallRadius = 7.5,
 	CrossSweepWindup = 1.15,
@@ -470,12 +470,11 @@ local function attackArenaCollapse(state)
 end
 
 local SIGNATURE_ROTATIONS = {
-	[2] = { "SkyfallVolley", "CrossSweep" },
-	[3] = { "ArenaCollapse", "SkyfallVolley", "CrossSweep" },
+	[2] = { "SkyfallVolley", "CrossSweep", "ArenaCollapse" },
 }
 
 local function runSignatureAttack(state)
-	local phase = math.clamp(math.floor(tonumber(state.Boss:GetAttribute("BossPhase")) or state.Phase or 1), 1, 3)
+	local phase = math.clamp(math.floor(tonumber(state.Boss:GetAttribute("BossPhase")) or state.Phase or 1), 1, 2)
 	local rotation = SIGNATURE_ROTATIONS[phase]
 	if not rotation then
 		return false
@@ -527,6 +526,7 @@ local function setupArenaDetails(state)
 	end
 	state.ArenaContract.Arena:SetAttribute("BossArenaDirectorVersion", 1)
 	state.ArenaContract.Arena:SetAttribute("BossArenaCoverCount", 4)
+	workspace:SetAttribute("DungeonBossArenaCoverCount", 4)
 end
 
 local function heartbeat()
@@ -540,7 +540,7 @@ local function heartbeat()
 		and state.Boss:GetAttribute("BossPhaseTransitioning") ~= true
 		and os.clock() >= nextSignatureAt
 	then
-		local phase = math.clamp(math.floor(tonumber(state.Boss:GetAttribute("BossPhase")) or 1), 1, 3)
+		local phase = math.clamp(math.floor(tonumber(state.Boss:GetAttribute("BossPhase")) or 1), 1, 2)
 		if runSignatureAttack(state) then
 			nextSignatureAt = os.clock() + (CONFIG.SignatureIntervals[phase] or 9)
 		else
@@ -578,14 +578,15 @@ function BossEncounterDirector.Attach(state, options)
 	activeState = state
 	activeOptions = type(options) == "table" and table.clone(options) or {}
 	rewardIssued = false
+	workspace:SetAttribute("DungeonBossArenaCoverCount", 0)
 	phaseToken += 1
 	signatureToken += 1
 	signatureIndex = 0
 	nextSignatureAt = math.huge
 	setupArenaDetails(state)
-	local lastPhase = math.clamp(math.floor(tonumber(state.Boss:GetAttribute("BossPhase")) or 1), 1, 3)
+	local lastPhase = math.clamp(math.floor(tonumber(state.Boss:GetAttribute("BossPhase")) or 1), 1, 2)
 	table.insert(connections, state.Boss:GetAttributeChangedSignal("BossPhase"):Connect(function()
-		local phase = math.clamp(math.floor(tonumber(state.Boss:GetAttribute("BossPhase")) or 1), 1, 3)
+		local phase = math.clamp(math.floor(tonumber(state.Boss:GetAttribute("BossPhase")) or 1), 1, 2)
 		if phase > lastPhase then
 			lastPhase = phase
 			phaseTransition(state, phase)

@@ -266,7 +266,10 @@ local function drainOnboarding(player, state)
 		safeAnalyticsCall("Onboarding:" .. stepName, function()
 			AnalyticsService:LogOnboardingFunnelStepEvent(player, nextIndex, stepName, fields)
 		end)
-		logCustom(player, stepName, elapsedSince(state.JoinedAt), fields, true)
+		local customEventName = stepName == "PlayerJoined"
+			and "OnboardingPlayerJoined"
+			or stepName
+		logCustom(player, customEventName, elapsedSince(state.JoinedAt), fields, true)
 	end
 end
 

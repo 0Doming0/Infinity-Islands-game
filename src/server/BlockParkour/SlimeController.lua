@@ -35,6 +35,8 @@ local WANDER_MIN_DISTANCE = 6
 local WANDER_MAX_DISTANCE = 30
 local MELEE_HEIGHT_TOLERANCE = 7
 local PROJECTILE_SIZE = 1.1
+local PRIORITY_RANGED_WINDUP = 0.55
+local DEFAULT_RANGED_WINDUP = 0.22
 local GOLDEN_MAX_TELEPORT_DISTANCE = 175
 local GOLDEN_WATER_CLEARANCE = 5
 local GOLDEN_NEAREST_DESTINATION_COUNT = 3
@@ -468,6 +470,48 @@ local function createBurst(position, color, size)
 	Debris:AddItem(burst, 0.45)
 end
 
+
+local function createRangedTelegraph(state, targetRoot, duration)
+	if not state.Root.Parent or not targetRoot or not targetRoot.Parent then
+		return
+	end
+	local sourceAttachment = Instance.new("Attachment")
+	sourceAttachment.Name = "RangedTelegraphSource"
+	sourceAttachment.Position = Vector3.new(0, math.max(1, state.Root.Size.Y * 0.35), 0)
+	sourceAttachment.Parent = state.Root
+
+	local targetAttachment = Instance.new("Attachment")
+	targetAttachment.Name = "RangedTelegraphTarget"
+	targetAttachment.Position = Vector3.new(0, 0.5, 0)
+	targetAttachment.Parent = targetRoot
+
+	local beam = Instance.new("Beam")
+	beam.Name = "RangedAttackTelegraph"
+	beam.Attachment0 = sourceAttachment
+	beam.Attachment1 = targetAttachment
+	beam.FaceCamera = true
+	beam.Width0 = 0.12
+	beam.Width1 = 0.045
+	beam.LightEmission = 1
+	beam.Color = ColorSequence.new(state.Definition.OutSideColor or state.Definition.Color)
+	beam.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.35),
+		NumberSequenceKeypoint.new(0.75, 0.08),
+		NumberSequenceKeypoint.new(1, 0),
+	})
+	beam.Parent = sourceAttachment
+
+	local light = Instance.new("PointLight")
+	light.Name = "RangedChargeLight"
+	light.Color = state.Definition.OutSideColor or state.Definition.Color
+	light.Brightness = 2.5
+	light.Range = 9
+	light.Shadows = false
+	light.Parent = sourceAttachment
+
+	Debris:AddItem(sourceAttachment, duration + 0.12)
+	Debris:AddItem(targetAttachment, duration + 0.12)
+end
 local function findGround(position, exclusions)
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
@@ -645,6 +689,16 @@ local function straightProjectileAttack(state, targetRoot)
 	projectile.Material = Enum.Material.Neon
 	projectile.Color = definition.Color
 	projectile.Parent = workspace
+	if state.Model:GetAttribute("ObjectivePriorityTarget") == true then
+		projectile.Size = Vector3.new(1.45, 1.45, 1.45)
+		local light = Instance.new("PointLight")
+		light.Name = "PriorityProjectileLight"
+		light.Color = definition.OutSideColor or definition.Color
+		light.Brightness = 2
+		light.Range = 8
+		light.Shadows = false
+		light.Parent = projectile
+	end
 
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
@@ -830,13 +884,24 @@ local function beginBlueAttack(state, targetRoot)
 	facePosition(state, targetRoot.Position)
 	state.Busy = true
 	local interruptSerial = state.Model:GetAttribute("CombatInterruptSerial") or 0
-	task.delay(0.16, function()
+	local priorityTarget = state.Model:GetAttribute("ObjectivePriorityTarget") == true
+	local windup = priorityTarget and PRIORITY_RANGED_WINDUP or DEFAULT_RANGED_WINDUP
+	state.Model:SetAttribute("RangedAttackTelegraphUntil", serverTime() + windup)
+	state.Model:SetAttribute("RangedAttackTelegraphActive", true)
+	if priorityTarget then
+		createRangedTelegraph(state, targetRoot, windup)
+	end
+	task.delay(windup, function()
 		if isAlive(state)
 			and (state.Model:GetAttribute("CombatInterruptSerial") or 0) == interruptSerial
 			and state.Model:GetAttribute("CombatStunned") ~= true
 			and targetRoot.Parent
 		then
 			straightProjectileAttack(state, targetRoot)
+		end
+		if state.Model.Parent then
+			state.Model:SetAttribute("RangedAttackTelegraphActive", false)
+			state.Model:SetAttribute("RangedAttackTelegraphUntil", nil)
 		end
 		state.Busy = false
 		state.NextRepositionAt = serverTime() + 0.25

@@ -2,18 +2,71 @@ local CollectionService = game:GetService("CollectionService")
 
 local IslandVariationService = {}
 
-local VERSION = 1
+local VERSION = 2
 local ROOT_NAME = "StructuralVariation"
 local EDGE_MARGIN = 5
 local ROUTE_CLEARANCE = 8
 local CENTER_CLEARANCE = 9
 local MAX_COLLIDABLE_PARTS = 18
+local MAX_VISUAL_ACCENTS = 4
 
 local PROFILE_POOLS = table.freeze({
 	Mandatory = table.freeze({ "OpenArena", "SplitCover", "RaisedTerraces", "RuinedRing" }),
 	Optional = table.freeze({ "OptionalLookout", "OptionalRuins", "OptionalArena" }),
 	Reward = table.freeze({ "RewardPavilion" }),
 	Boss = table.freeze({ "BossApproach" }),
+})
+
+local NORMAL_THEME_ORDER = table.freeze({
+	"VerdantRuins",
+	"AzureCrystal",
+	"AmberShrine",
+	"VioletMystic",
+})
+
+local VISUAL_THEMES = table.freeze({
+	VerdantRuins = table.freeze({
+		DisplayName = "Ruínas Verdejantes",
+		StructureTint = Color3.fromRGB(70, 139, 91),
+		AccentColor = Color3.fromRGB(113, 232, 142),
+		SecondaryColor = Color3.fromRGB(55, 93, 67),
+		AccentMaterial = Enum.Material.Neon,
+	}),
+	AzureCrystal = table.freeze({
+		DisplayName = "Cristais Celestes",
+		StructureTint = Color3.fromRGB(73, 132, 165),
+		AccentColor = Color3.fromRGB(104, 224, 255),
+		SecondaryColor = Color3.fromRGB(51, 78, 111),
+		AccentMaterial = Enum.Material.Neon,
+	}),
+	AmberShrine = table.freeze({
+		DisplayName = "Santuário Âmbar",
+		StructureTint = Color3.fromRGB(157, 116, 61),
+		AccentColor = Color3.fromRGB(255, 202, 93),
+		SecondaryColor = Color3.fromRGB(104, 73, 43),
+		AccentMaterial = Enum.Material.Neon,
+	}),
+	VioletMystic = table.freeze({
+		DisplayName = "Ruínas Místicas",
+		StructureTint = Color3.fromRGB(116, 82, 151),
+		AccentColor = Color3.fromRGB(205, 137, 255),
+		SecondaryColor = Color3.fromRGB(70, 54, 96),
+		AccentMaterial = Enum.Material.Neon,
+	}),
+	RewardCelestial = table.freeze({
+		DisplayName = "Pavilhão Celestial",
+		StructureTint = Color3.fromRGB(164, 138, 76),
+		AccentColor = Color3.fromRGB(255, 220, 118),
+		SecondaryColor = Color3.fromRGB(82, 151, 169),
+		AccentMaterial = Enum.Material.Neon,
+	}),
+	BossCrimson = table.freeze({
+		DisplayName = "Santuário do Rei",
+		StructureTint = Color3.fromRGB(133, 66, 80),
+		AccentColor = Color3.fromRGB(255, 91, 119),
+		SecondaryColor = Color3.fromRGB(92, 54, 116),
+		AccentMaterial = Enum.Material.Neon,
+	}),
 })
 
 local function horizontalDistance(left, right)
@@ -183,6 +236,11 @@ local function createPart(folder, floor, definition, markerData)
 	part.CastShadow = definition.CastShadow ~= false
 	part.Material = definition.Material or Enum.Material.Slate
 	part.Color = definition.Color or floor.Color:Lerp(Color3.new(1, 1, 1), 0.12)
+	part.Transparency = math.clamp(tonumber(definition.Transparency) or 0, 0, 1)
+	part.Reflectance = math.clamp(tonumber(definition.Reflectance) or 0, 0, 1)
+	if typeof(definition.Shape) == "EnumItem" and definition.Shape.EnumType == Enum.PartType then
+		part.Shape = definition.Shape
+	end
 	part.TopSurface = Enum.SurfaceType.Smooth
 	part.BottomSurface = Enum.SurfaceType.Smooth
 	part:SetAttribute("DungeonStructuralVariation", true)
@@ -363,6 +421,92 @@ local function chooseProfile(context)
 	return pool[selector], seed + physicalIndex * 1009 + roundIndex * 97
 end
 
+local function chooseVisualTheme(context)
+	if contextBoolean(context, "IsBossSanctuary") then
+		return "BossCrimson"
+	end
+	if contextBoolean(context, "IsRewardIsland") or contextBoolean(context, "IsRoundExit") then
+		return "RewardCelestial"
+	end
+
+	local nodeSeed = math.floor(contextNumber(context, "RouteSeed", contextNumber(context, "Seed", 1)))
+	local runSeed = math.floor(tonumber(workspace:GetAttribute("DungeonSeed")) or nodeSeed)
+	local roundIndex = math.max(1, math.floor(contextNumber(context, "RoundIndex", 1)))
+	local globalIndex = math.floor(contextNumber(context, "GlobalIslandIndex", 0))
+	if globalIndex <= 0 then
+		globalIndex = math.floor(contextNumber(
+			context,
+			"ProtectionGlobalIslandIndex",
+			contextNumber(context, "PhysicalIslandIndex", 1)
+		))
+		-- Optional branches can share the protected objective index. Mix the
+		-- branch key so A/B are not forced into the exact same visual treatment.
+		local key = tostring(context.Key or (context.Spec and context.Spec.Key) or "Optional")
+		globalIndex += (stableStringHash(key) + math.abs(nodeSeed)) % #NORMAL_THEME_ORDER
+	end
+
+	-- Mandatory global indices advance one slot every island. The run seed is
+	-- constant for the whole expedition and only rotates the starting point, so
+	-- consecutive mandatory islands cannot accidentally repeat because each node
+	-- has a different RouteSeed.
+	local rotation = (math.abs(runSeed) + roundIndex * 2) % #NORMAL_THEME_ORDER
+	local themeIndex = ((globalIndex + rotation - 1) % #NORMAL_THEME_ORDER) + 1
+	return NORMAL_THEME_ORDER[themeIndex]
+end
+
+local function applyThemeToStructure(folder, theme)
+	for _, descendant in ipairs(folder:GetDescendants()) do
+		if descendant:IsA("BasePart")
+			and descendant:GetAttribute("DungeonStructuralVariation") == true
+			and descendant:GetAttribute("DungeonVisualAccent") ~= true
+		then
+			local blend = descendant.Material == Enum.Material.WoodPlanks and 0.25 or 0.48
+			descendant.Color = descendant.Color:Lerp(theme.StructureTint, blend)
+			descendant:SetAttribute("DungeonVisualThemePart", true)
+		end
+	end
+end
+
+local function buildThemeAccents(floor, random, themeName, theme)
+	local radiusX = floor.Size.X * 0.34
+	local radiusZ = floor.Size.Z * 0.33
+	local positions = {
+		Vector3.new(radiusX, 0, radiusZ),
+		Vector3.new(-radiusX, 0, radiusZ),
+		Vector3.new(radiusX, 0, -radiusZ),
+		Vector3.new(-radiusX, 0, -radiusZ),
+	}
+	local definitions = {}
+	for index = 1, math.min(MAX_VISUAL_ACCENTS, #positions) do
+		local position = positions[index]
+		local height = random:NextNumber(3.8, 6.8)
+		table.insert(definitions, {
+			Name = string.format("%sAccent_%02d", themeName, index),
+			Offset = position,
+			Size = Vector3.new(random:NextNumber(1.1, 1.7), height, random:NextNumber(1.1, 1.7)),
+			Rotation = math.rad(45) + random:NextNumber(-0.16, 0.16),
+			Material = theme.AccentMaterial,
+			Color = index % 2 == 0 and theme.SecondaryColor or theme.AccentColor,
+			CanCollide = false,
+			CanQuery = false,
+			CastShadow = false,
+			Transparency = index % 2 == 0 and 0.14 or 0.04,
+			Reflectance = 0.05,
+		})
+	end
+	return definitions
+end
+
+local function markThemeAccents(folder, themeName)
+	for _, descendant in ipairs(folder:GetDescendants()) do
+		if descendant:IsA("BasePart") and string.find(descendant.Name, themeName .. "Accent_", 1, true) == 1 then
+			descendant:SetAttribute("DungeonVisualAccent", true)
+			descendant:SetAttribute("DungeonVisualTheme", themeName)
+			CollectionService:AddTag(descendant, "DungeonVisualAccent")
+		end
+	end
+end
+
 local PROFILE_BUILDERS = {
 	OpenArena = buildOpenArena,
 	SplitCover = buildSplitCover,
@@ -413,22 +557,42 @@ function IslandVariationService.Apply(context)
 	CollectionService:AddTag(folder, "DungeonStructuralVariationRoot")
 	local markers, entries, exits = collectMarkerData(context)
 	local markerData = { Markers = markers, Entries = entries, Exits = exits }
-	local definitions = builder(floor, Random.new(math.max(1, math.abs(seed) % 2147483647)))
+	local random = Random.new(math.max(1, math.abs(seed) % 2147483647))
+	local definitions = builder(floor, random)
 	local created, collidable = addDefinitions(folder, floor, definitions, markerData)
+	local themeName = chooseVisualTheme(context)
+	local theme = VISUAL_THEMES[themeName]
+	local accentCreated = 0
+	if theme then
+		applyThemeToStructure(folder, theme)
+		local accentDefinitions = buildThemeAccents(floor, random, themeName, theme)
+		accentCreated = select(1, addDefinitions(folder, floor, accentDefinitions, markerData))
+		markThemeAccents(folder, themeName)
+	end
 	folder:SetAttribute("CreatedPartCount", created)
 	folder:SetAttribute("CollidablePartCount", collidable)
+	folder:SetAttribute("VisualAccentPartCount", accentCreated)
+	folder:SetAttribute("VisualTheme", themeName)
+	folder:SetAttribute("VisualThemeDisplayName", theme and theme.DisplayName or themeName)
 	folder:SetAttribute("SafeMarkerCount", #markers)
 	folder:SetAttribute("SafeRouteSegmentCount", #entries * #exits)
 	island:SetAttribute("StructuralVariationVersion", VERSION)
 	island:SetAttribute("StructuralVariationProfile", profile)
 	island:SetAttribute("StructuralVariationPartCount", created)
 	island:SetAttribute("StructuralVariationCollidableCount", collidable)
+	island:SetAttribute("VisualThemeVersion", VERSION)
+	island:SetAttribute("VisualTheme", themeName)
+	island:SetAttribute("VisualThemeDisplayName", theme and theme.DisplayName or themeName)
+	island:SetAttribute("VisualThemeAccentPartCount", accentCreated)
 	island:SetAttribute("StructuralVariationSafeZonesPreserved", true)
 	island:SetAttribute("StructuralVariationRouteClearanceStuds", ROUTE_CLEARANCE)
 	island:SetAttribute("StructuralVariationApplied", true)
 	workspace:SetAttribute("DungeonIslandVariationReady", true)
 	workspace:SetAttribute("DungeonIslandVariationVersion", VERSION)
-	workspace:SetAttribute("DungeonIslandVariationPolicy", "DeterministicSafeStructureV1")
+	workspace:SetAttribute("DungeonIslandVariationPolicy", "DeterministicSafeStructureVisualThemesV2")
+	workspace:SetAttribute("DungeonIslandVisualThemeCount", 6)
+	workspace:SetAttribute("DungeonIslandNormalVisualThemeCount", #NORMAL_THEME_ORDER)
+	workspace:SetAttribute("DungeonIslandVisualThemePolicy", "FourRotatingNormalPlusRewardBossV2")
 	workspace:SetAttribute(
 		"DungeonIslandVariationAppliedCount",
 		math.max(0, math.floor(tonumber(workspace:GetAttribute("DungeonIslandVariationAppliedCount")) or 0)) + 1
@@ -449,6 +613,11 @@ function IslandVariationService.Validate(island)
 	end
 	if island:GetAttribute("StructuralVariationSafeZonesPreserved") ~= true then
 		return false, "StructuralVariationSafetyMissing"
+	end
+	if type(island:GetAttribute("VisualTheme")) ~= "string"
+		or island:GetAttribute("VisualTheme") == ""
+	then
+		return false, "VisualThemeMissing"
 	end
 	return true
 end

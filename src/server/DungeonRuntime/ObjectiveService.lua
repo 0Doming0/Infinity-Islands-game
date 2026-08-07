@@ -223,6 +223,20 @@ local function restartCurrentObjective(reason)
 	return true
 end
 
+local function recordRecovery(reason, metadata)
+	if not currentObjective or currentObjective.State ~= "Active" then
+		return false
+	end
+	markProgressActivity(metadata or { Reason = reason })
+	currentObjective.RecoveryCount = (currentObjective.RecoveryCount or 0) + 1
+	currentObjective.LastRecoveryReason = tostring(reason or "Recovered")
+	setWorkspaceAttribute("DungeonObjectiveLastRecoveryReason", currentObjective.LastRecoveryReason)
+	setWorkspaceAttribute("DungeonObjectiveLastRecoveryAt", now())
+	setObjectiveAttributes(currentObjective)
+	publish()
+	return true
+end
+
 local function runWatchdog(token)
 	task.spawn(function()
 		while started and generation == token do
@@ -263,10 +277,10 @@ local function runWatchdog(token)
 					end
 				end
 				if recovered then
-					markProgressActivity({ Reason = "Recovered" })
-					objective.RecoveryCount = (objective.RecoveryCount or 0) + 1
-					setObjectiveAttributes(objective)
-					publish()
+					recordRecovery("WatchdogRecovery", {
+						Reason = "Recovered",
+						RecoverySource = "ObjectiveWatchdog120s",
+					})
 				elseif objective.RestartOnStall ~= false then
 					restartCurrentObjective("Stalled")
 				else
@@ -487,6 +501,10 @@ end
 
 function ObjectiveService.Restart(reason)
 	return restartCurrentObjective(reason or "ManualRestart")
+end
+
+function ObjectiveService.MarkRecovered(reason, metadata)
+	return recordRecovery(reason or "ExternalRecovery", metadata)
 end
 
 function ObjectiveService.Complete(reason)

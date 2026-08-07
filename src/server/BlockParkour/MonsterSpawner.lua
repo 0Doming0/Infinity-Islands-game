@@ -55,6 +55,8 @@ local MonsterConfig = require(MonsterSystem.MonsterConfig)
 local MonsterLoot = require(MonsterSystem.MonsterLoot)
 local MonsterValidator = require(MonsterSystem.MonsterValidator)
 local CombatDamageService = require(script.Parent.Parent.MVPSystems.CombatDamageService)
+local AnimeOutline = require(script.Parent.Parent.MVPSystems.AnimeOutline)
+local MobDamageFeedback = require(script.Parent.Parent.MVPSystems.MobDamageFeedback)
 local GameplayAnalytics = require(ServerScriptService:WaitForChild("GameplayAnalyticsService"))
 local CompanionService = require(script.Parent.Parent.MVPSystems.CompanionService)
 local RewardWheelService = require(script.Parent.Parent.MVPSystems.RewardWheelService)
@@ -1007,9 +1009,17 @@ local function spawnClone(
 				damager,
 				entry.ScoreValue * monetizationRewardMultiplier
 			)
+			local runCoinMultiplier = math.clamp(
+				tonumber(damager:GetAttribute("RunCoinRewardMultiplier")) or 1,
+				0.1,
+				5
+			)
 			MobCollectibleService.Drop({
 				Position = deathPosition,
-				Amount = math.max(1, math.floor(entry.CoinValue * monetizationRewardMultiplier)),
+				Amount = math.max(
+					1,
+					math.floor(entry.CoinValue * monetizationRewardMultiplier * runCoinMultiplier)
+				),
 				RoundIndex = tonumber(clone:GetAttribute("RouteRoundIndex"))
 					or tonumber(entry.Island:GetAttribute("RoundIndex"))
 					or 1,
@@ -1017,6 +1027,22 @@ local function spawnClone(
 				SourceMonsterId = clone:GetAttribute("MonsterId") or clone.Name,
 				IsElite = clone:GetAttribute("IsElite") == true,
 			})
+			local healOnKillPercent = math.clamp(
+				tonumber(damager:GetAttribute("RunHealOnKillPercent")) or 0,
+				0,
+				0.5
+			)
+			local damagerHumanoid = damager.Character
+				and damager.Character:FindFirstChildOfClass("Humanoid")
+			if healOnKillPercent > 0
+				and damagerHumanoid
+				and damagerHumanoid.Health > 0
+			then
+				damagerHumanoid.Health = math.min(
+					damagerHumanoid.MaxHealth,
+					damagerHumanoid.Health + damagerHumanoid.MaxHealth * healOnKillPercent
+				)
+			end
 			PartyService.RecordMissionProgress(damager, "MobDefeated", 1, clone)
 			CompanionService.RecordDefeat(damager, clone)
 			if clone:GetAttribute("SpawnMode") == "Boss" then

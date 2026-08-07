@@ -1,3 +1,4 @@
+local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local TeleportService = game:GetService("TeleportService")
@@ -13,6 +14,7 @@ local started = false
 local activeSession
 local remoteEvent
 local lobbyPlaceId = 0
+local dungeonPlaceId = 0
 local onReturning
 local onClosed
 local playerStates = {}
@@ -80,6 +82,7 @@ local function publicSnapshot(record)
 		CanRetry = record.State == "Failed",
 		ReturnAt = activeSession and activeSession.ReturnAt or nil,
 		LobbyPlaceId = lobbyPlaceId,
+		DungeonPlaceId = dungeonPlaceId,
 		Result = activeSession and activeSession.Result or nil,
 		ResultSaved = activeSession and activeSession.ResultSaved == true or false,
 		ManualReturnAt = activeSession and activeSession.ManualReturnAt or nil,
@@ -160,6 +163,105 @@ local function buildTeleportOptions(record)
 end
 
 local attemptTeleport
+local attemptReplay
+
+local function replayTeleportOptions(player)
+	local teleportOptions = Instance.new("TeleportOptions")
+	teleportOptions.ShouldReserveServer = true
+	teleportOptions:SetTeleportData({
+		Version = 1,
+		SessionId = "replay-" .. HttpService:GenerateGUID(false),
+		PhaseId = activeSession.PhaseId,
+		PartySize = 1,
+		LeaderUserId = player.UserId,
+		PartyUserIds = { player.UserId },
+		Seed = Random.new():NextInteger(1, 2147483646),
+		ReplayOfSessionId = activeSession.SessionId,
+		ReplayRequested = true,
+		ReplayDepth = math.max(
+			1,
+			math.floor(tonumber(activeSession.ReplayDepth) or 0) + 1
+		),
+	})
+	return teleportOptions
+end
+
+local function publishReplayFailed(record, reason, errorMessage)
+	local player = getPlayer(record.UserId)
+	setState(record, "Pending", reason or "ReplayFailed", errorMessage)
+	record.LastTargetPlaceId = nil
+	if player and remoteEvent then
+		remoteEvent:FireClient(player, {
+			Action = "ReplayFailed",
+			Reason = reason or "ReplayFailed",
+			Error = errorMessage and tostring(errorMessage) or nil,
+		})
+	end
+end
+
+attemptReplay = function(record)
+	if not activeSession or not participantSet[record.UserId] then
+		return false, "ReturnSessionInactive"
+	end
+	local player = getPlayer(record.UserId)
+	if not player then
+		return false, "PlayerUnavailable"
+	end
+	if dungeonPlaceId <= 0 then
+		publishReplayFailed(record, "DungeonPlaceIdNotConfigured", "DungeonPlaceIdNotConfigured")
+		return false, "DungeonPlaceIdNotConfigured"
+	end
+	if record.State == "Teleporting" then
+		publishToPlayer(record)
+		return false, "AlreadyTeleporting"
+	end
+	if RunService:IsStudio() then
+		publishReplayFailed(record, "ReplayUnavailableInStudio", "TeleportUnavailableInStudio")
+		return false, "TeleportUnavailableInStudio"
+	end
+
+	record.RetryToken += 1
+	local token = record.RetryToken
+	record.LastTargetPlaceId = dungeonPlaceId
+	record.LastManualRequestAt = serverTime()
+	setState(record, "Teleporting", "ReplayRequest")
+	player:SetAttribute("DungeonReplayRequested", true)
+	player:SetAttribute("DungeonReplayRequestedAt", serverTime())
+	workspace:SetAttribute("DungeonLastReplayRequestedUserId", player.UserId)
+	workspace:SetAttribute("DungeonLastReplayRequestedAt", serverTime())
+
+	local teleportOptions = replayTeleportOptions(player)
+	local success, resultOrError = pcall(function()
+		return TeleportService:TeleportAsync(dungeonPlaceId, { player }, teleportOptions)
+	end)
+	if not success then
+		publishReplayFailed(record, "ReplayTeleportAsyncError", resultOrError)
+		return false, tostring(resultOrError)
+	end
+
+	task.delay(TELEPORT_WATCHDOG_SECONDS, function()
+		if not activeSession
+			or record.RetryToken ~= token
+			or record.State ~= "Teleporting"
+			or record.LastTargetPlaceId ~= dungeonPlaceId
+			or not getPlayer(record.UserId)
+		then
+			return
+		end
+		publishReplayFailed(record, "ReplayTeleportWatchdog", "Replay teleport did not remove player")
+		if activeSession and serverTime() >= activeSession.ReturnAt then
+			task.delay(0.5, function()
+				if activeSession
+					and getPlayer(record.UserId)
+					and record.State == "Pending"
+				then
+					attemptTeleport(record, "ReplayFallbackLobby")
+				end
+			end)
+		end
+	end)
+	return true, resultOrError
+end
 
 local function scheduleRetry(record, reason, errorMessage, teleportResult, retryOptions)
 	if not activeSession or not participantSet[record.UserId] then
@@ -216,6 +318,7 @@ attemptTeleport = function(record, reason, suppliedOptions)
 	publishReturning(reason)
 	record.RetryToken += 1
 	record.RetryOptions = nil
+	record.LastTargetPlaceId = lobbyPlaceId
 	if lobbyPlaceId <= 0 then
 		setState(record, "ConfigurationError", reason, "LobbyPlaceIdNotConfigured")
 		return false, "LobbyPlaceIdNotConfigured"
@@ -280,12 +383,17 @@ function DungeonReturnService.Start(options)
 	options = type(options) == "table" and options or {}
 	remoteEvent = options.RemoteEvent
 	lobbyPlaceId = math.floor(tonumber(options.LobbyPlaceId) or 0)
+	dungeonPlaceId = math.floor(tonumber(options.DungeonPlaceId) or 0)
 	onReturning = options.OnReturning
 	onClosed = options.OnClosed
 
 	if remoteEvent then
 		remoteEvent.OnServerEvent:Connect(function(player, request)
-			if type(request) ~= "table" or request.Action ~= "ReturnToLobby" then
+			if type(request) ~= "table" then
+				return
+			end
+			local action = tostring(request.Action or "")
+			if action ~= "ReturnToLobby" and action ~= "ReplayDungeon" then
 				return
 			end
 			local record = playerStates[player.UserId]
@@ -305,7 +413,7 @@ function DungeonReturnService.Start(options)
 				and now < (tonumber(activeSession.ManualReturnAt) or 0)
 			then
 				remoteEvent:FireClient(player, {
-					Action = "ReturnBlocked",
+					Action = action == "ReplayDungeon" and "ReplayBlocked" or "ReturnBlocked",
 					Reason = "WaitingForResultSave",
 					AvailableAt = activeSession.ManualReturnAt,
 				})
@@ -315,7 +423,11 @@ function DungeonReturnService.Start(options)
 			if record.State == "Failed" then
 				record.AutomaticRetries = 0
 			end
-			task.spawn(attemptTeleport, record, "ManualRequest")
+			if action == "ReplayDungeon" then
+				task.spawn(attemptReplay, record)
+			else
+				task.spawn(attemptTeleport, record, "ManualRequest")
+			end
 		end)
 	end
 
@@ -327,7 +439,6 @@ function DungeonReturnService.Start(options)
 		teleportOptions
 	)
 		if not activeSession
-			or targetPlaceId ~= lobbyPlaceId
 			or not player
 			or not participantSet[player.UserId]
 		then
@@ -335,6 +446,21 @@ function DungeonReturnService.Start(options)
 		end
 		local record = playerStates[player.UserId]
 		if not record then
+			return
+		end
+		if targetPlaceId == dungeonPlaceId and record.LastTargetPlaceId == dungeonPlaceId then
+			record.RetryToken += 1
+			publishReplayFailed(record, "ReplayTeleportInitFailed", errorMessage or teleportResult)
+			if serverTime() >= activeSession.ReturnAt then
+				task.delay(0.5, function()
+					if activeSession and getPlayer(record.UserId) and record.State == "Pending" then
+						attemptTeleport(record, "ReplayFallbackLobby")
+					end
+				end)
+			end
+			return
+		end
+		if targetPlaceId ~= lobbyPlaceId then
 			return
 		end
 		scheduleRetry(
@@ -387,6 +513,7 @@ function DungeonReturnService.Begin(options)
 		PhaseId = tostring(options.PhaseId or ""),
 		Result = tostring(options.Result or "Defeat"),
 		ResultSaved = options.ResultSaved == true,
+		ReplayDepth = math.max(0, math.floor(tonumber(options.ReplayDepth) or 0)),
 		ParticipantUserIds = participantUserIds,
 		ReturnAt = math.max(serverTime(), tonumber(options.ReturnAt) or serverTime()),
 		ManualReturnAt = math.max(serverTime(), tonumber(options.ManualReturnAt) or serverTime()),
@@ -402,6 +529,7 @@ function DungeonReturnService.Begin(options)
 			AutomaticRetries = 0,
 			RetryToken = 0,
 			LastManualRequestAt = 0,
+			LastTargetPlaceId = nil,
 		}
 	end
 	workspace:SetAttribute("DungeonReturnPending", true)
@@ -483,9 +611,11 @@ function DungeonReturnService.GetSnapshot(playerOrUserId)
 		PhaseId = activeSession.PhaseId,
 		Result = activeSession.Result,
 		ResultSaved = activeSession.ResultSaved,
+		ReplayDepth = activeSession.ReplayDepth,
 		ReturnAt = activeSession.ReturnAt,
 		ManualReturnAt = activeSession.ManualReturnAt,
 		LobbyPlaceId = lobbyPlaceId,
+		DungeonPlaceId = dungeonPlaceId,
 		Players = {},
 	}
 	local requestedUserId = typeof(playerOrUserId) == "Instance"

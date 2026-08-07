@@ -2,7 +2,7 @@ local CollectionService = game:GetService("CollectionService")
 
 local ObjectiveMechanicService = {}
 
-local POLICY = "DistinctObjectiveMechanicsV1"
+local POLICY = "DistinctObjectiveMechanicsV2"
 local statesByEncounterId = {}
 local started = false
 
@@ -45,6 +45,29 @@ end
 
 local function stateFor(encounter)
 	return encounter and statesByEncounterId[encounter.Id] or nil
+end
+
+local function markObjectiveTarget(encounter, model, priority)
+	if not model or not model.Parent then
+		return
+	end
+	model:SetAttribute("ObjectiveId", encounter.Definition.Id)
+	model:SetAttribute("GlobalIslandIndex", encounter.Definition.GlobalIslandIndex)
+	model:SetAttribute("ObjectivePriorityTarget", priority == true)
+	CollectionService:AddTag(model, "DungeonObjectiveTarget")
+	if priority == true then
+		CollectionService:AddTag(model, "DungeonObjectivePriorityTarget")
+	end
+end
+
+local function clearPriorityTarget(model)
+	if not model then
+		return
+	end
+	model:SetAttribute("ObjectivePriorityTarget", false)
+	if CollectionService:HasTag(model, "DungeonObjectivePriorityTarget") then
+		CollectionService:RemoveTag(model, "DungeonObjectivePriorityTarget")
+	end
 end
 
 local function setModelPartsVisible(model, visible, state)
@@ -114,7 +137,8 @@ local function createWardModel(encounter, state, marker, index)
 	model:SetAttribute("ObjectiveMechanicActor", true)
 	model:SetAttribute("ObjectiveMechanicActorType", "GuardWard")
 	model:SetAttribute("ObjectiveEncounterId", encounter.Id)
-	model:SetAttribute("GlobalIslandIndex", 0)
+	model:SetAttribute("ObjectiveId", encounter.Definition.Id)
+	model:SetAttribute("GlobalIslandIndex", encounter.Definition.GlobalIslandIndex)
 	model:SetAttribute("RuntimeMonster", false)
 	model:SetAttribute("UseCentralAI", false)
 	model:SetAttribute("CanBeStunned", false)
@@ -174,6 +198,7 @@ local function createWardModel(encounter, state, marker, index)
 	model.Parent = encounter.Context.IslandModel
 	CollectionService:AddTag(model, "CombatTarget")
 	CollectionService:AddTag(model, "DungeonGuardWard")
+	markObjectiveTarget(encounter, model, true)
 	addHighlight(model, "GuardWardOutline", Color3.fromRGB(119, 164, 255), 0.76)
 
 	state.Wards[model] = true
@@ -193,6 +218,7 @@ local function createWardModel(encounter, state, marker, index)
 				if guard.Parent then
 					guard:SetAttribute("GuardWardProtected", false)
 					guard:SetAttribute("Invulnerable", false)
+					markObjectiveTarget(encounter, guard, true)
 					local shield = guard:FindFirstChild("GuardWardShield")
 					if shield then
 						shield:Destroy()
@@ -232,6 +258,7 @@ end
 local function protectGuard(state, model)
 	state.Guards[model] = true
 	model:SetAttribute("GuardWardProtected", state.WardsAlive > 0)
+	model:SetAttribute("ObjectivePriorityTarget", false)
 	if state.WardsAlive > 0 then
 		model:SetAttribute("Invulnerable", true)
 		addHighlight(model, "GuardWardShield", Color3.fromRGB(92, 159, 255), 0.86)
@@ -250,6 +277,9 @@ local function tryUnlockElite(encounter, state)
 	if state.Elite and state.Elite.Parent then
 		state.Elite:SetAttribute("EliteShielded", false)
 		state.Elite:SetAttribute("Invulnerable", false)
+		state.Elite:SetAttribute("SimulationActive", state.CombatEnabled == true)
+		state.Elite:SetAttribute("ObjectiveMechanicSuppressed", false)
+		markObjectiveTarget(encounter, state.Elite, true)
 		local shield = state.Elite:FindFirstChild("EliteSupportShield")
 		if shield then
 			shield:Destroy()
@@ -265,9 +295,13 @@ local function registerEliteOrSupport(encounter, state, model, enemy)
 		model:SetAttribute("EliteShielded", state.EliteSupportExpected > 0)
 		if state.EliteSupportExpected > 0 then
 			model:SetAttribute("Invulnerable", true)
+			model:SetAttribute("SimulationActive", false)
+			model:SetAttribute("ObjectiveMechanicSuppressed", true)
+			clearPriorityTarget(model)
 			addHighlight(model, "EliteSupportShield", Color3.fromRGB(255, 209, 84), 0.82)
 		else
 			state.EliteUnlocked = true
+			markObjectiveTarget(encounter, model, true)
 		end
 		tryUnlockElite(encounter, state)
 		return
@@ -278,6 +312,7 @@ local function registerEliteOrSupport(encounter, state, model, enemy)
 	state.EliteSupportRegistered += 1
 	state.EliteSupportAlive += 1
 	model:SetAttribute("EliteShieldSupport", true)
+	markObjectiveTarget(encounter, model, true)
 	addHighlight(model, "EliteSupportOutline", Color3.fromRGB(255, 142, 72), 0.93)
 	workspace:SetAttribute("DungeonEliteShieldSupportsRemaining", state.EliteSupportAlive)
 	local humanoid = model:FindFirstChildOfClass("Humanoid") or model:FindFirstChildWhichIsA("Humanoid", true)
@@ -287,6 +322,8 @@ local function registerEliteOrSupport(encounter, state, model, enemy)
 				return
 			end
 			model:SetAttribute("EliteShieldSupportDefeated", true)
+			model:SetAttribute("ObjectiveTargetCompleted", true)
+			clearPriorityTarget(model)
 			state.EliteSupportAlive = math.max(0, state.EliteSupportAlive - 1)
 			workspace:SetAttribute("DungeonEliteShieldSupportsRemaining", state.EliteSupportAlive)
 			tryUnlockElite(encounter, state)
@@ -407,7 +444,7 @@ function ObjectiveMechanicService.RegisterSpawnedEnemy(encounter, model, enemy, 
 	elseif state.Mechanic == "HiddenPerimeterAmbush" then
 		registerAmbushEnemy(encounter, state, model)
 	elseif state.Mechanic == "PriorityRangedTargets" then
-		model:SetAttribute("ObjectivePriorityTarget", true)
+		markObjectiveTarget(encounter, model, true)
 		addHighlight(model, "ObjectivePriorityOutline", Color3.fromRGB(90, 190, 255), 0.93)
 	elseif state.Mechanic == "BreakWardsThenGuards" and tostring(enemy.Role) == "Guard" then
 		protectGuard(state, model)
