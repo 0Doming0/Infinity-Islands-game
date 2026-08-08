@@ -1,0 +1,554 @@
+diff --git a/tools/MigrateGameContent.server.luau b/tools/MigrateGameContent.server.luau
+--- a/tools/MigrateGameContent.server.luau
++++ b/tools/MigrateGameContent.server.luau
+@@
+ 	RequiredLevel = 1,
+ 	MaxPlayers = 4,
+-	MaximumIslandCount = 10,
++	MaximumIslandCount = 12,
+ 	VictoryCoins = 250,
+ 	BossId = "GiantBoss",
+@@
+ 	RequiredLevel = 1,
+ 	MaxPlayers = 4,
+-	MaximumIslandCount = 10,
++	MaximumIslandCount = 12,
+ 	VictoryCoins = 250,
+ 	BossId = "PhaseBoss",
+diff --git a/src/server/DungeonRuntime/PhaseRegistry.lua b/src/server/DungeonRuntime/PhaseRegistry.lua
+--- a/src/server/DungeonRuntime/PhaseRegistry.lua
++++ b/src/server/DungeonRuntime/PhaseRegistry.lua
+@@
+ local REQUIRED_FOLDERS = {
+ 	"Islands",
+ 	"Enemies",
+ 	"Bosses",
+ 	"Decorations",
+ }
+
++-- The fixed MVP objective route contains 12 mandatory islands. Older
++-- migrated Phase01 folders may still carry MaximumIslandCount = 10, which
++-- caused PaidTestReadinessService to reject the session and immediately
++-- teleport the player back to the Lobby. Clamp legacy content at runtime so
++-- already-published places recover without requiring another migration pass.
++local MINIMUM_OBJECTIVE_ISLAND_COUNT = 12
++
+ local MATERIALS = {}
+@@
+-		BaseIslandCount = math.floor(numberAttribute(folder, "MaximumIslandCount", 10, 1, 100, errors)),
++		BaseIslandCount = math.max(
++			MINIMUM_OBJECTIVE_ISLAND_COUNT,
++			math.floor(numberAttribute(
++				folder,
++				"MaximumIslandCount",
++				MINIMUM_OBJECTIVE_ISLAND_COUNT,
++				1,
++				100,
++				errors
++			))
++		),
+diff --git a/src/lobby/server/LobbyGuidedIntroProgressService.lua b/src/lobby/server/LobbyGuidedIntroProgressService.lua
+new file mode 100644
+--- /dev/null
++++ b/src/lobby/server/LobbyGuidedIntroProgressService.lua
+@@
++-- Canonical read-only bridge for the first-session GuidedIntro.
++-- The Dungeon already persists TutorialCompleted in SkyDungeonPlayerData_V10.
++-- The Lobby reads that same field directly so onboarding does not create a
++-- second competing persistence flag.
++
++local DataStoreService = game:GetService("DataStoreService")
++
++local DATASTORE_NAME = "SkyDungeonPlayerData_V10"
++local LOAD_RETRIES = 3
++local RETRY_DELAY_SECONDS = 0.75
++
++local store = DataStoreService:GetDataStore(DATASTORE_NAME)
++
++local LobbyGuidedIntroProgressService = {}
++
++local function keyFor(player)
++	return string.format("Player_%d", player.UserId)
++end
++
++local function hasLegacyProgress(raw)
++	if type(raw) ~= "table" then
++		return false
++	end
++
++	if math.max(0, math.floor(tonumber(raw.BestScore) or 0)) > 0 then
++		return true
++	end
++	if math.max(0, math.floor(tonumber(raw.Coins) or 0)) > 0 then
++		return true
++	end
++
++	local inventory = raw.Inventory or raw.OwnedItems
++	if type(inventory) == "table" and next(inventory) ~= nil then
++		return true
++	end
++
++	local phases = raw.Progression and raw.Progression.Phases
++	if type(phases) == "table" then
++		for _, progress in pairs(phases) do
++			if type(progress) == "table"
++				and math.max(0, math.floor(tonumber(progress.Completions) or 0)) > 0
++			then
++				return true
++			end
++		end
++	end
++
++	return false
++end
++
++function LobbyGuidedIntroProgressService.IsCompleted(player)
++	local lastError
++	for attempt = 1, LOAD_RETRIES do
++		local ok, raw = pcall(store.GetAsync, store, keyFor(player))
++		if ok then
++			if type(raw) ~= "table" then
++				return false, "NewProfile"
++			end
++
++			local hasTutorialRecord =
++				raw.TutorialCompleted ~= nil or raw.TutorialStage ~= nil
++			local completed = raw.TutorialCompleted == true
++				or (not hasTutorialRecord and hasLegacyProgress(raw))
++
++			return completed, completed and "Completed" or "Required"
++		end
++
++		lastError = raw
++		if attempt < LOAD_RETRIES then
++			task.wait(RETRY_DELAY_SECONDS * attempt)
++		end
++	end
++
++	return nil, tostring(lastError or "GuidedIntroProgressUnavailable")
++end
++
++return LobbyGuidedIntroProgressService
+diff --git a/src/lobby/server/LobbyGuidedIntroRedirectService.lua b/src/lobby/server/LobbyGuidedIntroRedirectService.lua
+--- a/src/lobby/server/LobbyGuidedIntroRedirectService.lua
++++ b/src/lobby/server/LobbyGuidedIntroRedirectService.lua
+@@
+ local Players = game:GetService("Players")
+
+-local PlayerDataService = require(script.Parent.LobbyPlayerDataService)
++local ProgressService = require(script.Parent.LobbyGuidedIntroProgressService)
+ local TeleportCoordinator = require(script.Parent.TeleportCoordinator)
+@@
+-	local data = PlayerDataService.Get(player) or PlayerDataService.Load(player)
+-	if not data then
+-		player:SetAttribute("GuidedIntroRedirectBlockedReason", "PlayerDataUnavailable")
+-		return false, "PlayerDataUnavailable"
+-	end
+-
+-	local completed = data.GuidedIntroCompleted == true
++	local completed, progressReason = ProgressService.IsCompleted(player)
++	if completed == nil then
++		player:SetAttribute(
++			"GuidedIntroRedirectBlockedReason",
++			"ProgressUnavailable"
++		)
++		player:SetAttribute(
++			"GuidedIntroRedirectError",
++			tostring(progressReason)
++		)
++		return false, "ProgressUnavailable"
++	end
+ 	publishState(player, completed)
+@@
+ 		local success, message = TeleportCoordinator.ScheduleGuidedIntro(player)
+ 		if not success and player.Parent == Players then
+ 			player:SetAttribute("GuidedIntroRedirecting", false)
+ 			player:SetAttribute("GuidedIntroRedirectError", tostring(message))
++			player:SetAttribute("LobbyInteractionDisabledByGuidedIntro", false)
+ 		end
+ 	end)
+@@
+ 	workspace:SetAttribute(
+ 		"LobbyGuidedIntroPolicy",
+-		"RedirectEveryLobbyEntryUntilCompletionV1"
++		"RedirectNewPlayersUsingCanonicalTutorialCompletionV2"
+ 	)
+diff --git a/src/lobby/server/LobbyBootstrap.server.luau b/src/lobby/server/LobbyBootstrap.server.luau
+--- a/src/lobby/server/LobbyBootstrap.server.luau
++++ b/src/lobby/server/LobbyBootstrap.server.luau
+@@
+ local LobbyRouletteService = require(script.Parent.LobbyRouletteService)
+ local LobbyEquipmentService = require(script.Parent.LobbyEquipmentService)
+ local LobbyInteractionService = require(script.Parent.LobbyInteractionService)
++local LobbyGuidedIntroRedirectService = require(
++	script.Parent.LobbyGuidedIntroRedirectService
++)
+@@
+ servicesReady = startService("Roulette", LobbyRouletteService.Start) and servicesReady
+ servicesReady = startService("Equipment", LobbyEquipmentService.Start) and servicesReady
+ servicesReady = startService("Interactions", LobbyInteractionService.Start) and servicesReady
++servicesReady = startService(
++	"GuidedIntroRedirect",
++	LobbyGuidedIntroRedirectService.Start
++) and servicesReady
+@@
+ 	if player.Character then
+ 		player.Character:SetAttribute("LobbyCosmeticOnly", true)
+ 		removeFunctionalTools(player.Character)
+ 	end
++
++	task.defer(function()
++		if player.Parent == Players then
++			local ok, reason = LobbyGuidedIntroRedirectService.Evaluate(player)
++			if not ok and reason ~= "AlreadyEvaluatedThisLobbyEntry" then
++				player:SetAttribute(
++					"GuidedIntroRedirectLastEvaluation",
++					tostring(reason)
++				)
++			end
++		end
++	end)
+ end
+diff --git a/src/lobby/server/TeleportCoordinator.lua b/src/lobby/server/TeleportCoordinator.lua
+--- a/src/lobby/server/TeleportCoordinator.lua
++++ b/src/lobby/server/TeleportCoordinator.lua
+@@
+ local TeleportCoordinator = {}
+ local pendingByLeader = setmetatable({}, { __mode = "k" })
++local guidedPending = setmetatable({}, { __mode = "k" })
+ local phaseEvent
+ local started = false
+@@
+ function TeleportCoordinator.Schedule(leader, phaseId)
+@@
+ end
+
++function TeleportCoordinator.ScheduleGuidedIntro(player)
++	if not player or player.Parent ~= Players then
++		return false, "PlayerUnavailable"
++	end
++	if guidedPending[player] then
++		return false, "GuidedIntroAlreadyPending"
++	end
++	if pendingByLeader[player] then
++		return false, "NormalTeleportAlreadyPending"
++	end
++	if not RunService:IsStudio()
++		and workspace:GetAttribute("LobbyPaidTestCatalogReady") ~= true
++	then
++		return false, "Dungeon temporariamente indisponível."
++	end
++
++	local runtimeError = workspace:GetAttribute("LobbyRuntimeError")
++	if type(runtimeError) == "string" and runtimeError ~= "" then
++		return false, "Lobby temporariamente indisponível."
++	end
++	if PlaceConfig.LobbyPlaceId <= 0
++		or PlaceConfig.DungeonPlaceId <= 0
++		or PlaceConfig.LobbyPlaceId == PlaceConfig.DungeonPlaceId
++	then
++		return false, "Configuração de Places inválida."
++	end
++
++	local phaseId = "Phase01"
++	local phase = PhaseConfig.Get(phaseId)
++	if not phase then
++		return false, "Phase01 indisponível para a introdução."
++	end
++
++	PlayerDataService.Load(player)
++	if not PlayerDataService.Save(player, true) then
++		return false, "Não foi possível salvar os dados antes da introdução."
++	end
++
++	local sessionId = "guided-" .. HttpService:GenerateGUID(false)
++	local teleportData = {
++		Version = 1,
++		SessionId = sessionId,
++		PhaseId = phaseId,
++		PartySize = 1,
++		LeaderUserId = player.UserId,
++		PartyUserIds = { player.UserId },
++		Seed = Random.new():NextInteger(1, 2147483646),
++		GuidedIntro = true,
++		GuidedIntroVersion = 1,
++	}
++
++	local options = Instance.new("TeleportOptions")
++	options.ShouldReserveServer = true
++	options:SetTeleportData(teleportData)
++
++	guidedPending[player] = {
++		SessionId = sessionId,
++		PhaseId = phaseId,
++	}
++	player:SetAttribute("TeleportingToDungeon", true)
++	player:SetAttribute("GuidedIntroRedirecting", true)
++
++	local success, resultOrError = pcall(
++		TeleportService.TeleportAsync,
++		TeleportService,
++		PlaceConfig.DungeonPlaceId,
++		{ player },
++		options
++	)
++	if not success then
++		guidedPending[player] = nil
++		player:SetAttribute("TeleportingToDungeon", false)
++		player:SetAttribute("GuidedIntroRedirecting", false)
++		return false, "Falha ao iniciar a introdução: " .. tostring(resultOrError)
++	end
++
++	return true, "Introdução iniciada."
++end
++
+ function TeleportCoordinator.Cancel(leader)
+@@
+ 	phaseEvent = RemoteRegistry.Get("PhaseSelection", "Event", "RemoteEvent")
+ 	TeleportService.TeleportInitFailed:Connect(function(player, _, errorMessage)
++		if guidedPending[player] then
++			guidedPending[player] = nil
++			if player.Parent == Players then
++				player:SetAttribute("TeleportingToDungeon", false)
++				player:SetAttribute("GuidedIntroRedirecting", false)
++				player:SetAttribute(
++					"GuidedIntroRedirectError",
++					"Teleporte recusado: " .. tostring(errorMessage)
++				)
++				player:SetAttribute(
++					"LobbyInteractionDisabledByGuidedIntro",
++					false
++				)
++			end
++			return
++		end
+ 		for _, pending in pairs(pendingByLeader) do
+@@
+ 		end
+ 	end)
++	Players.PlayerRemoving:Connect(function(player)
++		guidedPending[player] = nil
++	end)
+diff --git a/lobby.project.json b/lobby.project.json
+--- a/lobby.project.json
++++ b/lobby.project.json
+@@
+         "LobbyUI": {
+           "$path": "src/lobby/client/LobbyUI.client.luau"
+         },
++        "GuidedIntroRedirect": {
++          "$path": "src/lobby/client/GuidedIntroRedirect.client.luau"
++        },
+         "PartyUI": {
+diff --git a/src/server/DungeonGuidedIntroBootstrap.server.luau b/src/server/DungeonGuidedIntroBootstrap.server.luau
+new file mode 100644
+--- /dev/null
++++ b/src/server/DungeonGuidedIntroBootstrap.server.luau
+@@
++-- First-session GuidedIntro lifecycle.
++--
++-- A new player is sent from the Lobby to a solo reserved Phase01 session with
++-- TeleportData.GuidedIntro = true. The normal Dungeon runtime remains the
++-- authority for generation/combat/rewards. This bridge only:
++--   1) exposes GuidedIntroActive to the contextual client presentation;
++--   2) persists the existing canonical TutorialCompleted flag after the first
++--      reward island is committed;
++--   3) returns the player to the Lobby, where future joins no longer redirect.
++
++local Players = game:GetService("Players")
++local ReplicatedStorage = game:GetService("ReplicatedStorage")
++local RunService = game:GetService("RunService")
++local TeleportService = game:GetService("TeleportService")
++
++local PlaceConfig = require(ReplicatedStorage.Shared.Configs.PlaceConfig)
++local PlayerDataService = require(
++	script.Parent.BlockParkour.PlayerDataService_SkyDungeon_V10
++)
++
++local SAVE_ATTEMPTS = 3
++local SAVE_RETRY_SECONDS = 1
++local RETURN_DELAY_SECONDS = 1.25
++
++local guidedUserIds = {}
++local completionStarted = {}
++
++local function isGuidedJoin(player)
++	local joinData = player:GetJoinData()
++	local teleportData = joinData and joinData.TeleportData
++	return type(teleportData) == "table"
++		and teleportData.GuidedIntro == true
++		and tostring(teleportData.PhaseId or "") == "Phase01"
++end
++
++local function returnToLobby(player)
++	if not player or player.Parent ~= Players then
++		return
++	end
++	if RunService:IsStudio() then
++		player:SetAttribute("GuidedIntroStudioReturnReady", true)
++		return
++	end
++	if PlaceConfig.LobbyPlaceId <= 0 then
++		player:SetAttribute(
++			"GuidedIntroReturnError",
++			"LobbyPlaceIdNotConfigured"
++		)
++		return
++	end
++
++	local options = Instance.new("TeleportOptions")
++	options:SetTeleportData({
++		ReturnVersion = 1,
++		ReturnReason = "GuidedIntroCompleted",
++		PhaseId = "Phase01",
++		GuidedIntroCompleted = true,
++	})
++
++	local ok, errorMessage = pcall(
++		TeleportService.TeleportAsync,
++		TeleportService,
++		PlaceConfig.LobbyPlaceId,
++		{ player },
++		options
++	)
++	if not ok and player.Parent == Players then
++		player:SetAttribute(
++			"GuidedIntroReturnError",
++			tostring(errorMessage)
++		)
++	end
++end
++
++local function persistCompletion(player)
++	if not player or player.Parent ~= Players then
++		return false, "PlayerUnavailable"
++	end
++
++	PlayerDataService.Load(player)
++	if not PlayerDataService.CanSave(player) then
++		return false, "PlayerDataNotSaveable"
++	end
++
++	PlayerDataService.SetTutorialProgress(player, 5, true)
++	for attempt = 1, SAVE_ATTEMPTS do
++		if PlayerDataService.Save(player, true) then
++			return true
++		end
++		if attempt < SAVE_ATTEMPTS then
++			task.wait(SAVE_RETRY_SECONDS * attempt)
++		end
++	end
++
++	return false, "TutorialCompletionSaveFailed"
++end
++
++local function completePlayer(player)
++	if not player
++		or player.Parent ~= Players
++		or not guidedUserIds[player.UserId]
++		or completionStarted[player.UserId]
++	then
++		return
++	end
++
++	completionStarted[player.UserId] = true
++	player:SetAttribute("GuidedIntroCompleting", true)
++	workspace:SetAttribute("DungeonGuidedIntroCompleting", true)
++
++	task.spawn(function()
++		local saved, errorCode = persistCompletion(player)
++		if player.Parent ~= Players then
++			return
++		end
++
++		player:SetAttribute("GuidedIntroCompletionSaved", saved == true)
++		player:SetAttribute("GuidedIntroCompleted", saved == true)
++		player:SetAttribute(
++			"GuidedIntroCompletionError",
++			saved and nil or tostring(errorCode)
++		)
++
++		if not saved then
++			player:SetAttribute("GuidedIntroCompleting", false)
++			completionStarted[player.UserId] = nil
++			workspace:SetAttribute("DungeonGuidedIntroCompleting", false)
++			return
++		end
++
++		task.delay(RETURN_DELAY_SECONDS, function()
++			if player.Parent == Players then
++				player:SetAttribute("GuidedIntroActive", false)
++				returnToLobby(player)
++			end
++		end)
++	end)
++end
++
++local function checkRewardCommit()
++	local committedRound = math.max(
++		0,
++		math.floor(
++			tonumber(workspace:GetAttribute("DungeonLastCommittedRewardRound"))
++				or 0
++		)
++	)
++	if committedRound < 1 then
++		return
++	end
++
++	for userId in pairs(guidedUserIds) do
++		local player = Players:GetPlayerByUserId(userId)
++		if player then
++			completePlayer(player)
++		end
++	end
++end
++
++local function bindPlayer(player)
++	if not isGuidedJoin(player) then
++		return
++	end
++
++	guidedUserIds[player.UserId] = true
++	player:SetAttribute("GuidedIntroActive", true)
++	player:SetAttribute("GuidedIntroCompleted", false)
++	player:SetAttribute("GuidedIntroCompletionSaved", false)
++	player:SetAttribute("GuidedIntroCompleting", false)
++	player:SetAttribute("GuidedIntroVersion", 1)
++
++	PlayerDataService.Load(player)
++	local _, alreadyCompleted = PlayerDataService.GetTutorialProgress(player)
++	if alreadyCompleted then
++		player:SetAttribute("GuidedIntroCompletionSaved", true)
++		player:SetAttribute("GuidedIntroCompleted", true)
++		task.delay(0.5, function()
++			if player.Parent == Players then
++				player:SetAttribute("GuidedIntroActive", false)
++				returnToLobby(player)
++			end
++		end)
++		return
++	end
++
++	task.defer(checkRewardCommit)
++end
++
++Players.PlayerAdded:Connect(bindPlayer)
++Players.PlayerRemoving:Connect(function(player)
++	guidedUserIds[player.UserId] = nil
++	completionStarted[player.UserId] = nil
++end)
++
++for _, player in ipairs(Players:GetPlayers()) do
++	task.spawn(bindPlayer, player)
++end
++
++workspace:GetAttributeChangedSignal(
++	"DungeonLastCommittedRewardRound"
++):Connect(checkRewardCommit)
++
++workspace:SetAttribute("DungeonGuidedIntroBridgeReady", true)
++workspace:SetAttribute(
++	"DungeonGuidedIntroCompletionPolicy",
++	"FirstRewardCommitThenLobbyV1"
++)
