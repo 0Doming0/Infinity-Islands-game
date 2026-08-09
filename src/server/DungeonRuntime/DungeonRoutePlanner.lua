@@ -1,10 +1,52 @@
-local IslandGraphPlanner = require(script.Parent.Parent.BlockParkour.IslandGraphPlanner)
+--[[
+	Infinity Islands - Tarefa 02
+	Linear Combat Route V1
+
+	A rota principal deixa de ser baseada em rounds, reward islands, diamonds
+	e boss sanctuary.
+
+	Contrato principal:
+	- 24 Combat Islands por padrao;
+	- 1 predecessor e no maximo 1 sucessor;
+	- todas possuem GlobalIslandIndex;
+	- nenhuma ilha principal e Optional/Reward/RoundExit/Boss;
+	- direcao varia deterministicamente pela seed;
+	- cada passo sobe exatamente um LogicalLevel.
+
+	IMPORTANTE:
+	RoundIndex/IslandIndex continuam publicados SOMENTE para compatibilidade
+	temporaria com sistemas antigos. Eles nao controlam a topologia.
+
+	A rota final do MVP termina na ultima Combat Island.
+	Nao existe BossSanctuary, Reward Island ou branch opcional.
+]]
+
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local IslandGraphPlanner = require(
+	script.Parent.Parent.BlockParkour.IslandGraphPlanner
+)
+
+local WorldConfig = require(
+	script.Parent.Parent.BlockParkour.Config_SkyDungeon_V10
+)
+
+local CombatRouteSpacingConfig = require(
+	ReplicatedStorage.Shared.Configs.CombatRouteSpacingConfig
+)
 
 local DungeonRoutePlanner = {}
 
 local MAXIMUM_SEED = 2147483647
-local DEFAULT_ROUND_LENGTHS = table.freeze({ 3, 4, 5 })
-local DIRECTION_IDS = table.freeze({ "East", "South", "West", "North" })
+local DEFAULT_COMBAT_ISLAND_COUNT = 24
+
+local DIRECTION_IDS = table.freeze({
+	"East",
+	"South",
+	"West",
+	"North",
+})
+
 local OPPOSITE_DIRECTION = table.freeze({
 	East = "West",
 	West = "East",
@@ -13,406 +55,639 @@ local OPPOSITE_DIRECTION = table.freeze({
 })
 
 local function normalizedSeed(value)
-	local seed = math.floor(math.abs(tonumber(value) or 1)) % MAXIMUM_SEED
+	local seed =
+		math.floor(
+			math.abs(
+				tonumber(value) or 1
+			)
+		) % MAXIMUM_SEED
+
 	return seed == 0 and 1 or seed
 end
 
-local function mixedSeed(baseSeed, roundIndex, islandIndex, globalIndex, salt)
+local function mixedSeed(
+	baseSeed,
+	globalIndex,
+	laneX,
+	laneZ,
+	level,
+	salt
+)
 	local value = normalizedSeed(baseSeed)
-	value = (value * 48271 + roundIndex * 104729 + (salt or 0)) % MAXIMUM_SEED
-	value = (value * 48271 + islandIndex * 130363) % MAXIMUM_SEED
-	value = (value * 48271 + globalIndex * 155921) % MAXIMUM_SEED
+
+	value =
+		(
+			value * 48271
+			+ globalIndex * 104729
+			+ (laneX + 4096) * 130363
+			+ (laneZ + 4096) * 155921
+			+ level * 196613
+			+ (salt or 0)
+		) % MAXIMUM_SEED
+
 	return normalizedSeed(value)
 end
 
 local function shuffledDirections(seed)
 	local result = table.clone(DIRECTION_IDS)
 	local random = Random.new(seed)
+
 	for index = #result, 2, -1 do
-		local other = random:NextInteger(1, index)
-		result[index], result[other] = result[other], result[index]
+		local other =
+			random:NextInteger(1, index)
+
+		result[index], result[other] =
+			result[other], result[index]
 	end
+
 	return result
-end
-
-local function copyRoundLengths(raw)
-	local result = {}
-	for index, value in ipairs(type(raw) == "table" and raw or DEFAULT_ROUND_LENGTHS) do
-		local length = math.max(1, math.floor(tonumber(value) or 0))
-		result[index] = length
-	end
-	assert(#result > 0, "DungeonRoutePlanner requer ao menos uma rodada")
-	return result
-end
-
-local function connection(sourceKey, directionId, branchId)
-	return {
-		SourceKey = sourceKey,
-		DirectionId = directionId,
-		RouteBranchId = branchId,
-	}
-end
-
-local function outgoingConnection(targetKey, directionId, branchId)
-	return {
-		TargetKey = targetKey,
-		DirectionId = directionId,
-		RouteBranchId = branchId,
-	}
-end
-
-local function baseNodeSpec(baseSeed, laneX, laneZ, level, seed)
-	local spec = table.clone(IslandGraphPlanner.GetNodeSpec(baseSeed, laneX, laneZ, level))
-	spec.Seed = seed
-	spec.RouteSeed = seed
-	spec.IsBossSanctuary = false
-	spec.IsSanctuary = false
-	spec.IsStart = false
-	spec.IncomingConnections = {}
-	spec.OutgoingConnections = {}
-	return spec
-end
-
-local function mandatoryNodeSpec(
-	baseSeed,
-	laneX,
-	laneZ,
-	level,
-	roundIndex,
-	islandIndex,
-	globalIndex,
-	roundLength,
-	incomingConnections
-)
-	local seed = mixedSeed(baseSeed, roundIndex, islandIndex, globalIndex, 32452843)
-	local spec = baseNodeSpec(baseSeed, laneX, laneZ, level, seed)
-	local isRoundExit = islandIndex == roundLength
-	spec.RoundIndex = roundIndex
-	spec.IslandIndex = islandIndex
-	spec.GlobalIslandIndex = globalIndex
-	spec.ProtectionGlobalIslandIndex = globalIndex
-	spec.IsMandatoryRoute = true
-	spec.IsOptionalRoute = false
-	spec.IsRewardIsland = isRoundExit
-	spec.IsRoundExit = isRoundExit
-	spec.RoundExitIndex = isRoundExit and roundIndex or nil
-	spec.IsStart = globalIndex == 1
-	spec.Role = isRoundExit and "RewardIsland"
-		or (globalIndex == 1 and "RouteEntry" or "ObjectiveIsland")
-	spec.IncomingConnections = incomingConnections or {}
-	spec.IncomingDirectionId = spec.IncomingConnections[1]
-		and spec.IncomingConnections[1].DirectionId
-		or nil
-	return spec
-end
-
-local function optionalNodeSpec(
-	baseSeed,
-	laneX,
-	laneZ,
-	level,
-	roundIndex,
-	sourceIslandIndex,
-	protectionGlobalIndex,
-	branchId,
-	incomingConnection,
-	nextDirectionId
-)
-	local branchNumber = branchId == "A" and 1 or 2
-	local seed = mixedSeed(
-		baseSeed,
-		roundIndex,
-		sourceIslandIndex,
-		protectionGlobalIndex,
-		86028121 + branchNumber * 104729
-	)
-	local spec = baseNodeSpec(baseSeed, laneX, laneZ, level, seed)
-	spec.RoundIndex = roundIndex
-	spec.IslandIndex = sourceIslandIndex
-	spec.GlobalIslandIndex = nil
-	spec.ProtectionGlobalIslandIndex = protectionGlobalIndex
-	spec.IsMandatoryRoute = false
-	spec.IsOptionalRoute = true
-	spec.IsRewardIsland = false
-	spec.IsRoundExit = false
-	spec.RouteBranchId = string.format("R%d_I%d_%s", roundIndex, sourceIslandIndex, branchId)
-	spec.Role = "OptionalRouteIsland"
-	incomingConnection.RouteBranchId = spec.RouteBranchId
-	spec.IncomingConnections = { incomingConnection }
-	spec.IncomingDirectionId = incomingConnection.DirectionId
-	spec.NextDirectionId = nextDirectionId
-	return spec
-end
-
-local function choosePerpendicularPair(baseSeed, roundIndex, islandIndex, globalIndex)
-	local directions = shuffledDirections(mixedSeed(
-		baseSeed,
-		roundIndex,
-		islandIndex,
-		globalIndex,
-		49979687
-	))
-	local first = directions[1]
-	local second
-	for index = 2, #directions do
-		local candidate = directions[index]
-		if candidate ~= first and candidate ~= OPPOSITE_DIRECTION[first] then
-			second = candidate
-			break
-		end
-	end
-	assert(second, "Nao foi possivel escolher direcoes perpendiculares")
-	return first, second
-end
-
-local function chooseTransitionDirection(baseSeed, roundIndex, globalIndex, previousDirection)
-	local directions = shuffledDirections(mixedSeed(
-		baseSeed,
-		roundIndex,
-		1,
-		globalIndex,
-		122949829
-	))
-	for _, directionId in ipairs(directions) do
-		if not previousDirection or OPPOSITE_DIRECTION[previousDirection] ~= directionId then
-			return directionId
-		end
-	end
-	return directions[1]
-end
-
-local function addNode(nodes, spec, materializationIndexByGlobalIndex)
-	spec.RouteNodeOrder = #nodes + 1
-	nodes[spec.RouteNodeOrder] = spec
-	if spec.GlobalIslandIndex then
-		materializationIndexByGlobalIndex[spec.GlobalIslandIndex] = spec.RouteNodeOrder
-	end
-	return spec
 end
 
 local function directionDelta(directionId)
-	local direction = assert(
-		IslandGraphPlanner.GetDirection(directionId),
-		"Direcao desconhecida: " .. tostring(directionId)
-	)
+	local direction =
+		assert(
+			IslandGraphPlanner.GetDirection(
+				directionId
+			),
+			"Direcao desconhecida: "
+				.. tostring(directionId)
+		)
+
 	return direction.DeltaX, direction.DeltaZ
 end
 
-function DungeonRoutePlanner.Build(options)
-	options = type(options) == "table" and options or {}
-	local baseSeed = normalizedSeed(options.Seed)
-	local roundLengths = copyRoundLengths(options.RoundLengths)
-	local nodes = {}
-	local materializationIndexByGlobalIndex = {}
-	local rewardIndices = {}
-	local roundExitGlobalIndices = {}
-	local mandatoryNodes = {}
-	local globalIndex = 0
-	local currentMandatory
-	local previousDirection
+local function terrainHalfExtent(
+	spec,
+	directionId
+)
+	local definition =
+		assert(
+			WorldConfig.TERRAIN_TYPES[
+				spec.SizeName
+			],
+			"Tamanho de ilha desconhecido: "
+				.. tostring(
+					spec.SizeName
+				)
+		)
 
-	for roundIndex, roundLength in ipairs(roundLengths) do
-		if roundIndex == 1 then
-			globalIndex += 1
-			currentMandatory = mandatoryNodeSpec(
-				baseSeed,
-				0,
-				0,
-				0,
-				roundIndex,
-				1,
-				globalIndex,
-				roundLength,
-				{}
-			)
-			addNode(nodes, currentMandatory, materializationIndexByGlobalIndex)
-			table.insert(mandatoryNodes, currentMandatory)
-		else
-			local transitionDirection = chooseTransitionDirection(
-				baseSeed,
-				roundIndex,
-				globalIndex + 1,
-				previousDirection
-			)
-			local deltaX, deltaZ = directionDelta(transitionDirection)
-			globalIndex += 1
-			local nextRoundEntry = mandatoryNodeSpec(
-				baseSeed,
-				currentMandatory.LaneX + deltaX,
-				currentMandatory.LaneZ + deltaZ,
-				currentMandatory.Level + 1,
-				roundIndex,
-				1,
-				globalIndex,
-				roundLength,
-				{ connection(currentMandatory.Key, transitionDirection) }
-			)
-			currentMandatory.NextDirectionId = transitionDirection
-			currentMandatory.OutgoingConnections = {
-				outgoingConnection(nextRoundEntry.Key, transitionDirection, "NextRound"),
-			}
-			currentMandatory.RouteExitLeadsToNextRound = true
-			addNode(nodes, nextRoundEntry, materializationIndexByGlobalIndex)
-			table.insert(mandatoryNodes, nextRoundEntry)
-			currentMandatory = nextRoundEntry
-			previousDirection = transitionDirection
-		end
-
-		for islandIndex = 2, roundLength do
-			local directionA, directionB = choosePerpendicularPair(
-				baseSeed,
-				roundIndex,
-				islandIndex,
-				globalIndex + 1
-			)
-			local deltaAX, deltaAZ = directionDelta(directionA)
-			local deltaBX, deltaBZ = directionDelta(directionB)
-			local optionalLevel = currentMandatory.Level + 1
-			local targetLevel = currentMandatory.Level + 2
-			local nextGlobalIndex = globalIndex + 1
-
-			local optionalA = optionalNodeSpec(
-				baseSeed,
-				currentMandatory.LaneX + deltaAX,
-				currentMandatory.LaneZ + deltaAZ,
-				optionalLevel,
-				roundIndex,
-				islandIndex - 1,
-				globalIndex,
-				"A",
-				connection(currentMandatory.Key, directionA),
-				directionB
-			)
-			local optionalB = optionalNodeSpec(
-				baseSeed,
-				currentMandatory.LaneX + deltaBX,
-				currentMandatory.LaneZ + deltaBZ,
-				optionalLevel,
-				roundIndex,
-				islandIndex - 1,
-				globalIndex,
-				"B",
-				connection(currentMandatory.Key, directionB),
-				directionA
-			)
-			local target = mandatoryNodeSpec(
-				baseSeed,
-				currentMandatory.LaneX + deltaAX + deltaBX,
-				currentMandatory.LaneZ + deltaAZ + deltaBZ,
-				targetLevel,
-				roundIndex,
-				islandIndex,
-				nextGlobalIndex,
-				roundLength,
-				{
-					connection(optionalA.Key, directionB, optionalA.RouteBranchId),
-					connection(optionalB.Key, directionA, optionalB.RouteBranchId),
-				}
-			)
-
-			currentMandatory.NextDirectionId = directionA
-			currentMandatory.AlternateNextDirectionId = directionB
-			currentMandatory.OutgoingDirectionIds = { directionA, directionB }
-			currentMandatory.OutgoingConnections = {
-				outgoingConnection(optionalA.Key, directionA, optionalA.RouteBranchId),
-				outgoingConnection(optionalB.Key, directionB, optionalB.RouteBranchId),
-			}
-			currentMandatory.RouteChoiceCount = 2
-			optionalA.ConvergesToKey = target.Key
-			optionalA.OutgoingConnections = {
-				outgoingConnection(target.Key, directionB, optionalA.RouteBranchId),
-			}
-			optionalB.ConvergesToKey = target.Key
-			optionalB.OutgoingConnections = {
-				outgoingConnection(target.Key, directionA, optionalB.RouteBranchId),
-			}
-			target.ConvergenceSourceKeys = { optionalA.Key, optionalB.Key }
-
-			addNode(nodes, optionalA, materializationIndexByGlobalIndex)
-			addNode(nodes, optionalB, materializationIndexByGlobalIndex)
-			addNode(nodes, target, materializationIndexByGlobalIndex)
-			table.insert(mandatoryNodes, target)
-			currentMandatory = target
-			globalIndex = nextGlobalIndex
-			previousDirection = target.IncomingDirectionId
-		end
-
-		rewardIndices[roundIndex] = globalIndex
-		roundExitGlobalIndices[roundIndex] = globalIndex
+	if directionId == "East"
+		or directionId == "West"
+	then
+		return math.floor(
+			definition.Width / 2
+		)
 	end
 
-	local bossDirectionId = chooseTransitionDirection(
-		baseSeed,
-		#roundLengths + 1,
-		globalIndex + 1,
-		previousDirection
+	return math.floor(
+		definition.Depth / 2
 	)
-	local bossDeltaX, bossDeltaZ = directionDelta(bossDirectionId)
-	currentMandatory.NextDirectionId = bossDirectionId
-	currentMandatory.OutgoingConnections = {
-		outgoingConnection("BossSanctuary", bossDirectionId, "BossRoute"),
-	}
-	currentMandatory.RouteExitLeadsToBoss = true
+end
 
-	local bossSpec = table.clone(IslandGraphPlanner.GetNodeSpec(
-		baseSeed,
-		currentMandatory.LaneX + bossDeltaX,
-		currentMandatory.LaneZ + bossDeltaZ,
-		currentMandatory.Level + 1
-	))
-	bossSpec.Seed = mixedSeed(baseSeed, #roundLengths + 1, 1, globalIndex + 1, 32452843)
-	bossSpec.RouteSeed = bossSpec.Seed
-	bossSpec.RoundIndex = #roundLengths + 1
-	bossSpec.IslandIndex = 1
-	bossSpec.GlobalIslandIndex = globalIndex + 1
-	bossSpec.ProtectionGlobalIslandIndex = globalIndex
-	bossSpec.IncomingDirectionId = bossDirectionId
-	bossSpec.IncomingConnections = { connection(currentMandatory.Key, bossDirectionId) }
-	bossSpec.NextDirectionId = nil
-	bossSpec.IsMandatoryRoute = false
-	bossSpec.IsOptionalRoute = false
-	bossSpec.IsRewardIsland = false
-	bossSpec.IsRoundExit = false
-	bossSpec.IsBossSanctuary = true
-	bossSpec.IsSanctuary = true
-	bossSpec.IsStart = false
-	bossSpec.Role = "BossSanctuary"
-	currentMandatory.OutgoingConnections[1].TargetKey = bossSpec.Key
+local function applyCompactPhysicalCenter(
+	sourceSpec,
+	targetSpec,
+	directionId,
+	targetGlobalIslandIndex
+)
+	local direction =
+		assert(
+			IslandGraphPlanner.GetDirection(
+				directionId
+			),
+			"Direcao desconhecida: "
+				.. tostring(directionId)
+		)
 
-	for _, spec in ipairs(nodes) do
-		local incomingCount = type(spec.IncomingConnections) == "table" and #spec.IncomingConnections or 0
-		local outgoingCount = type(spec.OutgoingConnections) == "table" and #spec.OutgoingConnections or 0
-		spec.RouteEntryCount = math.max(1, incomingCount)
-		spec.RouteExitCount = math.max(1, outgoingCount)
-		spec.IsRouteConvergence = incomingCount > 1
-		spec.IsRouteBranchPoint = outgoingCount > 1
+	local connectorCells =
+		CombatRouteSpacingConfig
+			.GetConnectorHorizontalCells(
+				targetGlobalIslandIndex
+			)
+
+	local sourceHalf =
+		terrainHalfExtent(
+			sourceSpec,
+			directionId
+		)
+
+	local targetHalf =
+		terrainHalfExtent(
+			targetSpec,
+			directionId
+		)
+
+	local centerSpacingCells =
+		sourceHalf
+			+ connectorCells
+			+ targetHalf
+
+	local verticalRiseCells =
+		CombatRouteSpacingConfig
+			.VerticalRiseCells
+
+	targetSpec.Center =
+		sourceSpec.Center
+			+ direction.Vector
+				* centerSpacingCells
+			+ Vector3.new(
+				0,
+				verticalRiseCells,
+				0
+			)
+
+	targetSpec.CombatRouteCompactSpacingVersion =
+		CombatRouteSpacingConfig.Version
+
+	targetSpec.IncomingConnectorHorizontalCells =
+		connectorCells
+
+	targetSpec.IncomingConnectorHorizontalStuds =
+		connectorCells
+			* WorldConfig.GRID_SIZE
+
+	targetSpec.IncomingConnectorEstimatedWalkSeconds =
+		CombatRouteSpacingConfig
+			.EstimatedTraversalSeconds(
+				connectorCells,
+				WorldConfig.GRID_SIZE
+			)
+
+	targetSpec.IncomingCenterSpacingCells =
+		centerSpacingCells
+
+	targetSpec.IncomingCenterSpacingStuds =
+		centerSpacingCells
+			* WorldConfig.GRID_SIZE
+
+	targetSpec.IncomingVerticalRiseCells =
+		verticalRiseCells
+
+	targetSpec.IncomingVerticalRiseStuds =
+		verticalRiseCells
+			* WorldConfig.GRID_SIZE
+
+	sourceSpec.OutgoingConnectorHorizontalCells =
+		connectorCells
+
+	sourceSpec.OutgoingConnectorHorizontalStuds =
+		connectorCells
+			* WorldConfig.GRID_SIZE
+
+	sourceSpec.OutgoingConnectorEstimatedWalkSeconds =
+		targetSpec
+			.IncomingConnectorEstimatedWalkSeconds
+
+	return connectorCells
+end
+
+local function laneKey(x, z)
+	return tostring(x) .. ":" .. tostring(z)
+end
+
+local function chooseNextDirection(
+	baseSeed,
+	globalIndex,
+	current,
+	previousDirection,
+	visitedLanes
+)
+	local directions =
+		shuffledDirections(
+			mixedSeed(
+				baseSeed,
+				globalIndex,
+				current.LaneX,
+				current.LaneZ,
+				current.Level,
+				49979687
+			)
+		)
+
+	local opposite =
+		previousDirection
+			and OPPOSITE_DIRECTION[
+				previousDirection
+			]
+			or nil
+
+	-- Preferencia 1:
+	-- nao voltar imediatamente e nao reutilizar uma coordenada horizontal.
+	for _, directionId in ipairs(directions) do
+		if directionId ~= opposite then
+			local dx, dz =
+				directionDelta(directionId)
+
+			local key =
+				laneKey(
+					current.LaneX + dx,
+					current.LaneZ + dz
+				)
+
+			if not visitedLanes[key] then
+				return directionId
+			end
+		end
 	end
-	bossSpec.RouteEntryCount = math.max(1, #bossSpec.IncomingConnections)
-	bossSpec.RouteExitCount = 1
-	bossSpec.IsRouteConvergence = false
-	bossSpec.IsRouteBranchPoint = false
 
+	-- Preferencia 2:
+	-- ainda evita um U-turn imediato.
+	for _, directionId in ipairs(directions) do
+		if directionId ~= opposite then
+			return directionId
+		end
+	end
+
+	return directions[1]
+end
+
+local function incomingConnection(
+	sourceKey,
+	directionId
+)
 	return {
-		Version = 4,
-		MarkerContractVersion = 2,
-		Topology = "BranchedRoundDiamonds",
-		RouteId = string.format("BranchedRoute-%d", baseSeed),
-		Seed = baseSeed,
-		RoundLengths = roundLengths,
-		RewardGlobalIndices = rewardIndices,
-		RoundExitGlobalIndices = roundExitGlobalIndices,
-		TotalIslandCount = globalIndex,
-		ObjectiveIslandCount = globalIndex,
-		PhysicalIslandCount = #nodes,
-		OptionalIslandCount = #nodes - globalIndex,
-		InitialWindowSize = math.min(4, #nodes),
-		FutureWindowSize = 3,
-		PreviousWindowSize = 2,
-		MaterializationIndexByGlobalIndex = materializationIndexByGlobalIndex,
-		MandatoryNodes = mandatoryNodes,
-		Nodes = nodes,
-		BossSanctuary = bossSpec,
+		SourceKey = sourceKey,
+		DirectionId = directionId,
+		RouteBranchId = nil,
 	}
 end
 
-return table.freeze(DungeonRoutePlanner)
+local function outgoingConnection(
+	targetKey,
+	directionId
+)
+	return {
+		TargetKey = targetKey,
+		DirectionId = directionId,
+		RouteBranchId = nil,
+	}
+end
+
+local function compatibilityRoundIndices(
+	globalIndex
+)
+	-- Mantem as 12 primeiras ilhas alinhadas aos consumidores antigos:
+	-- 1-3 / 4-7 / 8-12.
+	if globalIndex <= 3 then
+		return 1, globalIndex
+	elseif globalIndex <= 7 then
+		return 2, globalIndex - 3
+	elseif globalIndex <= 12 then
+		return 3, globalIndex - 7
+	end
+
+	-- Depois da ilha 12 os valores continuam apenas como metadata.
+	local offset = globalIndex - 13
+
+	return
+		4 + math.floor(offset / 4),
+		1 + (offset % 4)
+end
+
+local function createCombatSpec(
+	baseSeed,
+	laneX,
+	laneZ,
+	level,
+	globalIndex,
+	incoming
+)
+	local routeSeed =
+		mixedSeed(
+			baseSeed,
+			globalIndex,
+			laneX,
+			laneZ,
+			level,
+			32452843
+		)
+
+	local spec =
+		table.clone(
+			IslandGraphPlanner.GetNodeSpec(
+				baseSeed,
+				laneX,
+				laneZ,
+				level
+			)
+		)
+
+	local compatibilityRound,
+		compatibilityIsland =
+			compatibilityRoundIndices(
+				globalIndex
+			)
+
+	spec.Seed = routeSeed
+	spec.RouteSeed = routeSeed
+
+	spec.RoundIndex =
+		compatibilityRound
+	spec.IslandIndex =
+		compatibilityIsland
+	spec.GlobalIslandIndex =
+		globalIndex
+	spec.ProtectionGlobalIslandIndex =
+		globalIndex
+
+	spec.IsMandatoryRoute = true
+	spec.IsOptionalRoute = false
+	spec.IsRewardIsland = false
+	spec.IsRoundExit = false
+	spec.RoundExitIndex = nil
+	spec.IsBossSanctuary = false
+
+	spec.IsStart = globalIndex == 1
+	spec.IsSanctuary = false
+	spec.Role =
+		globalIndex == 1
+			and "CombatEntry"
+			or "CombatIsland"
+
+	spec.RouteBranchId = nil
+	spec.AlternateNextDirectionId = nil
+	spec.RouteChoiceCount = 1
+
+	spec.IncomingConnections =
+		incoming and { incoming } or {}
+
+	spec.IncomingDirectionId =
+		incoming
+			and incoming.DirectionId
+			or nil
+
+	spec.OutgoingConnections = {}
+	spec.OutgoingDirectionIds = {}
+
+	spec.RouteEntryCount = 1
+	spec.RouteExitCount = 1
+	spec.IsRouteConvergence = false
+	spec.IsRouteBranchPoint = false
+
+	-- Nova metadata explicita.
+	spec.CombatRoute = true
+	spec.CombatIsland = true
+	spec.LinearRoute = true
+	spec.RouteArchitecture =
+		"LinearCombatRouteV1"
+
+	return spec
+end
+
+function DungeonRoutePlanner.Build(options)
+	options =
+		type(options) == "table"
+			and options
+			or {}
+
+	local baseSeed =
+		normalizedSeed(options.Seed)
+
+	local totalIslandCount =
+		math.clamp(
+			math.floor(
+				tonumber(
+					options.TotalIslandCount
+				)
+					or DEFAULT_COMBAT_ISLAND_COUNT
+			),
+			2,
+			200
+		)
+
+	local nodes =
+		table.create(totalIslandCount)
+
+	local materializationIndexByGlobalIndex =
+		{}
+
+	local visitedLanes = {}
+
+	local current =
+		createCombatSpec(
+			baseSeed,
+			0,
+			0,
+			0,
+			1,
+			nil
+		)
+
+	current.RouteNodeOrder = 1
+	current.CombatRouteCompactSpacingVersion =
+		CombatRouteSpacingConfig.Version
+	current.IncomingConnectorHorizontalCells = nil
+	current.IncomingConnectorHorizontalStuds = nil
+	current.IncomingConnectorEstimatedWalkSeconds = nil
+	current.IncomingVerticalRiseCells = nil
+	current.IncomingVerticalRiseStuds = nil
+
+	nodes[1] = current
+	materializationIndexByGlobalIndex[1] = 1
+	visitedLanes[laneKey(0, 0)] = true
+
+	local previousDirection
+
+	local totalConnectorHorizontalCells = 0
+	local maximumConnectorHorizontalCells = 0
+	local minimumConnectorHorizontalCells = math.huge
+
+	for globalIndex = 2, totalIslandCount do
+		local directionId =
+			chooseNextDirection(
+				baseSeed,
+				globalIndex,
+				current,
+				previousDirection,
+				visitedLanes
+			)
+
+		local dx, dz =
+			directionDelta(directionId)
+
+		local nextSpec =
+			createCombatSpec(
+				baseSeed,
+				current.LaneX + dx,
+				current.LaneZ + dz,
+				current.Level + 1,
+				globalIndex,
+				incomingConnection(
+					current.Key,
+					directionId
+				)
+			)
+
+		local connectorCells =
+			applyCompactPhysicalCenter(
+				current,
+				nextSpec,
+				directionId,
+				globalIndex
+			)
+
+		totalConnectorHorizontalCells +=
+			connectorCells
+
+		maximumConnectorHorizontalCells =
+			math.max(
+				maximumConnectorHorizontalCells,
+				connectorCells
+			)
+
+		minimumConnectorHorizontalCells =
+			math.min(
+				minimumConnectorHorizontalCells,
+				connectorCells
+			)
+
+		nextSpec.RouteNodeOrder =
+			globalIndex
+
+		current.NextDirectionId =
+			directionId
+		current.OutgoingDirectionIds = {
+			directionId,
+		}
+		current.OutgoingConnections = {
+			outgoingConnection(
+				nextSpec.Key,
+				directionId
+			),
+		}
+
+		nodes[globalIndex] =
+			nextSpec
+
+		materializationIndexByGlobalIndex[
+			globalIndex
+		] = globalIndex
+
+		visitedLanes[
+			laneKey(
+				nextSpec.LaneX,
+				nextSpec.LaneZ
+			)
+		] = true
+
+		current = nextSpec
+		previousDirection = directionId
+	end
+
+	-- O ultimo Combat Island e realmente terminal na nova rota.
+	current.NextDirectionId = nil
+	current.OutgoingDirectionIds = {}
+	current.OutgoingConnections = {}
+	current.RouteChoiceCount = 0
+
+
+	local connectionCount =
+		math.max(
+			0,
+			totalIslandCount - 1
+		)
+
+	local averageConnectorHorizontalCells =
+		connectionCount > 0
+			and totalConnectorHorizontalCells
+				/ connectionCount
+			or 0
+
+	if minimumConnectorHorizontalCells
+		== math.huge
+	then
+		minimumConnectorHorizontalCells = 0
+	end
+
+	return {
+		Version = 7,
+		MarkerContractVersion = 2,
+
+		CompactSpacingVersion =
+			CombatRouteSpacingConfig.Version,
+
+		CompactSpacingPolicy =
+			CombatRouteSpacingConfig.Policy,
+
+		ConnectorHorizontalCellsMinimum =
+			minimumConnectorHorizontalCells,
+
+		ConnectorHorizontalCellsMaximum =
+			maximumConnectorHorizontalCells,
+
+		ConnectorHorizontalCellsAverage =
+			averageConnectorHorizontalCells,
+
+		ConnectorHorizontalStudsMinimum =
+			minimumConnectorHorizontalCells
+				* WorldConfig.GRID_SIZE,
+
+		ConnectorHorizontalStudsMaximum =
+			maximumConnectorHorizontalCells
+				* WorldConfig.GRID_SIZE,
+
+		ConnectorHorizontalStudsAverage =
+			averageConnectorHorizontalCells
+				* WorldConfig.GRID_SIZE,
+
+		VerticalRiseCells =
+			CombatRouteSpacingConfig
+				.VerticalRiseCells,
+
+		VerticalRiseStuds =
+			CombatRouteSpacingConfig
+				.VerticalRiseCells
+				* WorldConfig.GRID_SIZE,
+
+		Topology =
+			"LinearCombatRouteV1",
+
+		RouteArchitecture =
+			"CombatIslands",
+
+		RouteId =
+			string.format(
+				"LinearCombat-%d-%d",
+				baseSeed,
+				totalIslandCount
+			),
+
+		Seed = baseSeed,
+
+		-- A nova rota nao possui rounds logicos.
+		RoundLengths = {},
+		RewardGlobalIndices = {},
+		RoundExitGlobalIndices = {},
+
+		TotalIslandCount =
+			totalIslandCount,
+		ObjectiveIslandCount =
+			totalIslandCount,
+		PhysicalIslandCount =
+			totalIslandCount,
+		OptionalIslandCount = 0,
+
+		InitialWindowSize =
+			math.min(
+				4,
+				totalIslandCount
+			),
+
+		FutureWindowSize = 3,
+		PreviousWindowSize = 1,
+
+		MaterializationIndexByGlobalIndex =
+			materializationIndexByGlobalIndex,
+
+		MandatoryNodes = nodes,
+		Nodes = nodes,
+
+		BossSanctuary = nil,
+		LegacyBossCompatibilityOnly = false,
+		BossProgressionEnabled = false,
+	}
+end
+
+return table.freeze(
+	DungeonRoutePlanner
+)

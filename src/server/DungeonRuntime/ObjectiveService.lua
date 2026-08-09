@@ -1,89 +1,104 @@
--- Compatibility facade during rebuild.
--- Objective state is owned only by DungeonProgressionService.
+--[[
+	Task 12 compatibility ObjectiveService.
 
-local DungeonProgressionService = require(script.Parent.DungeonProgressionService)
+	No legacy Objective is created or progressed.
+	GetSnapshot mirrors the new CombatRouteProgression Workspace contract so
+	old result/analytics readers receive coherent information.
+]]
 
 local ObjectiveService = {}
 
-function ObjectiveService.Start()
-    workspace:SetAttribute("DungeonObjectiveServiceReady", true)
-    workspace:SetAttribute("DungeonObjectiveServicePolicy", "ProgressionFacadeV3")
+local started = false
+
+local function snapshot()
+	return {
+		Id =
+			workspace:GetAttribute(
+				"DungeonObjectiveId"
+			),
+		Type =
+			workspace:GetAttribute(
+				"DungeonObjectiveType"
+			),
+		Title =
+			workspace:GetAttribute(
+				"DungeonObjectiveTitle"
+			),
+		Description =
+			workspace:GetAttribute(
+				"DungeonObjectiveDescription"
+			),
+		Progress =
+			workspace:GetAttribute(
+				"DungeonObjectiveProgress"
+			),
+		Target =
+			workspace:GetAttribute(
+				"DungeonObjectiveTarget"
+			),
+		State =
+			workspace:GetAttribute(
+				"DungeonObjectiveState"
+			),
+		GlobalIslandIndex =
+			workspace:GetAttribute(
+				"DungeonCurrentObjectiveIsland"
+			),
+		Completed =
+			workspace:GetAttribute(
+				"DungeonObjectiveState"
+			) == "Completed",
+		LegacyDisabled = true,
+	}
+end
+
+function ObjectiveService.Start(_options)
+	started = true
+
+	workspace:SetAttribute(
+		"DungeonObjectiveServiceReady",
+		false
+	)
+	workspace:SetAttribute(
+		"DungeonLegacyObjectiveServiceDisabled",
+		true
+	)
+
+	return true,
+		"CompatibilityMirrorOnly"
 end
 
 function ObjectiveService.Stop()
-    workspace:SetAttribute("DungeonObjectiveServiceReady", false)
+	started = false
+
+	workspace:SetAttribute(
+		"DungeonObjectiveServiceReady",
+		false
+	)
+
+	return true
 end
 
-function ObjectiveService.SetParticipants()
-    return true
+function ObjectiveService.SetParticipantConnected(...)
+	return true
 end
 
-function ObjectiveService.SetParticipantConnected()
-    return true
+function ObjectiveService.SetObjective(...)
+	return false,
+		"CombatRouteProgressionOwnsObjective"
 end
 
-function ObjectiveService.SetParticipantEligible()
-    return true
-end
-
-function ObjectiveService.SetExitTarget()
-    return true
-end
-
-function ObjectiveService.SetExitLocked(locked)
-    workspace:SetAttribute("DungeonObjectiveExitLocked", locked == true)
-    return true
-end
-
-function ObjectiveService.GetExitTarget()
-    local context = DungeonProgressionService.GetCurrentContext()
-    return context and context.Exit or nil
-end
-
-function ObjectiveService.SetObjective()
-    return DungeonProgressionService.GetSnapshot()
-end
-
-function ObjectiveService.AddProgress(amount)
-    return DungeonProgressionService.AddProgress(amount)
-end
-
-function ObjectiveService.SetProgress(progress)
-    local snapshot = DungeonProgressionService.GetSnapshot()
-    local current = tonumber(snapshot.Progress) or 0
-    local desired = math.max(0, math.floor(tonumber(progress) or 0))
-    if desired <= current then
-        return true, "UnchangedOrLowerIgnored"
-    end
-    return DungeonProgressionService.AddProgress(desired - current)
-end
-
-function ObjectiveService.SetParticipantProgress()
-    return false, "ParticipantProgressNotUsedInRebuild"
-end
-
-function ObjectiveService.Restart()
-    return false, "RestartNotImplementedInRebuildPart03"
-end
-
-function ObjectiveService.MarkRecovered()
-    return true
-end
-
-function ObjectiveService.Complete(reason)
-    return DungeonProgressionService.ForceComplete(reason)
-end
-
-function ObjectiveService.Clear()
-    return true
+function ObjectiveService.AddProgress(...)
+	return false,
+		"IslandCombatServiceOwnsProgress"
 end
 
 function ObjectiveService.GetSnapshot()
-    return DungeonProgressionService.GetSnapshot()
+	return snapshot()
 end
 
-function ObjectiveService.IsActive()
-    return DungeonProgressionService.IsActive()
+function ObjectiveService.IsStarted()
+	return started
 end
 
 return ObjectiveService

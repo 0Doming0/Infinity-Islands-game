@@ -1,1271 +1,1288 @@
+--[[
+	Infinity Islands - Task 19
+	DungeonRuntimeService - Standalone Combat MVP
+
+	The Dungeon itself is now the MVP experience.
+
+	ENTRY:
+	Player joins server
+		-> no Lobby
+		-> no TeleportData requirement
+		-> no Start screen
+		-> no first-match guide
+		-> server creates/uses one shared run
+		-> player spawns at current Combat checkpoint
+		-> first server player starts at Island 1
+
+	This intentionally replaces the older reserved-session/lobby orchestration
+	with a much smaller runtime.
+
+	Core services such as IslandCombatService, PlayerLevelService,
+	ActiveWorldWindowService and their bootstraps remain independent.
+
+	DEATH:
+	simple Roblox-style respawn at the current Dungeon checkpoint.
+	No lives/wipe flow is required for this MVP.
+
+	FINAL ROUTE:
+	CombatRouteCompletionService publishes victory.
+	No automatic Lobby teleport.
+]]
+
 local HttpService = game:GetService("HttpService")
-local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
-local TeleportService = game:GetService("TeleportService")
 
-local GameContext = require(ReplicatedStorage.Shared.GameContext)
-local PhaseConfig = require(ReplicatedStorage.Shared.Configs.PhaseConfig)
-local PlaceConfig = require(ReplicatedStorage.Shared.Configs.PlaceConfig)
-local RemoteRegistry = require(ReplicatedStorage.Shared.Utilities.RemoteRegistry)
+local GameContext = require(
+	ReplicatedStorage.Shared.GameContext
+)
 
-local ChunkManager = require(script.Parent.Parent.BlockParkour.ChunkManager_SkyDungeon_V10)
-local PlayerDataService = require(script.Parent.Parent.BlockParkour.PlayerDataService_SkyDungeon_V10)
-local PartyService = require(script.Parent.Parent.BlockParkour.PartyService)
-local BossService = require(script.Parent.BossService)
-local BossEncounterDirector = require(script.Parent.BossEncounterDirector)
-local ContentResolver = require(script.Parent.ContentResolver)
-local DungeonGenerator = require(script.Parent.DungeonGenerator)
-local DungeonStateMachine = require(script.Parent.DungeonStateMachine)
-local DungeonPartyLifeService = require(script.Parent.DungeonPartyLifeService)
-local DungeonResultCommitService = require(script.Parent.DungeonResultCommitService)
-local DungeonReturnService = require(script.Parent.DungeonReturnService)
-local DungeonLegacyIsolationService = require(script.Parent.DungeonLegacyIsolationService)
-local DungeonSpawnService = require(script.Parent.DungeonSpawnService)
-local DungeonHealthRecoveryService = require(script.Parent.DungeonHealthRecoveryService)
-local DungeonEntrySafetyService = require(script.Parent.DungeonEntrySafetyService)
-local DungeonRecoveryService = require(script.Parent.DungeonRecoveryService)
-local DungeonPacingService = require(script.Parent.DungeonPacingService)
-local OptionalIslandService = require(script.Parent.OptionalIslandService)
-local ObjectiveEncounterService = require(script.Parent.ObjectiveEncounterService)
-local ObjectiveSequenceService = require(script.Parent.ObjectiveSequenceService)
-local ObjectiveService = require(script.Parent.ObjectiveService)
-local RewardIslandService = require(script.Parent.RewardIslandService)
-local RunUpgradeService = require(script.Parent.RunUpgradeService)
-local RunRewardLedgerService = require(script.Parent.RunRewardLedgerService)
-local MobCollectibleService = require(script.Parent.MobCollectibleService)
-local PhaseRegistry = require(script.Parent.PhaseRegistry)
-local PaidTestReadinessService = require(script.Parent.PaidTestReadinessService)
-local RuntimeFolders = require(script.Parent.RuntimeFolders)
-local DungeonRunAnalytics = require(script.Parent.DungeonRunAnalyticsService)
+local PhaseConfig = require(
+	ReplicatedStorage.Shared.Configs.PhaseConfig
+)
+
+local StandaloneConfig = require(
+	ReplicatedStorage.Shared.Configs.StandaloneDungeonConfig
+)
+
+local StandaloneEntryConfig = require(
+	ReplicatedStorage.Shared.Configs.StandaloneEntryConfig
+)
+
+local PlayerDataService = require(
+	script.Parent.Parent.BlockParkour.PlayerDataService_SkyDungeon_V10
+)
+
+local ContentResolver = require(
+	script.Parent.ContentResolver
+)
+
+local DungeonGenerator = require(
+	script.Parent.DungeonGenerator
+)
+
+local DungeonLegacyIsolationService = require(
+	script.Parent.DungeonLegacyIsolationService
+)
+
+local DungeonSpawnService = require(
+	script.Parent.DungeonSpawnService
+)
+
+local ObjectiveSequenceService = require(
+	script.Parent.ObjectiveSequenceService
+)
+
+local ObjectiveService = require(
+	script.Parent.ObjectiveService
+)
+
+local DungeonRecoveryService = require(
+	script.Parent.DungeonRecoveryService
+)
+
+local PhaseRegistry = require(
+	script.Parent.PhaseRegistry
+)
+
+local PaidTestReadinessService = require(
+	script.Parent.PaidTestReadinessService
+)
+
+local DungeonPacingService = require(
+	script.Parent.DungeonPacingService
+)
+
+local ObjectiveEncounterService = require(
+	script.Parent.ObjectiveEncounterService
+)
+
+local RewardIslandService = require(
+	script.Parent.RewardIslandService
+)
+
+local RunRewardLedgerService = require(
+	script.Parent.RunRewardLedgerService
+)
+
+local MobCollectibleService = require(
+	script.Parent.MobCollectibleService
+)
+
+local OptionalIslandService = require(
+	script.Parent.OptionalIslandService
+)
+
+local BossService = require(
+	script.Parent.BossService
+)
+
+local BossEncounterDirector = require(
+	script.Parent.BossEncounterDirector
+)
 
 local DungeonRuntimeService = {}
+
 local started = false
-local session
-local stateMachine
-local resultEvent
-local objectiveEvent
-local rewardEvent
-local runUpgradeEvent
-local lifeEvent
-local bossEvent
-local sessionPlayers
+local worldStarting = false
+local worldReady = false
 
-local function forEachSessionPlayer(callback)
-	for _, player in ipairs(sessionPlayers()) do
-		callback(player)
-	end
-end
+local session = nil
+local phaseId = nil
+local phase = nil
 
-local function runStage()
-	return tostring(
-		workspace:GetAttribute("DungeonObjectiveId")
-			or workspace:GetAttribute("DungeonPhaseState")
-			or "UnknownStage"
+local runtimeState = "Initializing"
+
+local playerConnections =
+	setmetatable({}, { __mode = "k" })
+
+local playerEntryState =
+	setmetatable({}, { __mode = "k" })
+
+local function publishState(
+	state,
+	reason
+)
+	runtimeState = state
+
+	workspace:SetAttribute(
+		"DungeonPhaseState",
+		state
+	)
+
+	workspace:SetAttribute(
+		"DungeonPhaseStateReason",
+		tostring(reason or "")
+	)
+
+	workspace:SetAttribute(
+		"DungeonPhaseStateChangedAt",
+		workspace:GetServerTimeNow()
 	)
 end
 
-local function updateRunStage(stageName)
-	forEachSessionPlayer(function(player)
-		DungeonRunAnalytics.UpdateStage(player, stageName)
-	end)
+local function playerList()
+	return Players:GetPlayers()
 end
 
-local function runMilestone(eventName, stageName, detail)
-	forEachSessionPlayer(function(player)
-		DungeonRunAnalytics.Milestone(player, eventName, stageName, detail)
-	end)
-end
-
-local function copyUserIds(raw)
+local function participantUserIds()
 	local result = {}
-	local seen = {}
-	if type(raw) == "table" then
-		for _, userId in ipairs(raw) do
-			local clean = math.floor(tonumber(userId) or 0)
-			if clean > 0 and not seen[clean] then
-				seen[clean] = true
-				table.insert(result, clean)
-			end
-		end
-	end
-	return result, seen
-end
 
-local function developmentSession(player)
-	local requestedPhase = workspace:GetAttribute("StudioPhaseId")
-	local phaseId = PhaseConfig.IsValid(requestedPhase) and requestedPhase or PhaseConfig.GetDefaultId()
-	if not phaseId then
-		return nil, "Nenhuma fase valida foi descoberta em ServerStorage/GameContent/Phases"
-	end
-	return {
-		Version = 1,
-		SessionId = "studio-" .. HttpService:GenerateGUID(false),
-		PhaseId = phaseId,
-		PartySize = 1,
-		LeaderUserId = player.UserId,
-		PartyUserIds = { player.UserId },
-		Seed = Random.new():NextInteger(1, 2147483646),
-		ReplayRequested = false,
-		ReplayOfSessionId = nil,
-		ReplayDepth = 0,
-		DevelopmentMode = true,
-	}
-end
-
-local function sanitizeTeleportData(player, raw)
-	if type(raw) ~= "table" or not PhaseConfig.IsValid(raw.PhaseId) then
-		if RunService:IsStudio() then
-			return developmentSession(player)
-		end
-		return nil, "TeleportData ausente ou PhaseId invalido"
-	end
-	local userIds, userSet = copyUserIds(raw.PartyUserIds)
-	if #userIds == 0 or not userSet[player.UserId] then
-		return nil, "Jogador nao pertence a sessao"
-	end
-	local size = math.clamp(math.floor(tonumber(raw.PartySize) or #userIds), 1, 4)
-	if size ~= #userIds then
-		return nil, "PartySize inconsistente"
-	end
-	local sessionId = type(raw.SessionId) == "string" and raw.SessionId or ""
-	if sessionId == "" then
-		return nil, "SessionId ausente"
-	end
-	return {
-		Version = 1,
-		SessionId = sessionId,
-		PhaseId = raw.PhaseId,
-		PartySize = size,
-		LeaderUserId = math.floor(tonumber(raw.LeaderUserId) or 0),
-		PartyUserIds = userIds,
-		PartyUserSet = userSet,
-		Seed = math.clamp(math.floor(tonumber(raw.Seed) or 1), 1, 2147483646),
-		ReplayRequested = raw.ReplayRequested == true,
-		ReplayOfSessionId = type(raw.ReplayOfSessionId) == "string"
-			and raw.ReplayOfSessionId
-			or nil,
-		ReplayDepth = raw.ReplayRequested == true
-			and math.max(1, math.floor(tonumber(raw.ReplayDepth) or 1))
-			or math.max(0, math.floor(tonumber(raw.ReplayDepth) or 0)),
-		DevelopmentMode = false,
-	}
-end
-
-local function compatibleSession(left, right)
-	return left.SessionId == right.SessionId
-		and left.PhaseId == right.PhaseId
-		and left.PartySize == right.PartySize
-end
-
-local function transitionState(nextState, context)
-	if not stateMachine then
-		return false, "StateMachineUnavailable"
-	end
-	local success, errorCode = stateMachine:Transition(nextState, context)
-	if not success then
-		warn(string.format(
-			"[DungeonRuntime] Transicao de estado rejeitada: %s -> %s (%s)",
-			tostring(stateMachine:GetState()),
-			tostring(nextState),
-			tostring(errorCode)
-		))
-	end
-	return success, errorCode
-end
-
-local function teleportBack(player, reason)
-	if PlaceConfig.LobbyPlaceId <= 0 then
-		player:SetAttribute("DungeonJoinRejected", reason)
-		warn("[DungeonRuntime] " .. player.Name .. " rejeitado: " .. reason)
-		return
-	end
-	local options = Instance.new("TeleportOptions")
-	options:SetTeleportData({
-		ReturnReason = "InvalidSession",
-		PhaseId = session and session.PhaseId or PhaseConfig.GetDefaultId(),
-	})
-	pcall(TeleportService.TeleportAsync, TeleportService, PlaceConfig.LobbyPlaceId, { player }, options)
-end
-
-sessionPlayers = function()
-	local result = {}
-	if not session then
-		return result
-	end
-	for _, userId in ipairs(session.PartyUserIds) do
-		local player = Players:GetPlayerByUserId(userId)
-		if player then
-			table.insert(result, player)
-		end
-	end
-	return result
-end
-
-local function loadSessionPlayer(player)
-	local data = PlayerDataService.Load(player)
-	if not data then
-		return false
-	end
-	player:SetAttribute("DungeonSessionId", session.SessionId)
-	player:SetAttribute("DungeonPhaseId", session.PhaseId)
-	player:SetAttribute("DungeonInitialPartySize", session.PartySize)
-	if session.Completed then
-		player:SetAttribute("DungeonEliminated", true)
-		player:SetAttribute("DungeonLifeState", "Spectating")
-		player:SetAttribute("DungeonSpectating", true)
-		player:SetAttribute("DungeonSkyBlessingAvailable", false)
-	else
-		player:SetAttribute("DungeonEliminated", false)
-		player:SetAttribute("DungeonLifeState", "Active")
-		player:SetAttribute("DungeonSpectating", false)
-		player:SetAttribute("DungeonSkyBlessingAvailable", true)
-	end
-	-- A Dungeon possui combate real mesmo quando o tutorial persistente ainda
-	-- nao foi concluido no Lobby. O booleano explicito evita imunidade ilimitada.
-	player:SetAttribute("TutorialEnemyProtection", false)
-	-- O Lobby ja representa a tela de entrada da experiencia. Ao chegar neste
-	-- Place, o jogador deve nascer automaticamente; o fluxo legado de
-	-- StartScreen nao pode voltar a coloca-lo em AwaitingStart.
-	player:SetAttribute("DungeonRuntimeAutoStart", true)
-	player:SetAttribute("InitialGameStarted", true)
-	player:SetAttribute("InitialSpawnPositioned", false)
-	player:SetAttribute("InitialStartState", "Positioning")
-	player:SetAttribute("PlayerLifecycleState", "InitialSpawning")
-	DungeonSpawnService.BindPlayer(player)
-	if workspace:GetAttribute("DungeonHealthRecoveryReady") == true then
-		DungeonHealthRecoveryService.BindPlayer(player)
-	end
-	local lifeServiceReady = workspace:GetAttribute("DungeonLifeServiceReady") == true
-	if lifeServiceReady then
-		DungeonPartyLifeService.BindPlayer(player)
-	end
-	local lifeState = lifeServiceReady
-		and DungeonPartyLifeService.GetPlayerState(player.UserId)
-		or nil
-	-- Espectadores eliminados nao precisam de um personagem fisico ao reconectar.
-	-- Evita criar um corpo vivo/colidivel que ficaria parado dentro da Dungeon.
-	if lifeState == DungeonPartyLifeService.States.Eliminated then
-		if player.Character then
-			player.Character:Destroy()
-		end
-	elseif not player.Character then
-		player:LoadCharacter()
-	end
-	if workspace:GetAttribute("DungeonObjectiveServiceReady") == true then
-		ObjectiveService.SetParticipantConnected(player.UserId, true)
-	end
-	if workspace:GetAttribute("DungeonRunUpgradeServiceReady") == true then
-		RunUpgradeService.SyncPlayer(player)
-	end
-	return true
-end
-
-local function resultPayloadFor(userId, definition, elapsed, returnDelay, returnAt)
-	local committed = session.ResultCommitResults and session.ResultCommitResults[userId] or {
-		Success = false,
-		Applied = false,
-		AlreadyProcessed = false,
-		Eligible = false,
-		Error = "MissingCommitResult",
-	}
-	local record = committed.Record or {}
-	local endSummary = session.EndRunSummary or {}
-	local resultPlayer = Players:GetPlayerByUserId(userId)
-	return {
-		Action = "Result",
-		Result = session.Result,
-		PhaseId = session.PhaseId,
-		PhaseName = definition.DisplayName,
-		RewardCoins = math.max(0, math.floor(tonumber(record.RewardCoins) or 0)),
-		Balance = math.max(0, math.floor(tonumber(record.Balance) or 0)),
-		Completions = math.max(0, math.floor(tonumber(record.Completions) or 0)),
-		BestTime = tonumber(record.BestTime),
-		ElapsedSeconds = elapsed,
-		Saved = committed.Success == true,
-		Applied = committed.Applied == true,
-		AlreadyProcessed = committed.AlreadyProcessed == true,
-		EligibleForBossReward = committed.Eligible == true,
-		ResultId = committed.ResultId,
-		SaveError = committed.Error,
-		ReturnDelay = returnDelay,
-		ReturnAt = returnAt,
-		ManualReturnAt = session.ResultManualReturnAt,
-		ReplayAvailable = PlaceConfig.DungeonPlaceId > 0,
-		EndObjectiveId = endSummary.ObjectiveId,
-		EndObjectiveTitle = endSummary.ObjectiveTitle,
-		EndObjectiveProgress = endSummary.ObjectiveProgress,
-		EndObjectiveTarget = endSummary.ObjectiveTarget,
-		EndGlobalIslandIndex = endSummary.GlobalIslandIndex,
-		CommittedRound = endSummary.CommittedRound,
-		DefeatReason = session.DefeatReason,
-		LastDamageSource = resultPlayer and resultPlayer:GetAttribute("LastEnemyDamageSource") or nil,
-	}
-end
-
-local function sendResultToPlayer(player)
-	if not session or not session.Completed or not resultEvent then
-		return false
-	end
-	local payload = session.ResultPayloads and session.ResultPayloads[player.UserId]
-	if not payload then
-		return false
-	end
-	resultEvent:FireClient(player, payload)
-	return true
-end
-
-local function freezeResultPlayer(player)
-	player:SetAttribute("DungeonResultShown", true)
-	player:SetAttribute("DungeonSpectating", false)
-	local character = player.Character
-	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-	if character then
-		character:SetAttribute("MovementLocked", true)
-	end
-	if humanoid and humanoid.Health > 0 then
-		humanoid:UnequipTools()
-		humanoid.WalkSpeed = 0
-		humanoid.JumpPower = 0
-		humanoid.JumpHeight = 0
-		humanoid.AutoRotate = false
-		humanoid:Move(Vector3.zero)
-	end
-end
-
-local function resultIdsFrom(commitResults)
-	local result = {}
-	for userId, committed in pairs(type(commitResults) == "table" and commitResults or {}) do
-		if committed and type(committed.ResultId) == "string" then
-			result[userId] = committed.ResultId
-		end
-	end
-	return result
-end
-
-local function notifyResultSaveUpdate(definition, elapsed)
-	for _, player in ipairs(sessionPlayers()) do
-		local committed = session.ResultCommitResults[player.UserId]
-		local record = committed and committed.Record or {}
-		resultEvent:FireClient(player, {
-			Action = "ResultSaveUpdated",
-			Saved = committed and committed.Success == true or false,
-			SaveError = committed and committed.Error or "MissingCommitResult",
-			RewardCoins = math.max(0, math.floor(tonumber(record.RewardCoins) or 0)),
-			Balance = math.max(0, math.floor(tonumber(record.Balance) or 0)),
-			Completions = math.max(0, math.floor(tonumber(record.Completions) or 0)),
-			BestTime = tonumber(record.BestTime),
-			ElapsedSeconds = elapsed,
-		})
-	end
-end
-
-local finishSession
-
-finishSession = function(reason)
-	if not session or session.Completed then
-		return
-	end
-	local objectiveSnapshot = ObjectiveService.GetSnapshot()
-	session.EndRunSummary = {
-		ObjectiveId = objectiveSnapshot and objectiveSnapshot.Id
-			or workspace:GetAttribute("DungeonObjectiveId"),
-		ObjectiveTitle = objectiveSnapshot and objectiveSnapshot.Title
-			or workspace:GetAttribute("DungeonObjectiveTitle"),
-		ObjectiveProgress = objectiveSnapshot and objectiveSnapshot.Progress
-			or workspace:GetAttribute("DungeonObjectiveProgress"),
-		ObjectiveTarget = objectiveSnapshot and objectiveSnapshot.Target
-			or workspace:GetAttribute("DungeonObjectiveTarget"),
-		GlobalIslandIndex = objectiveSnapshot and objectiveSnapshot.GlobalIslandIndex
-			or workspace:GetAttribute("DungeonObjectiveGlobalIslandIndex"),
-		CommittedRound = workspace:GetAttribute("DungeonLastCommittedRewardRound") or 0,
-	}
-	local resultState = reason == "Victory"
-		and DungeonStateMachine.States.Victory
-		or DungeonStateMachine.States.Defeat
-	transitionState(resultState, {
-		Reason = reason,
-		Force = true,
-	})
-	session.Completed = true
-	session.Active = false
-	session.Result = reason
-	forEachSessionPlayer(function(player)
-		DungeonRunAnalytics.Complete(player, reason)
-	end)
-	local bossEligibleUserIds = reason == "Victory"
-		and BossService.GetEligibleUserIds()
-		or {}
-	DungeonPacingService.FinishRun(reason)
-	BossEncounterDirector.Stop()
-	BossService.Stop()
-	DungeonHealthRecoveryService.Stop()
-	DungeonEntrySafetyService.Stop()
-	DungeonRecoveryService.Stop()
-	OptionalIslandService.Stop()
-	DungeonPartyLifeService.Stop()
-	ObjectiveEncounterService.Stop()
-	RewardIslandService.Stop()
-	RunUpgradeService.Stop()
-	MobCollectibleService.Stop()
-	RunRewardLedgerService.Stop()
-	ObjectiveSequenceService.Stop()
-	ObjectiveService.Stop()
-	ChunkManager.Stop()
-	workspace:SetAttribute("DungeonCombatStopped", true)
-	for _, model in ipairs(CollectionService:GetTagged("CombatTarget")) do
-		if model:IsA("Model") then
-			model:SetAttribute("SimulationActive", false)
-			model:SetAttribute("Invulnerable", true)
-			local humanoid = model:FindFirstChildWhichIsA("Humanoid", true)
-			local root = model:FindFirstChild("HumanoidRootPart", true) or model.PrimaryPart
-			if humanoid and root and root:IsA("BasePart") then
-				humanoid:MoveTo(root.Position)
-			end
-		end
-	end
-	local definition = PhaseConfig.Get(session.PhaseId) or {
-		DisplayName = session.PhaseId,
-		VictoryCoins = 0,
-	}
-	local elapsed = session.StartedAt
-		and math.max(0, workspace:GetServerTimeNow() - session.StartedAt)
-		or 0
-	local commitOptions = {
-		SessionId = session.SessionId,
-		PhaseId = session.PhaseId,
-		Result = reason,
-		ParticipantUserIds = session.PartyUserIds,
-		EligibleUserIds = bossEligibleUserIds,
-		ElapsedSeconds = elapsed,
-		VictoryCoins = definition.VictoryCoins,
-	}
-	session.ResultCommitOptions = commitOptions
-	local allCommitted, commitResults, commitError =
-		DungeonResultCommitService.CommitSession(commitOptions)
-	session.ResultCommitResults = commitResults
-	session.ResultCommitError = commitError
-	workspace:SetAttribute("DungeonResultSaved", allCommitted == true)
-	workspace:SetAttribute("DungeonResultSaveError", commitError)
-
-	local returnDelay = allCommitted and 12 or 18
-	local resultNow = workspace:GetServerTimeNow()
-	local returnAt = resultNow + returnDelay
-	session.ResultReturnAt = returnAt
-	session.ResultManualReturnAt = allCommitted and resultNow or resultNow + 10
-	session.ResultPayloads = {}
-	for _, userId in ipairs(session.PartyUserIds) do
-		session.ResultPayloads[userId] = resultPayloadFor(
-			userId,
-			definition,
-			elapsed,
-			returnDelay,
-			returnAt
+	for _, player in ipairs(
+		playerList()
+	) do
+		table.insert(
+			result,
+			player.UserId
 		)
 	end
-	for _, player in ipairs(sessionPlayers()) do
-		freezeResultPlayer(player)
-		sendResultToPlayer(player)
-	end
 
-	DungeonReturnService.Begin({
-		SessionId = session.SessionId,
-		PhaseId = session.PhaseId,
-		Result = reason,
-		ResultSaved = allCommitted == true,
-		ReplayDepth = math.max(0, math.floor(tonumber(session.ReplayDepth) or 0)),
-		ParticipantUserIds = session.PartyUserIds,
-		ReturnAt = returnAt,
-		ManualReturnAt = session.ResultManualReturnAt,
-		CompletedAt = os.time(),
-		ResultIds = resultIdsFrom(commitResults),
-	})
-
-	if not allCommitted then
-		task.spawn(function()
-			for _, delaySeconds in ipairs({ 3, 7 }) do
-				task.wait(delaySeconds)
-				if not session or not session.Completed or workspace:GetAttribute("DungeonResultSaved") == true then
-					return
-				end
-				local retryCommitted, retryResults, retryError =
-					DungeonResultCommitService.CommitSession(commitOptions)
-				session.ResultCommitResults = retryResults
-				session.ResultCommitError = retryError
-				workspace:SetAttribute("DungeonResultSaved", retryCommitted == true)
-				workspace:SetAttribute("DungeonResultSaveError", retryError)
-				for _, userId in ipairs(session.PartyUserIds) do
-					session.ResultPayloads[userId] = resultPayloadFor(
-						userId,
-						definition,
-						elapsed,
-						returnDelay,
-						returnAt
-					)
-				end
-				DungeonReturnService.UpdateResultSaved(
-					retryCommitted == true,
-					resultIdsFrom(retryResults)
-				)
-				notifyResultSaveUpdate(definition, elapsed)
-				if retryCommitted then
-					return
-				end
-			end
-		end)
-	end
+	return result
 end
 
-local function startBossEncounter(arenaContext)
-	if session.Completed then
-		return false, "SessionCompleted"
-	end
-	local phase = PhaseConfig.Get(session.PhaseId)
-	if not phase then
-		return false, "PhaseUnavailable"
-	end
-	local created, bossStateOrError = BossService.Create({
-		SessionId = session.SessionId,
-		PhaseId = session.PhaseId,
-		BossId = phase.BossId,
-		PartySize = session.PartySize,
-		ParticipantUserIds = session.PartyUserIds,
-		Seed = session.Seed,
-		ArenaContext = arenaContext,
-		RemoteEvent = bossEvent,
-		OnActivated = function(snapshot)
-			if session.Completed then
-				return
-			end
-			DungeonPacingService.MarkBossActive(snapshot)
-			transitionState(DungeonStateMachine.States.BossActive, {
-				Reason = "BossArenaActivated",
-				BossId = snapshot and snapshot.BossId,
-			})
-			runMilestone("BossStarted", "Boss", tostring(snapshot and snapshot.BossId or "Boss"))
-		end,
-		OnDefeated = function(boss, snapshot)
-			if session.Completed or session.BossVictoryPending then
-				return
-			end
-			session.BossVictoryPending = true
-			runMilestone("BossDefeated", "BossDefeated", tostring(
-				snapshot and snapshot.BossId or boss and boss.Name or "Boss"
-			))
-			local rewardDelay = BossEncounterDirector.HandleDefeated(boss, snapshot)
-			workspace:SetAttribute("DungeonBossVictoryPending", true)
-			workspace:SetAttribute(
-				"DungeonBossVictoryFinalizeAt",
-				workspace:GetServerTimeNow() + math.max(0, tonumber(rewardDelay) or 0)
-			)
-			task.delay(math.max(0, tonumber(rewardDelay) or 0), function()
-				if session and not session.Completed then
-					finishSession("Victory")
-				end
-			end)
-		end,
-	})
-	if not created then
-		workspace:SetAttribute("DungeonBossCreationError", tostring(bossStateOrError))
-		warn("[DungeonRuntime] Criacao do chefe falhou: " .. tostring(bossStateOrError))
-		return false, bossStateOrError
-	end
-	local directorAttached, directorError = BossEncounterDirector.Attach(
-		bossStateOrError,
-		{
-			BossRewardCoins = math.max(
-				50,
-				math.floor((tonumber(phase.VictoryCoins) or 0) * 0.40)
-			),
-		}
+local function currentPlayerCount()
+	return math.clamp(
+		#playerList(),
+		1,
+		StandaloneConfig.MaximumPlayers
 	)
-	workspace:SetAttribute("DungeonBossDirectorAttached", directorAttached == true)
-	workspace:SetAttribute("DungeonBossDirectorError", directorAttached and nil or tostring(directorError))
-	DungeonPacingService.MarkBossReady(arenaContext)
-	workspace:SetAttribute("DungeonBossState", "Ready")
-	workspace:SetAttribute("DungeonBossPreparedAt", workspace:GetServerTimeNow())
-	return true, bossStateOrError
 end
 
-local function beginWorld()
-	if session.WorldStarted then
+local function publishPartySize()
+	local size =
+		currentPlayerCount()
+
+	workspace:SetAttribute(
+		"DungeonPartySize",
+		size
+	)
+
+	for _, player in ipairs(
+		playerList()
+	) do
+		player:SetAttribute(
+			"DungeonInitialPartySize",
+			size
+		)
+	end
+end
+
+local function choosePhase()
+	local requested =
+		workspace:GetAttribute(
+			"StandalonePhaseId"
+		)
+			or workspace:GetAttribute(
+				"StudioPhaseId"
+			)
+
+	if PhaseConfig.IsValid(requested) then
+		return requested
+	end
+
+	return PhaseConfig.GetDefaultId()
+end
+
+local function applyPhaseAttributes()
+	if not phase then
 		return
 	end
-	session.WorldStarted = true
-	session.StartedAt = workspace:GetServerTimeNow()
-	PartyService.Start()
-	PartyService.RestoreDungeonParty(
-		sessionPlayers(),
-		session.LeaderUserId,
-		session.PhaseId,
+
+	workspace:SetAttribute(
+		"DungeonIslandBlockColor",
+		phase.IslandBlockColor
+	)
+	workspace:SetAttribute(
+		"DungeonIslandBlockMaterial",
+		phase.IslandBlockMaterial
+	)
+	workspace:SetAttribute(
+		"DungeonIslandBlockTextureId",
+		phase.IslandBlockTextureId
+	)
+	workspace:SetAttribute(
+		"DungeonTextureStudsPerTileU",
+		phase.TextureStudsPerTileU
+	)
+	workspace:SetAttribute(
+		"DungeonTextureStudsPerTileV",
+		phase.TextureStudsPerTileV
+	)
+	workspace:SetAttribute(
+		"DungeonMaximumActiveMonsters",
+		phase.MaximumActiveMonsters
+	)
+	workspace:SetAttribute(
+		"DungeonEliteReservedMonsterSlots",
+		phase.EliteReservedMonsterSlots
+	)
+	workspace:SetAttribute(
+		"DungeonDefaultMonsterSpawnChance",
+		phase.DefaultMonsterSpawnChance
+	)
+	workspace:SetAttribute(
+		"DungeonDecorationSpawnChance",
+		phase.DecorationSpawnChance
+	)
+end
+
+local function checkpointIndex()
+	local checkpoint =
+		DungeonSpawnService.GetCheckpoint()
+
+	if type(checkpoint) == "table" then
+		return math.max(
+			StandaloneEntryConfig.ServerStartIsland,
+			math.floor(
+				tonumber(
+					checkpoint.GlobalIslandIndex
+				)
+					or StandaloneEntryConfig
+						.ServerStartIsland
+			)
+		)
+	end
+
+	return StandaloneEntryConfig.ServerStartIsland
+end
+
+local function bindSimpleRespawn(
+	player,
+	character
+)
+	local humanoid =
+		character:WaitForChild(
+			"Humanoid",
+			10
+		)
+
+	if not humanoid then
+		return
+	end
+
+	humanoid.Died:Connect(function()
+		if player.Parent ~= Players then
+			return
+		end
+
+		player:SetAttribute(
+			"DungeonLastDeathAt",
+			workspace:GetServerTimeNow()
+		)
+
+		player:SetAttribute(
+			"DungeonRespawnPolicy",
+			"CurrentCombatCheckpoint"
+		)
+
+		task.delay(
+			StandaloneConfig.RespawnDelaySeconds,
+			function()
+				if player.Parent ~= Players then
+					return
+				end
+
+				-- During/after route completion, keeping respawn available is
+				-- friendlier than freezing the player in a finished server.
+				player:LoadCharacter()
+			end
+		)
+	end)
+end
+
+local function prepareCharacterHooks(player)
+	local connections =
+		playerConnections[player]
+
+	if connections then
+		for _, connection in ipairs(
+			connections
+		) do
+			connection:Disconnect()
+		end
+	end
+
+	connections = {}
+
+	table.insert(
+		connections,
+		player.CharacterAdded:Connect(
+			function(character)
+				task.spawn(
+					bindSimpleRespawn,
+					player,
+					character
+				)
+			end
+		)
+	)
+
+	playerConnections[player] =
+		connections
+
+	if player.Character then
+		task.spawn(
+			bindSimpleRespawn,
+			player,
+			player.Character
+		)
+	end
+end
+
+local function loadPersistentData(player)
+	local ok,
+		result =
+			pcall(
+				PlayerDataService.Load,
+				player
+			)
+
+	if not ok then
+		warn(
+			"[StandaloneDungeon] PlayerData Load falhou para "
+				.. player.Name
+				.. ": "
+				.. tostring(result)
+		)
+
+		player:SetAttribute(
+			"DungeonPlayerDataLoadError",
+			tostring(result)
+		)
+
+		return false
+	end
+
+	player:SetAttribute(
+		"DungeonPlayerDataLoadError",
+		nil
+	)
+
+	return result ~= nil
+end
+
+local function applyDirectPlayerContract(player)
+	player:SetAttribute(
+		"DungeonSessionId",
 		session.SessionId
 	)
-	local phase = PhaseConfig.Get(session.PhaseId)
-	if not phase then
-		warn("[DungeonRuntime] A fase deixou de estar disponivel: " .. tostring(session.PhaseId))
-		finishSession("InvalidSession")
-		return
+
+	player:SetAttribute(
+		"DungeonPhaseId",
+		phaseId
+	)
+
+	player:SetAttribute(
+		"DungeonStandaloneSession",
+		true
+	)
+
+	player:SetAttribute(
+		"DungeonEntrySource",
+		"DirectJoin"
+	)
+
+	player:SetAttribute(
+		"DungeonLobbyUsed",
+		false
+	)
+
+	player:SetAttribute(
+		"DungeonTeleportDataRequired",
+		false
+	)
+
+	player:SetAttribute(
+		"DungeonGuideEnabled",
+		false
+	)
+
+	player:SetAttribute(
+		"DungeonRuntimeAutoStart",
+		true
+	)
+
+	player:SetAttribute(
+		"InitialGameStarted",
+		true
+	)
+
+	player:SetAttribute(
+		"InitialSpawnPositioned",
+		false
+	)
+
+	player:SetAttribute(
+		"InitialStartState",
+		"Positioning"
+	)
+
+	player:SetAttribute(
+		"PlayerLifecycleState",
+		"InitialSpawning"
+	)
+
+	player:SetAttribute(
+		"TutorialEnemyProtection",
+		false
+	)
+
+	player:SetAttribute(
+		"DungeonEliminated",
+		false
+	)
+
+	player:SetAttribute(
+		"DungeonSpectating",
+		false
+	)
+
+	player:SetAttribute(
+		"DungeonLifeState",
+		"Active"
+	)
+end
+
+local function placePlayerInCurrentRun(
+	player,
+	reason
+)
+	if player.Parent ~= Players then
+		return false,
+			"PlayerLeft"
 	end
-	workspace:SetAttribute("DungeonSessionId", session.SessionId)
-	workspace:SetAttribute("DungeonPhaseId", session.PhaseId)
-	workspace:SetAttribute("DungeonPartySize", session.PartySize)
-	workspace:SetAttribute("DungeonSeed", session.Seed)
-	workspace:SetAttribute("DungeonGenerationState", "Generating")
-	workspace:SetAttribute("DungeonCombatStopped", false)
-	workspace:SetAttribute("DungeonIslandBlockColor", phase.IslandBlockColor)
-	workspace:SetAttribute("DungeonIslandBlockMaterial", phase.IslandBlockMaterial)
-	workspace:SetAttribute("DungeonIslandBlockTextureId", phase.IslandBlockTextureId)
-	workspace:SetAttribute("DungeonTextureStudsPerTileU", phase.TextureStudsPerTileU)
-	workspace:SetAttribute("DungeonTextureStudsPerTileV", phase.TextureStudsPerTileV)
-	workspace:SetAttribute("DungeonMaximumActiveMonsters", phase.MaximumActiveMonsters)
-	workspace:SetAttribute("DungeonEliteReservedMonsterSlots", phase.EliteReservedMonsterSlots)
-	workspace:SetAttribute("DungeonDefaultMonsterSpawnChance", phase.DefaultMonsterSpawnChance)
-	workspace:SetAttribute("DungeonDecorationSpawnChance", phase.DecorationSpawnChance)
-	workspace:SetAttribute("DungeonSessionClosed", false)
 
-	DungeonPacingService.Start({
-		ObjectivePreparationSeconds = 2.5,
-		InterWaveSeconds = 1.5,
-		ObjectiveCompletionSeconds = 1.35,
-		RoundTransitionSeconds = 2.75,
-		BossTransitionSeconds = 4,
-		CountdownTickSeconds = 0.1,
-	})
+	local state =
+		playerEntryState[player]
 
-	DungeonHealthRecoveryService.Start({
-		ParticipantUserIds = session.PartyUserIds,
-		RegenDelaySeconds = 5,
-		RegenPercentPerSecond = 0.04,
-		ObjectiveHealPercent = 0.15,
-		RewardHealPercent = 0.40,
-		BossHealPercent = 1,
-		TickSeconds = 0.25,
-	})
+	if not state then
+		state = {
+			PositionSerial = 0,
+			LastRequestedAt = -math.huge,
+			LastIslandIndex = nil,
+		}
 
-	DungeonEntrySafetyService.Start({
-		ParticipantUserIds = session.PartyUserIds,
-		ProtectionSeconds = 3,
-	})
+		playerEntryState[player] = state
+	end
 
-	ObjectiveService.Start({
-		SessionId = session.SessionId,
-		PhaseId = session.PhaseId,
-		ParticipantUserIds = session.PartyUserIds,
-		RemoteEvent = objectiveEvent,
-		OnObjectiveCompleted = function(snapshot)
-			if snapshot.Id == "FirstStrike" then
-				runMilestone("FirstStrikeCompleted", "FirstStrike", "Objective1")
-			end
-			local sequenceResult = ObjectiveSequenceService.HandleObjectiveCompleted(snapshot)
-			ObjectiveEncounterService.CompleteObjective(snapshot.Id)
-			if sequenceResult and sequenceResult.IsRewardIsland ~= true then
-				DungeonHealthRecoveryService.HealParticipants(
-					0.15,
-					"ObjectiveCompleted:" .. tostring(snapshot.Id),
-					false
-				)
-			end
-			if sequenceResult and stateMachine:GetState() == DungeonStateMachine.States.Active then
-				transitionState(
-					sequenceResult.IsRewardIsland
-						and DungeonStateMachine.States.RoundReward
-						or DungeonStateMachine.States.ObjectiveComplete,
-					{
-						Reason = snapshot.CompletionReason,
-						ObjectiveId = snapshot.Id,
-						GlobalIslandIndex = snapshot.GlobalIslandIndex,
-					}
-				)
-			end
-		end,
-		OnWaypointEscalated = function(snapshot)
-			workspace:SetAttribute("DungeonObjectiveWaypointEscalatedAt", workspace:GetServerTimeNow())
-			workspace:SetAttribute("DungeonObjectiveWaypointId", snapshot.Id)
-			ObjectiveSequenceService.EscalateWaypoint()
-		end,
-		OnRecoveryRequested = function(snapshot)
-			workspace:SetAttribute("DungeonObjectiveRecoveryRequestedAt", workspace:GetServerTimeNow())
-			workspace:SetAttribute("DungeonObjectiveRecoveryId", snapshot.Id)
-			return ObjectiveSequenceService.RecoverCurrentObjective(snapshot)
-		end,
-	})
+	local timestamp =
+		workspace:GetServerTimeNow()
 
-	DungeonPartyLifeService.Start({
-		ParticipantUserIds = session.PartyUserIds,
-		RemoteEvent = lifeEvent,
-		OnParticipantStateChanged = function(record)
-			if not record or record.State ~= DungeonPartyLifeService.States.Eliminated then
-				return
-			end
-			local player = Players:GetPlayerByUserId(record.UserId)
-			if player then
-				DungeonRunAnalytics.PlayerDied(
-					player,
-					record.LastReason or player:GetAttribute("LastEnemyDamageSource") or "Unknown",
-					runStage()
-				)
-			end
-		end,
-		OnWipePending = function(reason)
-			local current = stateMachine:GetState()
-			if current ~= DungeonStateMachine.States.WipePending then
-				session.PreWipeState = current
-				transitionState(DungeonStateMachine.States.WipePending, {
-					Reason = reason,
-					Force = true,
-				})
-			end
-		end,
-		OnWipeCancelled = function(reason)
-			if session.Completed then
-				return
-			end
-			local restoreState = session.PreWipeState
-			if restoreState == nil
-				or restoreState == DungeonStateMachine.States.WipePending
-				or restoreState == DungeonStateMachine.States.Victory
-				or restoreState == DungeonStateMachine.States.Defeat
-				or restoreState == DungeonStateMachine.States.Returning
-			then
-				restoreState = DungeonStateMachine.States.Active
-			end
-			session.PreWipeState = nil
-			transitionState(restoreState, {
-				Reason = reason or "WipeCancelled",
-				Force = true,
-			})
-		end,
-		OnAllEliminated = function(reason)
-			if not session.Completed then
-				session.DefeatReason = tostring(reason or "AllParticipantsEliminated")
-				finishSession(reason == "AllParticipantsDisconnected" and "Disconnected" or "Defeat")
-			end
-		end,
-	})
+	if timestamp - state.LastRequestedAt
+		< StandaloneEntryConfig
+			.PositionRequestCooldownSeconds
+	then
+		return false,
+			"DuplicatePositionRequest"
+	end
 
-	ObjectiveEncounterService.Start({
-		PartySize = session.PartySize,
-		ParticipantUserIds = session.PartyUserIds,
-	})
+	state.LastRequestedAt = timestamp
+	state.PositionSerial += 1
 
-	RunRewardLedgerService.Start({
-		SessionId = session.SessionId,
-		ParticipantUserIds = session.PartyUserIds,
-	})
-	RunUpgradeService.Start({
-		SessionId = session.SessionId,
-		ParticipantUserIds = session.PartyUserIds,
-		RemoteEvent = runUpgradeEvent,
-	})
-	MobCollectibleService.Start({
-		SessionId = session.SessionId,
-		ParticipantUserIds = session.PartyUserIds,
-	})
-	BossEncounterDirector.Start({
-		SessionId = session.SessionId,
-		ParticipantUserIds = session.PartyUserIds,
-	})
-	OptionalIslandService.Start({
-		SessionId = session.SessionId,
-		PartySize = session.PartySize,
-		ParticipantUserIds = session.PartyUserIds,
-	})
-	RewardIslandService.Start({
-		SessionId = session.SessionId,
-		PhaseId = session.PhaseId,
-		ParticipantUserIds = session.PartyUserIds,
-		RemoteEvent = rewardEvent,
-		BeginUpgradeChoice = function(player, roundIndex)
-			return RunUpgradeService.BeginChoice(player, roundIndex)
-		end,
-		IsUpgradeChoiceResolved = function(player, roundIndex)
-			return RunUpgradeService.IsResolved(player, roundIndex)
-		end,
-		CommitRoundReward = function(roundIndex, metadata)
-			return ObjectiveSequenceService.CommitRoundReward(roundIndex, metadata)
-		end,
-	})
+	local serial =
+		state.PositionSerial
 
-	ObjectiveSequenceService.Start({
-		PartySize = session.PartySize,
-		ParticipantUserIds = session.PartyUserIds,
-		GetIslandContext = DungeonGenerator.GetRouteIslandContext,
-		RequestRouteThrough = DungeonGenerator.RequestRouteThrough,
-		OnObjectiveStarted = function(definition, islandContext)
-			updateRunStage(tostring(definition.Id))
-			if definition.Id == "EliteHunt" then
-				runMilestone("EliteReached", "EliteHunt", "Objective11")
-			end
-			DungeonEntrySafetyService.ProtectParticipants(
-				islandContext,
-				"ObjectiveIslandEntered:" .. tostring(definition.Id),
-				3
-			)
-			local currentState = stateMachine:GetState()
-			if currentState ~= DungeonStateMachine.States.Active then
-				transitionState(DungeonStateMachine.States.Active, {
-					Reason = "ObjectiveStarted",
-					ObjectiveId = definition.Id,
-					GlobalIslandIndex = definition.GlobalIslandIndex,
-				})
-			end
-			local encounterStarted, encounterError = ObjectiveEncounterService.BeginObjective(
-				definition,
-				islandContext
-			)
-			if not encounterStarted then
-				workspace:SetAttribute("DungeonEncounterStartError", tostring(encounterError))
-				warn("[DungeonRuntime] Encontro do objetivo falhou: " .. tostring(encounterError))
-			end
-		end,
-		OnRoundRewardPending = function(result, islandContext)
-			local roundIndex = math.clamp(math.floor(tonumber(result.RoundIndex) or 1), 1, 3)
-			runMilestone(
-				"Reward" .. tostring(roundIndex) .. "Reached",
-				"Reward" .. tostring(roundIndex),
-				"RoundRewardIsland"
-			)
-			MobCollectibleService.AttractRound(
-				result.RoundIndex,
-				"RoundObjectiveCompleted"
-			)
-			DungeonPartyLifeService.RestoreEliminatedAtReward(
-				result.RoundIndex,
-				islandContext and islandContext.SafeSpawn
-			)
-			DungeonHealthRecoveryService.HealParticipants(
-				0.40,
-				"RewardIslandReached:" .. tostring(result.RoundIndex),
-				false
-			)
-			workspace:SetAttribute("DungeonRoundRewardPending", true)
-			workspace:SetAttribute("DungeonRoundRewardIndex", result.RoundIndex)
-			workspace:SetAttribute("DungeonRoundRewardIsland", result.GlobalIslandIndex)
-			local rewardStarted, rewardError = RewardIslandService.BeginRound(result, islandContext)
-			if not rewardStarted then
-				workspace:SetAttribute("DungeonRoundRewardError", tostring(rewardError))
-				warn("[DungeonRuntime] Reward Island falhou: " .. tostring(rewardError))
-			end
-		end,
-		OnRoundRewardCommitted = function(roundIndex, isFinal, roundExitContext)
-			MobCollectibleService.AttractRound(
-				roundIndex,
-				"RoundRewardCommittedFallback"
-			)
-			workspace:SetAttribute("DungeonRoundRewardPending", false)
-			workspace:SetAttribute("DungeonLastCommittedRewardRound", roundIndex)
-			local checkpointUpdated, checkpointError = DungeonSpawnService.CommitRoundCheckpoint(
-				roundIndex,
-				roundExitContext,
-				"RoundExitCommitted:" .. tostring(roundIndex),
-				false
-			)
-			workspace:SetAttribute("DungeonRoundCheckpointReady", checkpointUpdated == true)
-			workspace:SetAttribute(
-				"DungeonRoundCheckpointError",
-				checkpointUpdated and nil or tostring(checkpointError)
-			)
-			if not checkpointUpdated then
-				warn("[DungeonRuntime] Checkpoint do round falhou: " .. tostring(checkpointError))
-			end
-			if not isFinal then
-				transitionState(DungeonStateMachine.States.Transitioning, {
-					Reason = "RoundRewardCommitted",
-					RoundIndex = roundIndex,
-				})
-			end
-		end,
-		OnFinalRewardCommitted = function(finalContext)
-			local created, bossContextOrError = DungeonGenerator.CreateBossSanctuary({
-				Reason = "FinalRewardCommitted",
-				GenerationOwnerUserId = session.LeaderUserId,
-			})
-			if not created then
-				workspace:SetAttribute("DungeonBossSanctuaryError", tostring(bossContextOrError))
-				return false
-			end
-			session.BossSanctuaryContext = bossContextOrError
-			DungeonHealthRecoveryService.HealParticipants(1, "BossPreparation", true)
-			transitionState(DungeonStateMachine.States.BossPending, {
-				Reason = "FinalRewardCommitted",
-				RouteEndKey = finalContext and finalContext.Key,
-			})
-			local bossPrepared, bossError = startBossEncounter(bossContextOrError)
-			if not bossPrepared then
-				workspace:SetAttribute("DungeonBossState", "CreationFailed")
-				return false, bossError
-			end
-			return true
-		end,
-		OnRouteRejected = function(player, requestedIndex, reason, allowedIndex)
-			objectiveEvent:FireClient(player, {
-				Action = "RouteRejected",
-				RequestedIslandIndex = requestedIndex,
-				AllowedIslandIndex = allowedIndex,
-				Reason = reason,
-			})
-		end,
-		OnRecoveryRequested = function(definition, islandContext, snapshot)
-			return ObjectiveEncounterService.Recover(definition, islandContext, snapshot)
-		end,
-	})
+	local index =
+		checkpointIndex()
 
-	local success, errorMessage = DungeonGenerator.Generate({
-		PhaseId = session.PhaseId,
-		PartySize = session.PartySize,
-		Seed = session.Seed,
-		MaximumIslandCount = phase.BaseIslandCount,
-		OnRouteIslandEntered = function(player, islandContext)
-			player:SetAttribute("DungeonCurrentOptionalIslandKey", nil)
-			player:SetAttribute("DungeonCurrentOptionalProfile", nil)
-			player:SetAttribute("DungeonOptionalRewardAvailable", false)
-			return ObjectiveSequenceService.HandleIslandEntered(player, islandContext)
-		end,
-		OnOptionalIslandEntered = function(player, islandContext)
-			return OptionalIslandService.HandleIslandEntered(player, islandContext)
-		end,
-		OnBossSanctuaryReady = function(bossContext)
-			session.BossSanctuaryContext = bossContext
-			workspace:SetAttribute("DungeonBossSanctuaryReadyAt", workspace:GetServerTimeNow())
-		end,
-		OnPhaseReady = function(endContext)
-			if session.Completed then
-				return
-			end
-			-- A rota completa ja foi planejada e materializada, mas o santuario do
-			-- chefe permanece bloqueado ate a recompensa final. A tarefa dos
-			-- objetivos chamara DungeonGenerator.CreateBossSanctuary no momento certo.
-			session.RouteEndContext = endContext
-			workspace:SetAttribute("DungeonRouteReady", true)
-			workspace:SetAttribute("DungeonRouteReadyAt", workspace:GetServerTimeNow())
-			workspace:SetAttribute("DungeonBossState", "WaitingForFinalReward")
-			stateMachine:PublishCurrent({
-				Reason = "FixedRouteReady",
-				RouteEndKey = endContext and endContext.Key,
-			})
-		end,
-	})
-	workspace:SetAttribute("DungeonRuntimeReady", success == true)
-	if success then
-		workspace:SetAttribute("DungeonGenerationState", "Ready")
-		local initialContext = DungeonGenerator.GetRouteIslandContext(1)
-		local positioned, positionError = DungeonSpawnService.SetInitialCheckpoint(
-			initialContext,
-			"InitialWorldReady",
+	state.LastIslandIndex = index
+
+	player:SetAttribute(
+		"CurrentGlobalIslandIndex",
+		index
+	)
+
+	player:SetAttribute(
+		"DungeonStandaloneJoinIsland",
+		index
+	)
+
+	player:SetAttribute(
+		"DungeonStandaloneLateJoinPolicy",
+		StandaloneEntryConfig
+			.LateJoinPolicy
+	)
+
+	player:SetAttribute(
+		"DungeonStandalonePositionSerial",
+		serial
+	)
+
+	player:SetAttribute(
+		"DungeonStandalonePositionReason",
+		tostring(
+			reason or "StandaloneJoin"
+		)
+	)
+
+	local context =
+		DungeonGenerator
+			.GetRouteIslandContext(
+				index
+			)
+
+	if context then
+		ObjectiveSequenceService
+			.HandleIslandEntered(
+				player,
+				context
+			)
+	end
+
+	if not player.Character then
+		player:SetAttribute(
+			"DungeonStandaloneCharacterLoadRequested",
 			true
 		)
-		if not positioned then
-			workspace:SetAttribute("DungeonInitialSpawnError", tostring(positionError))
-			warn("[DungeonRuntime] Spawn inicial falhou: " .. tostring(positionError))
-		end
-		DungeonRecoveryService.Start({
-			ParticipantUserIds = session.PartyUserIds,
-			GetCheckpoint = DungeonSpawnService.GetCheckpoint,
-			PositionPlayer = DungeonSpawnService.PositionPlayer,
-			FallDistanceBelowCheckpoint = 55,
-			StuckSeconds = 6.5,
-			ProtectionSeconds = 4,
-		})
-		local liveReadiness = PaidTestReadinessService.ValidateLiveWorld(
-			session.PhaseId,
-			initialContext
-		)
-		if not liveReadiness.Ready and not RunService:IsStudio() then
-			workspace:SetAttribute("DungeonGenerationState", "ReadinessFailed")
-			finishSession("ReadinessFailed")
-			return
-		end
-		forEachSessionPlayer(function(player)
-			DungeonRunAnalytics.RunStarted(player)
-		end)
-		transitionState(DungeonStateMachine.States.Active, {
-			Reason = "InitialWorldReady",
-		})
-	else
-		workspace:SetAttribute("DungeonGenerationState", "Failed")
-		workspace:SetAttribute("DungeonGenerationError", tostring(errorMessage))
-		warn("[DungeonRuntime] Geracao falhou: " .. tostring(errorMessage))
-		finishSession("FailedToGenerate")
-	end
-end
 
-local function loadedParticipantCount()
-	if not session then
-		return 0
-	end
-	local count = 0
-	for _, userId in ipairs(session.PartyUserIds) do
-		local player = Players:GetPlayerByUserId(userId)
-		if player
-			and player:GetAttribute("DungeonSessionId") == session.SessionId
-		then
-			count += 1
-		end
-	end
-	return count
-end
+		player:LoadCharacter()
 
-local function queueBeginWorld()
-	if not session or session.Completed or session.WorldStarted then
-		return
-	end
-	local loaded = loadedParticipantCount()
-	workspace:SetAttribute("DungeonWorldStartExpectedPlayers", session.PartySize)
-	workspace:SetAttribute("DungeonWorldStartReadyPlayers", loaded)
-	workspace:SetAttribute("DungeonWorldStartWaitingForPlayers", loaded < session.PartySize)
-
-	if loaded >= session.PartySize then
-		if session.WorldStartQueued then
-			return
-		end
-		session.WorldStartQueued = true
-		workspace:SetAttribute("DungeonWorldStartReason", "AllParticipantsLoaded")
-		task.defer(function()
-			if session then
-				session.WorldStartQueued = false
-				if not session.WorldStarted and not session.Completed then
-					beginWorld()
-				end
-			end
-		end)
-		return
+		return true,
+			"CharacterLoadRequested"
 	end
 
-	if session.WorldStartFallbackScheduled then
-		return
-	end
-	session.WorldStartFallbackScheduled = true
-	session.WorldStartDeadline = workspace:GetServerTimeNow() + 8
-	workspace:SetAttribute("DungeonWorldStartDeadline", session.WorldStartDeadline)
-	task.delay(8, function()
-		if not session or session.WorldStarted or session.Completed then
-			return
-		end
-		workspace:SetAttribute("DungeonWorldStartReason", "PartyArrivalTimeout")
-		workspace:SetAttribute("DungeonWorldStartWaitingForPlayers", false)
-		beginWorld()
-	end)
+	local positioned,
+		positionError =
+			DungeonSpawnService.PositionPlayer(
+				player,
+				reason or "StandaloneJoin"
+			)
+
+	player:SetAttribute(
+		"DungeonStandalonePositionSucceeded",
+		positioned == true
+	)
+
+	player:SetAttribute(
+		"DungeonStandalonePositionError",
+		positioned and nil
+			or tostring(positionError)
+	)
+
+	return positioned,
+		positionError
 end
 
 local function acceptPlayer(player)
-	local joinData = player:GetJoinData()
-	local parsed, errorMessage = sanitizeTeleportData(player, joinData and joinData.TeleportData)
-	if not parsed then
-		teleportBack(player, errorMessage)
-		return false
-	end
-	local readiness = PaidTestReadinessService.ValidateStatic(parsed.PhaseId)
-	if not readiness.Ready and not RunService:IsStudio() then
-		teleportBack(player, "Dungeon indisponível: validação pré-teste falhou")
-		return false
-	end
-	if session and session.DevelopmentMode and parsed.DevelopmentMode then
-		if not session.PartyUserSet[player.UserId] and #session.PartyUserIds < 4 then
-			table.insert(session.PartyUserIds, player.UserId)
-			session.PartyUserSet[player.UserId] = true
-			session.PartySize = #session.PartyUserIds
-		end
-	elseif session and not compatibleSession(session, parsed) then
-		teleportBack(player, "Servidor reservado pertence a outra sessao")
-		return false
-	end
 	if not session then
-		session = parsed
-		session.Active = true
-		session.Completed = false
-		session.WorldStarted = false
+		return false,
+			"SessionNotInitialized"
 	end
-	if not session.PartyUserSet then
-		local _, set = copyUserIds(session.PartyUserIds)
-		session.PartyUserSet = set
+
+	applyDirectPlayerContract(player)
+	prepareCharacterHooks(player)
+
+	DungeonSpawnService.BindPlayer(
+		player
+	)
+
+	loadPersistentData(player)
+
+	publishPartySize()
+
+	return true
+end
+
+local function startCompatibilityShells()
+	-- Task 12 turns these modules into inert compatibility shells.
+	-- Starting them keeps old callers safe without reintroducing gameplay.
+	local options = {
+		SessionId = session.SessionId,
+		PhaseId = phaseId,
+		PartySize = currentPlayerCount(),
+		ParticipantUserIds =
+			participantUserIds(),
+	}
+
+	pcall(
+		ObjectiveService.Start,
+		options
+	)
+
+	pcall(
+		ObjectiveEncounterService.Start,
+		options
+	)
+
+	pcall(
+		RewardIslandService.Start,
+		options
+	)
+
+	pcall(
+		RunRewardLedgerService.Start,
+		options
+	)
+
+	pcall(
+		MobCollectibleService.Start,
+		options
+	)
+
+	pcall(
+		OptionalIslandService.Start,
+		options
+	)
+
+	pcall(
+		BossService.Start,
+		options
+	)
+
+	pcall(
+		BossEncounterDirector.Start,
+		options
+	)
+
+	pcall(
+		DungeonPacingService.Start,
+		options
+	)
+end
+
+local function startRouteProgression()
+	local startedProgression,
+		errorCode =
+			ObjectiveSequenceService.Start({
+				PartySize =
+					currentPlayerCount(),
+
+				ParticipantUserIds =
+					participantUserIds(),
+
+				GetIslandContext =
+					DungeonGenerator
+						.GetRouteIslandContext,
+
+				RequestRouteThrough =
+					DungeonGenerator
+						.RequestRouteThrough,
+
+				OnRouteRejected =
+					function(
+						player,
+						requestedIndex,
+						reason,
+						allowedIndex
+					)
+						player:SetAttribute(
+							"DungeonRouteRejectedReason",
+							reason
+						)
+
+						player:SetAttribute(
+							"DungeonRouteRejectedIsland",
+							requestedIndex
+						)
+
+						player:SetAttribute(
+							"DungeonRouteAllowedIsland",
+							allowedIndex
+						)
+					end,
+			})
+
+	if startedProgression == false
+		and errorCode ~= "AlreadyStarted"
+	then
+		return false,
+			errorCode
 	end
-	if not session.PartyUserSet[player.UserId] then
-		teleportBack(player, "Jogador fora da lista da sessao")
-		return false
+
+	return true
+end
+
+local function startRecovery()
+	local ok,
+		result =
+			pcall(
+				DungeonRecoveryService.Start,
+				{
+					ParticipantUserIds =
+						participantUserIds(),
+
+					GetCheckpoint =
+						DungeonSpawnService
+							.GetCheckpoint,
+
+					PositionPlayer =
+						DungeonSpawnService
+							.PositionPlayer,
+
+					FallDistanceBelowCheckpoint = 55,
+					StuckSeconds = 6.5,
+					ProtectionSeconds =
+						StandaloneConfig
+							.SpawnProtectionSeconds,
+				}
+			)
+
+	workspace:SetAttribute(
+		"DungeonStandaloneRecoveryStarted",
+		ok and result ~= false
+	)
+end
+
+local function startWorld()
+	if worldStarting
+		or worldReady
+	then
+		return
 	end
-	local loaded = loadSessionPlayer(player)
-	if loaded then
-		DungeonRunAnalytics.BeginPlayer(player, {
-			SessionId = session.SessionId,
-			PhaseId = session.PhaseId,
-			PartySize = session.PartySize,
-			ReplayDepth = session.ReplayDepth,
-			ReplayOfSessionId = session.ReplayOfSessionId,
-		})
+
+	worldStarting = true
+
+	publishState(
+		"Generating",
+		"StandaloneServerStart"
+	)
+
+	workspace:SetAttribute(
+		"DungeonGenerationState",
+		"Generating"
+	)
+
+	local progressionReady,
+		progressionError =
+			startRouteProgression()
+
+	if not progressionReady then
+		worldStarting = false
+
+		workspace:SetAttribute(
+			"DungeonGenerationState",
+			"Failed"
+		)
+
+		workspace:SetAttribute(
+			"DungeonGenerationError",
+			"RouteProgression:"
+				.. tostring(
+					progressionError
+				)
+		)
+
+		return
 	end
-	return loaded
+
+	local success,
+		errorMessage =
+			DungeonGenerator.Generate({
+				PhaseId = phaseId,
+				PartySize =
+					currentPlayerCount(),
+				Seed = session.Seed,
+				RouteIslandCount =
+					StandaloneConfig
+						.RouteIslandCount,
+
+				OnRouteIslandEntered =
+					function(
+						player,
+						islandContext
+					)
+						return ObjectiveSequenceService
+							.HandleIslandEntered(
+								player,
+								islandContext
+							)
+					end,
+
+				OnPhaseReady =
+					function(endContext)
+						session.RouteEndContext =
+							endContext
+
+						workspace:SetAttribute(
+							"DungeonRouteReady",
+							true
+						)
+
+						workspace:SetAttribute(
+							"DungeonRouteReadyAt",
+							workspace:GetServerTimeNow()
+						)
+
+						workspace:SetAttribute(
+							"DungeonBossState",
+							"Disabled"
+						)
+					end,
+			})
+
+	if not success then
+		worldStarting = false
+
+		workspace:SetAttribute(
+			"DungeonRuntimeReady",
+			false
+		)
+
+		workspace:SetAttribute(
+			"DungeonGenerationState",
+			"Failed"
+		)
+
+		workspace:SetAttribute(
+			"DungeonGenerationError",
+			tostring(errorMessage)
+		)
+
+		publishState(
+			"Failed",
+			errorMessage
+		)
+
+		warn(
+			"[StandaloneDungeon] geração falhou: "
+				.. tostring(errorMessage)
+		)
+
+		return
+	end
+
+	local initialContext =
+		DungeonGenerator
+			.GetRouteIslandContext(
+			StandaloneEntryConfig.ServerStartIsland
+		)
+
+	if not initialContext then
+		worldStarting = false
+
+		workspace:SetAttribute(
+			"DungeonRuntimeReady",
+			false
+		)
+
+		workspace:SetAttribute(
+			"DungeonGenerationState",
+			"Failed"
+		)
+
+		workspace:SetAttribute(
+			"DungeonGenerationError",
+			"InitialIslandContextUnavailable"
+		)
+
+		return
+	end
+
+	local checkpointReady,
+		checkpointError =
+			DungeonSpawnService
+				.SetInitialCheckpoint(
+					initialContext,
+					"StandaloneServerStartIsland",
+					false
+				)
+
+	if not checkpointReady
+		and checkpointError
+			~= "InitialCheckpointAlreadySet"
+	then
+		worldStarting = false
+
+		workspace:SetAttribute(
+			"DungeonInitialSpawnError",
+			tostring(checkpointError)
+		)
+
+		return
+	end
+
+	worldReady = true
+	worldStarting = false
+
+	session.WorldStarted = true
+	session.StartedAt =
+		workspace:GetServerTimeNow()
+
+	workspace:SetAttribute(
+		"DungeonGenerationState",
+		"Ready"
+	)
+
+	workspace:SetAttribute(
+		"DungeonRuntimeReady",
+		true
+	)
+
+	workspace:SetAttribute(
+		"DungeonStandaloneWorldReady",
+		true
+	)
+
+	workspace:SetAttribute(
+		"DungeonStandaloneWorldReadyAt",
+		workspace:GetServerTimeNow()
+	)
+
+	publishState(
+		"Active",
+		"Island1Ready"
+	)
+
+	startRecovery()
+
+	for _, player in ipairs(
+		playerList()
+	) do
+		placePlayerInCurrentRun(
+			player,
+			"InitialWorldReady"
+		)
+	end
+end
+
+local function initializeSession()
+	phaseId =
+		choosePhase()
+
+	if not phaseId then
+		return false,
+			"NoValidPhase"
+	end
+
+	phase =
+		PhaseConfig.Get(
+			phaseId
+		)
+
+	if not phase then
+		return false,
+			"PhaseUnavailable:"
+				.. tostring(phaseId)
+	end
+
+	session = {
+		Version = 1,
+		SessionId =
+			"standalone-"
+				.. HttpService
+					:GenerateGUID(false),
+
+		PhaseId = phaseId,
+
+		Seed =
+			Random.new()
+				:NextInteger(
+					1,
+					2147483646
+				),
+
+		WorldStarted = false,
+		StartedAt = nil,
+	}
+
+	workspace:SetAttribute(
+		"DungeonSessionId",
+		session.SessionId
+	)
+
+	workspace:SetAttribute(
+		"DungeonPhaseId",
+		phaseId
+	)
+
+	workspace:SetAttribute(
+		"DungeonSeed",
+		session.Seed
+	)
+
+	workspace:SetAttribute(
+		"DungeonStandaloneMode",
+		true
+	)
+
+	workspace:SetAttribute(
+		"DungeonStandaloneVersion",
+		StandaloneConfig.Version
+	)
+
+	workspace:SetAttribute(
+		"DungeonEntryPolicy",
+		StandaloneConfig.EntryPolicy
+	)
+
+	workspace:SetAttribute(
+		"DungeonLobbyEnabled",
+		false
+	)
+
+	workspace:SetAttribute(
+		"DungeonTeleportDataRequired",
+		false
+	)
+
+	workspace:SetAttribute(
+		"DungeonGuideEnabled",
+		false
+	)
+
+	workspace:SetAttribute(
+		"DungeonAutoReturnToLobby",
+		false
+	)
+
+	workspace:SetAttribute(
+		"DungeonStandaloneEntryVersion",
+		StandaloneEntryConfig.Version
+	)
+
+	workspace:SetAttribute(
+		"DungeonStandaloneServerStartIsland",
+		StandaloneEntryConfig.ServerStartIsland
+	)
+
+	workspace:SetAttribute(
+		"DungeonStandaloneLateJoinPolicy",
+		StandaloneEntryConfig.LateJoinPolicy
+	)
+
+	workspace:SetAttribute(
+		"DungeonStandaloneCompletedRunLateJoinPolicy",
+		StandaloneEntryConfig
+			.CompletedRunLateJoinPolicy
+	)
+
+	workspace:SetAttribute(
+		"DungeonSessionClosed",
+		false
+	)
+
+	workspace:SetAttribute(
+		"DungeonCombatStopped",
+		false
+	)
+
+	applyPhaseAttributes()
+
+	return true
 end
 
 function DungeonRuntimeService.Start()
 	if started then
-		return
+		return false,
+			"AlreadyStarted"
 	end
+
 	started = true
-	DungeonLegacyIsolationService.Start()
+
 	Players.CharacterAutoLoads = false
-	GameContext.SetCurrentPlaceType("Dungeon")
+
+	DungeonLegacyIsolationService.Start()
+
+	GameContext.SetCurrentPlaceType(
+		"Dungeon"
+	)
+
+	workspace:SetAttribute(
+		"GamePlaceType",
+		"Dungeon"
+	)
+
+	workspace:SetAttribute(
+		"DungeonRuntimeManaged",
+		true
+	)
+
+	workspace:SetAttribute(
+		"DungeonRuntimeReady",
+		false
+	)
+
+	publishState(
+		"Initializing",
+		"StandaloneRuntime"
+	)
+
 	DungeonSpawnService.Start({
-		ProtectionSeconds = 4,
+		ProtectionSeconds =
+			StandaloneConfig
+				.SpawnProtectionSeconds,
 	})
+
 	ContentResolver.EnsureStructure()
 	PhaseRegistry.Refresh()
-	local startupReadiness = PaidTestReadinessService.ValidateStatic()
-	if not startupReadiness.Ready then
+
+	local staticReadiness =
+		PaidTestReadinessService
+			.ValidateStatic()
+
+	if not staticReadiness.Ready then
+		workspace:SetAttribute(
+			"DungeonStandaloneStaticReadinessWarning",
+			table.concat(
+				staticReadiness.Errors or {},
+				" | "
+			)
+		)
+
 		warn(
-			"[DungeonRuntime] Paid-test readiness bloqueada: "
-			.. table.concat(startupReadiness.Errors, " | ")
+			"[StandaloneDungeon] readiness: "
+				.. tostring(
+					workspace:GetAttribute(
+						"DungeonStandaloneStaticReadinessWarning"
+					)
+				)
 		)
 	end
-	RuntimeFolders.Ensure()
-	resultEvent = RemoteRegistry.Get("Notifications", "DungeonResult", "RemoteEvent")
-	objectiveEvent = RemoteRegistry.Get("Dungeon", "ObjectiveState", "RemoteEvent")
-	rewardEvent = RemoteRegistry.Get("Dungeon", "RewardState", "RemoteEvent")
-	runUpgradeEvent = RemoteRegistry.Get("Dungeon", "RunUpgradeState", "RemoteEvent")
-	lifeEvent = RemoteRegistry.Get("Dungeon", "LifeState", "RemoteEvent")
-	bossEvent = RemoteRegistry.Get("Dungeon", "BossState", "RemoteEvent")
-	DungeonReturnService.Start({
-		RemoteEvent = resultEvent,
-		LobbyPlaceId = PlaceConfig.LobbyPlaceId,
-		DungeonPlaceId = PlaceConfig.DungeonPlaceId,
-		OnReturning = function(returnReason)
-			transitionState(DungeonStateMachine.States.Returning, {
-				Reason = returnReason,
-				Force = true,
-				ResultSaved = workspace:GetAttribute("DungeonResultSaved") == true,
-			})
-		end,
-		OnClosed = function()
-			workspace:SetAttribute("DungeonSessionClosed", true)
-		end,
-	})
-	resultEvent.OnServerEvent:Connect(function(player, request)
-		if type(request) ~= "table" or request.Action ~= "GetResult" then
-			return
-		end
-		if session and session.Completed and session.PartyUserSet[player.UserId] then
-			DungeonReturnService.AttachPlayer(player)
-			sendResultToPlayer(player)
-		end
-	end)
-	stateMachine = DungeonStateMachine.new({
-		InitialState = DungeonStateMachine.States.Initializing,
-		OnTransition = function(entry)
-			workspace:SetAttribute("DungeonPhaseState", entry.State)
-			workspace:SetAttribute("DungeonPreviousPhaseState", entry.PreviousState)
-			workspace:SetAttribute("DungeonPhaseStateSequence", entry.Sequence)
-			workspace:SetAttribute("DungeonPhaseStateChangedAt", entry.EnteredAt)
-			workspace:SetAttribute(
-				"DungeonPhaseStateReason",
-				entry.Context and tostring(entry.Context.Reason or "") or ""
-			)
-			if session then
-				session.State = entry.State
-			end
-			if entry.State == DungeonStateMachine.States.Active then
-				ObjectiveEncounterService.SetCombatEnabled(true)
-				BossService.SetCombatEnabled(false)
-			elseif entry.State == DungeonStateMachine.States.BossActive then
-				ObjectiveEncounterService.SetCombatEnabled(false)
-				BossService.SetCombatEnabled(true)
-			elseif entry.State == DungeonStateMachine.States.ObjectiveComplete
-				or entry.State == DungeonStateMachine.States.Transitioning
-				or entry.State == DungeonStateMachine.States.RoundReward
-				or entry.State == DungeonStateMachine.States.WipePending
-				or entry.State == DungeonStateMachine.States.Victory
-				or entry.State == DungeonStateMachine.States.Defeat
-				or entry.State == DungeonStateMachine.States.Returning
-			then
-				ObjectiveEncounterService.SetCombatEnabled(false)
-				BossService.SetCombatEnabled(false)
-			end
-		end,
-	})
-	workspace:SetAttribute("DungeonRuntimeManaged", true)
-	workspace:SetAttribute("DungeonRuntimeReady", false)
-	workspace:SetAttribute("DungeonStateMachineReady", true)
 
-	Players.PlayerAdded:Connect(function(player)
-		if not acceptPlayer(player) or not session then
-			return
-		end
-		if session.Completed then
-			DungeonReturnService.AttachPlayer(player)
-			task.defer(function()
-				freezeResultPlayer(player)
-				sendResultToPlayer(player)
-			end)
-		elseif not session.WorldStarted then
-			queueBeginWorld()
-		end
-	end)
-	Players.PlayerRemoving:Connect(function(player)
-		if session and session.PartyUserSet and session.PartyUserSet[player.UserId] then
-			if not session.Completed then
-				DungeonRunAnalytics.Abandoned(player, runStage(), "PlayerRemoving")
-			end
-			ObjectiveService.SetParticipantConnected(player.UserId, false)
-			if not session.Completed then
-				DungeonPartyLifeService.MarkDisconnected(player.UserId, "PlayerRemoving")
-			end
-		end
-	end)
-	for _, player in ipairs(Players:GetPlayers()) do
-		if acceptPlayer(player) and session then
-			if session.Completed then
-				DungeonReturnService.AttachPlayer(player)
-				task.defer(function()
-					freezeResultPlayer(player)
-					sendResultToPlayer(player)
-				end)
-			elseif not session.WorldStarted then
-				queueBeginWorld()
-			end
-		end
+	local initialized,
+		initializationError =
+			initializeSession()
+
+	if not initialized then
+		workspace:SetAttribute(
+			"DungeonRuntimeReady",
+			false
+		)
+
+		workspace:SetAttribute(
+			"DungeonGenerationState",
+			"Failed"
+		)
+
+		workspace:SetAttribute(
+			"DungeonGenerationError",
+			initializationError
+		)
+
+		publishState(
+			"Failed",
+			initializationError
+		)
+
+		return false,
+			initializationError
 	end
+
+	startCompatibilityShells()
+
+	Players.PlayerAdded:Connect(
+		function(player)
+			local accepted =
+				acceptPlayer(player)
+
+			if accepted
+				and worldReady
+			then
+				placePlayerInCurrentRun(
+					player,
+					workspace:GetAttribute(
+						"DungeonLinearRouteComplete"
+					) == true
+						and "LateJoinCompletedRun"
+						or "LateJoinCurrentCheckpoint"
+				)
+			end
+		end
+	)
+
+	Players.PlayerRemoving:Connect(
+		function(player)
+			local connections =
+				playerConnections[player]
+
+			if connections then
+				for _, connection in ipairs(
+					connections
+				) do
+					connection:Disconnect()
+				end
+
+				playerConnections[player] = nil
+			end
+
+			playerEntryState[player] = nil
+
+			task.defer(
+				publishPartySize
+			)
+		end
+	)
+
+	for _, player in ipairs(
+		playerList()
+	) do
+		acceptPlayer(player)
+	end
+
+	-- No party-arrival timer and no Lobby session handshake.
+	-- The server immediately builds the configured first Combat Island.
+	workspace:SetAttribute(
+		"DungeonStandaloneWorldStartRequestedAt",
+		workspace:GetServerTimeNow()
+	)
+
+	task.spawn(
+		startWorld
+	)
+
+	return true
 end
 
 function DungeonRuntimeService.GetState()
-	return stateMachine and stateMachine:GetState() or nil
+	return runtimeState
 end
 
-function DungeonRuntimeService.TransitionState(nextState, context)
-	return transitionState(nextState, context)
-end
-
-function DungeonRuntimeService.StartObjective(definition)
-	assert(stateMachine, "DungeonRuntimeService ainda nao foi iniciado")
-	local currentState = stateMachine:GetState()
-	if currentState == DungeonStateMachine.States.ObjectiveComplete
-		or currentState == DungeonStateMachine.States.Transitioning
-		or currentState == DungeonStateMachine.States.RoundReward
-	then
-		transitionState(DungeonStateMachine.States.Active, {
-			Reason = "ObjectiveStarted",
-			ObjectiveId = definition and definition.Id,
-		})
-	end
-	assert(
-		stateMachine:GetState() == DungeonStateMachine.States.Active,
-		"Objetivos so podem iniciar durante o estado Active"
+function DungeonRuntimeService.TransitionState(
+	nextState,
+	context
+)
+	publishState(
+		tostring(nextState),
+		context
+			and context.Reason
+			or "ExternalTransition"
 	)
-	return ObjectiveService.SetObjective(definition)
-end
 
-function DungeonRuntimeService.AddObjectiveProgress(amount, sourceUserId, metadata)
-	return ObjectiveService.AddProgress(amount, sourceUserId, metadata)
+	return true
 end
 
 function DungeonRuntimeService.GetObjectiveSnapshot()
 	return ObjectiveService.GetSnapshot()
-end
-
-function DungeonRuntimeService.ReportObjectiveEvent(eventName, payload)
-	return ObjectiveSequenceService.Report(eventName, payload)
-end
-
-function DungeonRuntimeService.CommitRoundReward(roundIndex, metadata)
-	return ObjectiveSequenceService.CommitRoundReward(roundIndex, metadata)
 end
 
 function DungeonRuntimeService.GetObjectiveSequenceSnapshot()
@@ -1281,11 +1298,14 @@ function DungeonRuntimeService.GetEncounterSnapshot()
 end
 
 function DungeonRuntimeService.GetRewardSnapshot(player)
-	return RewardIslandService.GetSnapshot(player)
+	return RewardIslandService.GetSnapshot(
+		player
+	)
 end
 
-function DungeonRuntimeService.ClaimRoundReward(player, chestRole)
-	return RewardIslandService.Claim(player, chestRole)
+function DungeonRuntimeService.ClaimRoundReward(...)
+	return false,
+		"RewardIslandsDisabled"
 end
 
 function DungeonRuntimeService.GetRunRewardLedgerSnapshot()
@@ -1293,15 +1313,17 @@ function DungeonRuntimeService.GetRunRewardLedgerSnapshot()
 end
 
 function DungeonRuntimeService.SetEncounterCombatEnabled(enabled)
-	return ObjectiveEncounterService.SetCombatEnabled(enabled)
+	return ObjectiveEncounterService
+		.SetCombatEnabled(enabled)
 end
 
 function DungeonRuntimeService.GetBossSnapshot()
 	return BossService.GetSnapshot()
 end
 
-function DungeonRuntimeService.ActivateBossForTesting(player)
-	return BossService.ActivateForTesting(player)
+function DungeonRuntimeService.ActivateBossForTesting(...)
+	return false,
+		"BossDisabled"
 end
 
 function DungeonRuntimeService.GetBossDirectorSnapshot()
@@ -1313,43 +1335,109 @@ function DungeonRuntimeService.GetMobCollectibleSnapshot()
 end
 
 function DungeonRuntimeService.GetOptionalIslandSnapshot(player)
-	return OptionalIslandService.GetSnapshot(player)
+	return OptionalIslandService.GetSnapshot(
+		player
+	)
 end
 
-function DungeonRuntimeService.ClaimOptionalIslandReward(player, islandKey)
-	return OptionalIslandService.Claim(player, islandKey)
+function DungeonRuntimeService.ClaimOptionalIslandReward(...)
+	return false,
+		"OptionalIslandsDisabled"
 end
 
 function DungeonRuntimeService.GetRecoverySnapshot(player)
-	return DungeonRecoveryService.GetSnapshot(player)
+	return DungeonRecoveryService.GetSnapshot(
+		player
+	)
 end
 
-function DungeonRuntimeService.RequestRecovery(player, reason)
-	return DungeonRecoveryService.Request(player, reason)
+function DungeonRuntimeService.RequestRecovery(
+	player,
+	reason
+)
+	return DungeonSpawnService.PositionPlayer(
+		player,
+		reason or "ManualRecovery"
+	)
 end
 
 function DungeonRuntimeService.GetEntrySafetySnapshot()
-	return DungeonEntrySafetyService.GetSnapshot()
+	return {
+		Ready = true,
+		Policy = "SpawnProtectionOnly",
+	}
 end
 
 function DungeonRuntimeService.GetHealthRecoverySnapshot()
-	return DungeonHealthRecoveryService.GetSnapshot()
+	return {
+		Ready = false,
+		Policy = "SimplifiedMVP",
+	}
 end
 
 function DungeonRuntimeService.GetPartyLifeSnapshot()
-	return DungeonPartyLifeService.GetSnapshot()
+	return {
+		Ready = true,
+		Policy = "SimpleCheckpointRespawn",
+		Players = #playerList(),
+	}
 end
 
-function DungeonRuntimeService.GetReturnSnapshot(playerOrUserId)
-	return DungeonReturnService.GetSnapshot(playerOrUserId)
+function DungeonRuntimeService.GetReturnSnapshot()
+	return {
+		Ready = false,
+		LobbyEnabled = false,
+		AutoReturn = false,
+	}
 end
 
-function DungeonRuntimeService.RequestReturnToLobby(player, reason)
-	return DungeonReturnService.RequestPlayer(player, reason)
+function DungeonRuntimeService.RequestReturnToLobby(...)
+	return false,
+		"LobbyDisabledInStandaloneMVP"
 end
 
-function DungeonRuntimeService.GetPlayerLifeState(playerOrUserId)
-	return DungeonPartyLifeService.GetPlayerState(playerOrUserId)
+function DungeonRuntimeService.GetPlayerLifeState(
+	playerOrUserId
+)
+	local player =
+		typeof(playerOrUserId)
+			== "Instance"
+			and playerOrUserId
+			or Players:GetPlayerByUserId(
+				math.floor(
+					tonumber(
+						playerOrUserId
+					) or 0
+				)
+			)
+
+	if player
+		and player.Parent == Players
+	then
+		return "Active"
+	end
+
+	return nil
+end
+
+function DungeonRuntimeService.StartObjective(...)
+	return false,
+		"LegacyObjectivesDisabled"
+end
+
+function DungeonRuntimeService.AddObjectiveProgress(...)
+	return false,
+		"IslandCombatServiceOwnsProgress"
+end
+
+function DungeonRuntimeService.ReportObjectiveEvent(...)
+	return false,
+		"IslandCombatServiceOwnsProgress"
+end
+
+function DungeonRuntimeService.CommitRoundReward(...)
+	return true,
+		"LegacyRewardBypassedLinearRoute"
 end
 
 return DungeonRuntimeService
