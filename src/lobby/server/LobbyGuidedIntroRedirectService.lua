@@ -1,15 +1,14 @@
--- Task 20 — GuidedIntro Lobby Redirect Until Completion.
+-- GuidedIntro Lobby Redirect Until Completion.
 --
--- GuidedIntro is system-only and separate from Phase01.
--- While GuidedIntroCompleted ~= true, each valid Lobby entry redirects the
--- player to a solo GuidedIntro session.
+-- GuidedIntro is system-only and uses Phase01 as its gameplay content.
+-- The canonical persistent completion state is TutorialCompleted.
 --
--- Fail-safe: temporary player data does not redirect because completion could
--- not be persisted safely, which could trap the player in a tutorial loop.
+-- Fail-safe: if persistent progress cannot be read, the player remains in the
+-- Lobby instead of risking an infinite tutorial redirect loop.
 
 local Players = game:GetService("Players")
 
-local PlayerDataService = require(script.Parent.LobbyPlayerDataService)
+local ProgressService = require(script.Parent.LobbyGuidedIntroProgressService)
 local TeleportCoordinator = require(script.Parent.TeleportCoordinator)
 
 local GuidedIntroRedirectService = {}
@@ -31,24 +30,27 @@ function GuidedIntroRedirectService.Evaluate(player)
 	end
 	evaluated[player] = true
 
-	local data = PlayerDataService.Get(player) or PlayerDataService.Load(player)
-	if not data then
-		player:SetAttribute("GuidedIntroRedirectBlockedReason", "PlayerDataUnavailable")
-		return false, "PlayerDataUnavailable"
+	local completed, progressReason = ProgressService.IsCompleted(player)
+	if completed == nil then
+		player:SetAttribute("GuidedIntroRedirecting", false)
+		player:SetAttribute("GuidedIntroRedirectBlockedReason", "ProgressUnavailable")
+		player:SetAttribute("GuidedIntroRedirectError", tostring(progressReason))
+		return false, "ProgressUnavailable"
 	end
 
-	local completed = data.GuidedIntroCompleted == true
 	publishState(player, completed)
 
 	if completed then
 		player:SetAttribute("GuidedIntroRedirecting", false)
 		player:SetAttribute("GuidedIntroRedirectBlockedReason", nil)
+		player:SetAttribute("LobbyInteractionDisabledByGuidedIntro", false)
 		return true, "AlreadyCompleted"
 	end
 
 	if player:GetAttribute("PlayerDataTemporary") == true then
 		player:SetAttribute("GuidedIntroRedirecting", false)
 		player:SetAttribute("GuidedIntroRedirectBlockedReason", "PlayerDataTemporary")
+		player:SetAttribute("LobbyInteractionDisabledByGuidedIntro", false)
 		warn(
 			"[GuidedIntro] Redirect blocked for "
 				.. player.Name
@@ -73,6 +75,7 @@ function GuidedIntroRedirectService.Evaluate(player)
 		if not success and player.Parent == Players then
 			player:SetAttribute("GuidedIntroRedirecting", false)
 			player:SetAttribute("GuidedIntroRedirectError", tostring(message))
+			player:SetAttribute("LobbyInteractionDisabledByGuidedIntro", false)
 		end
 	end)
 
@@ -88,7 +91,7 @@ function GuidedIntroRedirectService.Start()
 	workspace:SetAttribute("LobbyGuidedIntroRedirectReady", true)
 	workspace:SetAttribute(
 		"LobbyGuidedIntroPolicy",
-		"RedirectEveryLobbyEntryUntilCompletionV1"
+		"RedirectNewPlayersUsingCanonicalTutorialCompletionV2"
 	)
 	workspace:SetAttribute("LobbyGuidedIntroPhaseId", "GuidedIntro")
 	workspace:SetAttribute("LobbyGuidedIntroContentPhaseId", "Phase01")

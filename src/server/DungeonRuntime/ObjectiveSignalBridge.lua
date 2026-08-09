@@ -1,41 +1,76 @@
+-- Rebuild Part 07
+-- EnemyDefeated goes directly to the single progression authority.
+
+local DungeonProgressionService = require(script.Parent.DungeonProgressionService)
+
 local ObjectiveSignalBridge = {}
 
-local activeHandler
+local compatibilityHandler
 
 function ObjectiveSignalBridge.Bind(handler)
-	assert(type(handler) == "function", "ObjectiveSignalBridge.Bind requer callback")
-	activeHandler = handler
-	return handler
+    compatibilityHandler = type(handler) == "function" and handler or nil
+    return handler
 end
 
 function ObjectiveSignalBridge.Unbind(handler)
-	if handler == nil or activeHandler == handler then
-		activeHandler = nil
-		return true
-	end
-	return false
+    if handler == nil or compatibilityHandler == handler then
+        compatibilityHandler = nil
+    end
+    return true
 end
 
 function ObjectiveSignalBridge.Report(eventName, payload)
-	if type(eventName) ~= "string" or eventName == "" then
-		return false, "InvalidEventName"
-	end
-	if not activeHandler then
-		return false, "NoObjectiveHandler"
-	end
-	payload = type(payload) == "table" and table.clone(payload) or {}
-	payload.EventName = eventName
-	payload.ReportedAt = workspace:GetServerTimeNow()
-	local ok, accepted, reason = pcall(activeHandler, eventName, payload)
-	if not ok then
-		warn("[ObjectiveSignalBridge] Falha ao encaminhar evento: " .. tostring(accepted))
-		return false, "HandlerError"
-	end
-	return accepted == true, reason
+    if type(eventName) ~= "string" or eventName == "" then
+        return false, "InvalidEventName"
+    end
+
+    if eventName == "EnemyDefeated" then
+        local ok, accepted, reason = pcall(
+            DungeonProgressionService.ReportEnemyDefeated,
+            payload
+        )
+        if not ok then
+            workspace:SetAttribute("DungeonProgressionLastSignalAccepted", false)
+            workspace:SetAttribute("DungeonProgressionLastSignalReason", "ProgressionError")
+            warn("[ObjectiveSignalBridge] Progression error: " .. tostring(accepted))
+            return false, "ProgressionError"
+        end
+        return accepted == true, reason
+    end
+
+    if eventName == "NestDestroyed" then
+        local ok, accepted, reason = pcall(
+            DungeonProgressionService.ReportNestDestroyed,
+            payload
+        )
+        if not ok then
+            workspace:SetAttribute("DungeonProgressionLastSignalAccepted", false)
+            workspace:SetAttribute("DungeonProgressionLastSignalReason", "ProgressionError")
+            warn("[ObjectiveSignalBridge] Nest progression error: " .. tostring(accepted))
+            return false, "ProgressionError"
+        end
+        return accepted == true, reason
+    end
+
+    if eventName == "BeaconHoldSeconds" then
+        local ok, accepted, reason = pcall(
+            DungeonProgressionService.ReportBeaconHoldSeconds,
+            payload
+        )
+        if not ok then
+            workspace:SetAttribute("DungeonProgressionLastSignalAccepted", false)
+            workspace:SetAttribute("DungeonProgressionLastSignalReason", "ProgressionError")
+            warn("[ObjectiveSignalBridge] Beacon progression error: " .. tostring(accepted))
+            return false, "ProgressionError"
+        end
+        return accepted == true, reason
+    end
+
+    return false, "UnsupportedRebuildEvent"
 end
 
 function ObjectiveSignalBridge.IsBound()
-	return activeHandler ~= nil
+    return true
 end
 
 return ObjectiveSignalBridge

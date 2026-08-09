@@ -1,6 +1,10 @@
 -- HUD-04 — objetivos, ondas, pacing e mecânicas especiais
 -- Camada contextual sobre HUD-01. Consome contratos das Tasks 26 e 27.
 -- Não altera progressão; somente apresenta estado replicado pelo servidor.
+--
+-- V3 UI pass:
+-- ObjectiveContext stays compact and in the upper HUD band on every viewport.
+-- It never expands toward the visual center of gameplay.
 
 local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
@@ -10,7 +14,7 @@ local TweenService = game:GetService("TweenService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local VERSION = "CrystalCelestialObjectivesV2"
+local VERSION = "CrystalCelestialObjectivesV3"
 local HUD_NAME = "DungeonUnifiedHUD"
 local UPDATE_INTERVAL = 0.20
 
@@ -27,29 +31,32 @@ local objectiveDetail = objectivePanel:WaitForChild("Detail")
 local objectiveProgress = objectivePanel:WaitForChild("ProgressText")
 
 local existing = root:FindFirstChild("ObjectiveContext")
-if existing then existing:Destroy() end
+if existing then
+	existing:Destroy()
+end
 
 local context = Instance.new("Frame")
 context.Name = "ObjectiveContext"
 context.AnchorPoint = Vector2.new(0.5, 0)
-context.Position = UDim2.new(0.5, 0, 0, 136)
-context.Size = UDim2.fromOffset(690, 58)
+context.Position = UDim2.new(0.5, 0, 0, 132)
+context.Size = UDim2.fromOffset(520, 44)
 context.BackgroundColor3 = Color3.fromRGB(13, 27, 42)
-context.BackgroundTransparency = 0.11
+context.BackgroundTransparency = 0.14
 context.BorderSizePixel = 0
 context.Visible = false
 context.ZIndex = 30
 context.Parent = root
-Instance.new("UICorner", context).CornerRadius = UDim.new(0, 15)
+Instance.new("UICorner", context).CornerRadius = UDim.new(0, 12)
+
 local contextScale = Instance.new("UIScale")
 contextScale.Name = "ResponsiveScale"
-contextScale.Scale = 1
+contextScale.Scale = 0.82
 contextScale.Parent = context
 
 local stroke = Instance.new("UIStroke")
 stroke.Color = Color3.fromRGB(225, 190, 101)
-stroke.Transparency = 0.30
-stroke.Thickness = 1.2
+stroke.Transparency = 0.36
+stroke.Thickness = 1
 stroke.Parent = context
 
 local gradient = Instance.new("UIGradient")
@@ -63,32 +70,34 @@ gradient.Parent = context
 
 local icon = Instance.new("TextLabel")
 icon.Name = "MechanicIcon"
-icon.Position = UDim2.fromOffset(11, 6)
-icon.Size = UDim2.fromOffset(42, 42)
+icon.Position = UDim2.fromOffset(7, 5)
+icon.Size = UDim2.fromOffset(34, 34)
 icon.BackgroundColor3 = Color3.fromRGB(26, 56, 71)
-icon.BackgroundTransparency = 0.08
+icon.BackgroundTransparency = 0.12
 icon.BorderSizePixel = 0
 icon.Text = "◆"
 icon.TextColor3 = Color3.fromRGB(159, 235, 255)
 icon.Font = Enum.Font.GothamBlack
-icon.TextSize = 20
+icon.TextSize = 16
 icon.ZIndex = 31
 icon.Parent = context
-Instance.new("UICorner", icon).CornerRadius = UDim.new(0, 10)
+Instance.new("UICorner", icon).CornerRadius = UDim.new(0, 8)
+
 local iconStroke = Instance.new("UIStroke")
 iconStroke.Color = Color3.fromRGB(221, 186, 104)
-iconStroke.Transparency = 0.25
+iconStroke.Transparency = 0.32
+iconStroke.Thickness = 1
 iconStroke.Parent = icon
 
 local mechanicTitle = Instance.new("TextLabel")
 mechanicTitle.Name = "MechanicTitle"
-mechanicTitle.Position = UDim2.fromOffset(64, 5)
-mechanicTitle.Size = UDim2.new(1, -280, 0, 22)
+mechanicTitle.Position = UDim2.fromOffset(49, 3)
+mechanicTitle.Size = UDim2.new(1, -220, 0, 19)
 mechanicTitle.BackgroundTransparency = 1
 mechanicTitle.Text = ""
 mechanicTitle.TextColor3 = Color3.fromRGB(240, 246, 252)
 mechanicTitle.Font = Enum.Font.GothamBold
-mechanicTitle.TextSize = 12
+mechanicTitle.TextSize = 10
 mechanicTitle.TextXAlignment = Enum.TextXAlignment.Left
 mechanicTitle.TextTruncate = Enum.TextTruncate.AtEnd
 mechanicTitle.ZIndex = 31
@@ -96,13 +105,13 @@ mechanicTitle.Parent = context
 
 local mechanicDetail = Instance.new("TextLabel")
 mechanicDetail.Name = "MechanicDetail"
-mechanicDetail.Position = UDim2.fromOffset(64, 27)
-mechanicDetail.Size = UDim2.new(1, -280, 0, 23)
+mechanicDetail.Position = UDim2.fromOffset(49, 21)
+mechanicDetail.Size = UDim2.new(1, -220, 0, 18)
 mechanicDetail.BackgroundTransparency = 1
 mechanicDetail.Text = ""
 mechanicDetail.TextColor3 = Color3.fromRGB(174, 202, 222)
 mechanicDetail.Font = Enum.Font.GothamMedium
-mechanicDetail.TextSize = 10
+mechanicDetail.TextSize = 8
 mechanicDetail.TextXAlignment = Enum.TextXAlignment.Left
 mechanicDetail.TextTruncate = Enum.TextTruncate.AtEnd
 mechanicDetail.ZIndex = 31
@@ -111,29 +120,30 @@ mechanicDetail.Parent = context
 local status = Instance.new("Frame")
 status.Name = "Status"
 status.AnchorPoint = Vector2.new(1, 0.5)
-status.Position = UDim2.new(1, -10, 0.5, 0)
-status.Size = UDim2.fromOffset(198, 40)
+status.Position = UDim2.new(1, -6, 0.5, 0)
+status.Size = UDim2.fromOffset(158, 32)
 status.BackgroundColor3 = Color3.fromRGB(18, 43, 57)
-status.BackgroundTransparency = 0.08
+status.BackgroundTransparency = 0.12
 status.BorderSizePixel = 0
 status.ZIndex = 31
 status.Parent = context
-Instance.new("UICorner", status).CornerRadius = UDim.new(0, 10)
+Instance.new("UICorner", status).CornerRadius = UDim.new(0, 8)
 
 local statusStroke = Instance.new("UIStroke")
 statusStroke.Color = Color3.fromRGB(99, 216, 246)
-statusStroke.Transparency = 0.35
+statusStroke.Transparency = 0.42
+statusStroke.Thickness = 1
 statusStroke.Parent = status
 
 local statusTop = Instance.new("TextLabel")
 statusTop.Name = "Top"
-statusTop.Position = UDim2.fromOffset(7, 2)
-statusTop.Size = UDim2.new(1, -14, 0, 17)
+statusTop.Position = UDim2.fromOffset(5, 1)
+statusTop.Size = UDim2.new(1, -10, 0, 14)
 statusTop.BackgroundTransparency = 1
 statusTop.Text = ""
 statusTop.TextColor3 = Color3.fromRGB(236, 246, 252)
 statusTop.Font = Enum.Font.GothamBold
-statusTop.TextSize = 9
+statusTop.TextSize = 8
 statusTop.TextXAlignment = Enum.TextXAlignment.Center
 statusTop.TextTruncate = Enum.TextTruncate.AtEnd
 statusTop.ZIndex = 32
@@ -141,13 +151,13 @@ statusTop.Parent = status
 
 local statusBottom = Instance.new("TextLabel")
 statusBottom.Name = "Bottom"
-statusBottom.Position = UDim2.fromOffset(7, 19)
-statusBottom.Size = UDim2.new(1, -14, 0, 17)
+statusBottom.Position = UDim2.fromOffset(5, 15)
+statusBottom.Size = UDim2.new(1, -10, 0, 14)
 statusBottom.BackgroundTransparency = 1
 statusBottom.Text = ""
 statusBottom.TextColor3 = Color3.fromRGB(147, 219, 239)
 statusBottom.Font = Enum.Font.GothamMedium
-statusBottom.TextSize = 9
+statusBottom.TextSize = 7
 statusBottom.TextXAlignment = Enum.TextXAlignment.Center
 statusBottom.TextTruncate = Enum.TextTruncate.AtEnd
 statusBottom.ZIndex = 32
@@ -156,29 +166,33 @@ statusBottom.Parent = status
 local recoveryToast = Instance.new("TextLabel")
 recoveryToast.Name = "RecoveryToast"
 recoveryToast.AnchorPoint = Vector2.new(0.5, 0)
-recoveryToast.Position = UDim2.new(0.5, 0, 0, 201)
-recoveryToast.Size = UDim2.fromOffset(360, 38)
+recoveryToast.Position = UDim2.new(0.5, 0, 0, 181)
+recoveryToast.Size = UDim2.fromOffset(300, 30)
 recoveryToast.BackgroundColor3 = Color3.fromRGB(60, 39, 18)
-recoveryToast.BackgroundTransparency = 0.08
+recoveryToast.BackgroundTransparency = 0.10
 recoveryToast.BorderSizePixel = 0
-recoveryToast.Text = "OBJETIVO RECUPERADO — TENTATIVA REINICIADA"
+recoveryToast.Text = "OBJETIVO RECUPERADO • TENTATIVA REINICIADA"
 recoveryToast.TextColor3 = Color3.fromRGB(255, 211, 118)
 recoveryToast.Font = Enum.Font.GothamBold
-recoveryToast.TextSize = 11
+recoveryToast.TextSize = 9
 recoveryToast.Visible = false
 recoveryToast.ZIndex = 40
 recoveryToast.Parent = root
-Instance.new("UICorner", recoveryToast).CornerRadius = UDim.new(0, 10)
+Instance.new("UICorner", recoveryToast).CornerRadius = UDim.new(0, 8)
+
 local recoveryScale = Instance.new("UIScale")
 recoveryScale.Name = "ResponsiveScale"
-recoveryScale.Scale = 1
+recoveryScale.Scale = 0.9
 recoveryScale.Parent = recoveryToast
+
 local recoveryStroke = Instance.new("UIStroke")
 recoveryStroke.Color = Color3.fromRGB(235, 184, 86)
-recoveryStroke.Transparency = 0.2
+recoveryStroke.Transparency = 0.3
+recoveryStroke.Thickness = 1
 recoveryStroke.Parent = recoveryToast
 
-local lastRecoveryCount = tonumber(workspace:GetAttribute("DungeonObjectiveRecoveryCount")) or 0
+local lastRecoveryCount =
+	tonumber(workspace:GetAttribute("DungeonObjectiveRecoveryCount")) or 0
 local recoverySerial = 0
 
 local COLORS = {
@@ -268,19 +282,89 @@ local function serverTime()
 end
 
 local viewportConnection
+
 local function updateResponsive()
 	local camera = workspace.CurrentCamera
-	local viewport = camera and camera.ViewportSize or Vector2.new(1280, 720)
-	local margin = 12
+	local viewport = camera and camera.ViewportSize
+		or Vector2.new(1280, 720)
+
+	local margin = 10
+	local mobile =
+		player:GetAttribute("DungeonMobileMode") == true
+		or viewport.X < 700
+	local shortScreen = viewport.Y < 520
+
+	-- The base canvas is already compact. Scale downward only; never expand it
+	-- back to the old 690px-wide footprint.
+	local maxScale = mobile and 0.76 or 0.86
+	if shortScreen then
+		maxScale = math.min(maxScale, 0.70)
+	end
+
 	contextScale.Scale = math.clamp(
-		math.min(1, (viewport.X - margin * 2) / 690),
-		0.46,
-		1
+		math.min(
+			maxScale,
+			(viewport.X - margin * 2) / 520
+		),
+		0.54,
+		maxScale
 	)
+
+	-- HUD-01 moves the primary Objective panel down on phones. Follow it with
+	-- this smaller secondary strip while keeping both in the upper screen band.
+	local contextY
+	if mobile and shortScreen then
+		contextY = 157
+	elseif mobile then
+		contextY = 176
+	else
+		contextY = 132
+	end
+
+	-- GuidedIntro V2 uses the upper band too. Put objective context just below
+	-- it on first-session flow, without entering the gameplay center.
+	if player:GetAttribute("GuidedIntroActive") == true then
+		if mobile and shortScreen then
+			contextY = math.max(contextY, 164)
+		elseif mobile then
+			contextY = math.max(contextY, 180)
+		else
+			contextY = math.max(contextY, 166)
+		end
+	end
+
+	context.Position = UDim2.new(0.5, 0, 0, contextY)
+
+	local recoveryY =
+		contextY + math.ceil(44 * contextScale.Scale) + 7
+	recoveryToast.Position = UDim2.new(
+		0.5,
+		0,
+		0,
+		recoveryY
+	)
+
 	recoveryScale.Scale = math.clamp(
-		math.min(1, (viewport.X - margin * 2) / 360),
-		0.70,
-		1
+		math.min(
+			mobile and 0.82 or 0.92,
+			(viewport.X - margin * 2) / 300
+		),
+		0.66,
+		mobile and 0.82 or 0.92
+	)
+
+	-- Secondary explanatory line is the first thing removed on constrained
+	-- screens. Essential status remains visible in the title/status block.
+	mechanicDetail.Visible = not (mobile and viewport.X < 520)
+
+	player:SetAttribute("DungeonHUDObjectiveContextY", contextY)
+	player:SetAttribute(
+		"DungeonHUDObjectiveContextScale",
+		contextScale.Scale
+	)
+	player:SetAttribute(
+		"DungeonHUDObjectiveContextCompact",
+		mobile or shortScreen
 	)
 end
 
@@ -288,13 +372,24 @@ local function bindViewport()
 	if viewportConnection then
 		viewportConnection:Disconnect()
 	end
+
 	local camera = workspace.CurrentCamera
 	if camera then
-		viewportConnection = camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateResponsive)
+		viewportConnection =
+			camera:GetPropertyChangedSignal("ViewportSize")
+				:Connect(updateResponsive)
 	end
+
 	updateResponsive()
 end
+
 workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(bindViewport)
+player:GetAttributeChangedSignal("DungeonMobileMode"):Connect(
+	updateResponsive
+)
+player:GetAttributeChangedSignal("GuidedIntroActive"):Connect(
+	updateResponsive
+)
 bindViewport()
 
 local function setStyle(color)
@@ -312,14 +407,22 @@ local function setStatus(top, bottom, color)
 end
 
 local function pacingState()
-	local state = tostring(workspace:GetAttribute("DungeonPacingState") or "")
-	local endsAt = tonumber(workspace:GetAttribute("DungeonPacingStateEndsAt")) or 0
-	local remaining = math.max(0, math.ceil(endsAt - serverTime()))
+	local state = tostring(
+		workspace:GetAttribute("DungeonPacingState") or ""
+	)
+	local endsAt =
+		tonumber(workspace:GetAttribute("DungeonPacingStateEndsAt")) or 0
+	local remaining = math.max(
+		0,
+		math.ceil(endsAt - serverTime())
+	)
 	return state, remaining
 end
 
 local function activeBeacon()
-	for _, beacon in ipairs(CollectionService:GetTagged("DungeonHoldBeacon")) do
+	for _, beacon in ipairs(
+		CollectionService:GetTagged("DungeonHoldBeacon")
+	) do
 		if beacon:IsA("Model") and beacon.Parent then
 			return beacon
 		end
@@ -328,11 +431,19 @@ local function activeBeacon()
 end
 
 local function localInsideBeacon(beacon)
-	if not beacon or not beacon.PrimaryPart then return false end
+	if not beacon or not beacon.PrimaryPart then
+		return false
+	end
+
 	local character = player.Character
-	local rootPart = character and character:FindFirstChild("HumanoidRootPart")
-	if not rootPart then return false end
-	local radius = tonumber(beacon:GetAttribute("BeaconRadius")) or 13
+	local rootPart =
+		character and character:FindFirstChild("HumanoidRootPart")
+	if not rootPart then
+		return false
+	end
+
+	local radius =
+		tonumber(beacon:GetAttribute("BeaconRadius")) or 13
 	local offset = rootPart.Position - beacon.PrimaryPart.Position
 	local horizontal = Vector2.new(offset.X, offset.Z).Magnitude
 	return horizontal <= radius and math.abs(offset.Y) <= 10
@@ -340,7 +451,10 @@ end
 
 local function livingNests()
 	local count = 0
-	for _, nest in ipairs(CollectionService:GetTagged("DungeonSlimeNest")) do
+
+	for _, nest in ipairs(
+		CollectionService:GetTagged("DungeonSlimeNest")
+	) do
 		if nest:IsA("Model")
 			and nest.Parent
 			and nest:GetAttribute("ObjectiveTargetCompleted") ~= true
@@ -351,155 +465,339 @@ local function livingNests()
 			end
 		end
 	end
+
 	return count
 end
 
-
 local function livingPriorityTargets()
 	local count = 0
-	for _, model in ipairs(CollectionService:GetTagged("DungeonObjectivePriorityTarget")) do
-		if model:IsA("Model") and model.Parent and model:GetAttribute("ObjectiveTargetCompleted") ~= true then
-			local humanoid = model:FindFirstChildOfClass("Humanoid")
+
+	for _, model in ipairs(
+		CollectionService:GetTagged(
+			"DungeonObjectivePriorityTarget"
+		)
+	) do
+		if model:IsA("Model")
+			and model.Parent
+			and model:GetAttribute("ObjectiveTargetCompleted") ~= true
+		then
+			local humanoid =
+				model:FindFirstChildOfClass("Humanoid")
 				or model:FindFirstChildWhichIsA("Humanoid", true)
+
 			if not humanoid or humanoid.Health > 0 then
 				count += 1
 			end
 		end
 	end
+
 	return count
 end
+
 local function showRecovery(count)
 	recoverySerial += 1
 	local serial = recoverySerial
+
 	recoveryToast.Visible = true
 	recoveryToast.TextTransparency = 0
-	recoveryToast.BackgroundTransparency = 0.08
+	recoveryToast.BackgroundTransparency = 0.10
+
 	task.delay(2.6, function()
-		if recoverySerial ~= serial then return end
-		local tween = TweenService:Create(recoveryToast, TweenInfo.new(0.25), {
-			TextTransparency = 1,
-			BackgroundTransparency = 1,
-		})
+		if recoverySerial ~= serial then
+			return
+		end
+
+		local tween = TweenService:Create(
+			recoveryToast,
+			TweenInfo.new(0.25),
+			{
+				TextTransparency = 1,
+				BackgroundTransparency = 1,
+			}
+		)
 		tween:Play()
 		tween.Completed:Wait()
+
 		if recoverySerial == serial then
 			recoveryToast.Visible = false
 		end
 	end)
-	player:SetAttribute("DungeonHUDLastObjectiveRecoveryCount", count)
+
+	player:SetAttribute(
+		"DungeonHUDLastObjectiveRecoveryCount",
+		count
+	)
 end
 
 local function mechanicStatus(mechanic, pacing, pacingRemaining)
-	local activeEnemies = math.max(0, math.floor(tonumber(workspace:GetAttribute("DungeonEncounterActiveEnemies")) or 0))
-	local waveIndex = math.max(
+	local activeEnemies = math.max(
 		0,
-		math.floor(tonumber(workspace:GetAttribute("DungeonPacingWaveIndex")
-			or workspace:GetAttribute("DungeonEncounterWaveIndex")) or 0)
-	)
-	local waveCount = math.max(
-		0,
-		math.floor(tonumber(workspace:GetAttribute("DungeonPacingWaveCount")
-			or workspace:GetAttribute("DungeonEncounterWaveCount")) or 0)
+		math.floor(
+			tonumber(
+				workspace:GetAttribute("DungeonEncounterActiveEnemies")
+			) or 0
+		)
 	)
 
-	if pacing == "ObjectivePreparation" or pacing == "InterWave"
-		or pacing == "ObjectiveCompletion" or pacing == "RoundTransition"
+	local waveIndex = math.max(
+		0,
+		math.floor(
+			tonumber(
+				workspace:GetAttribute("DungeonPacingWaveIndex")
+					or workspace:GetAttribute(
+						"DungeonEncounterWaveIndex"
+					)
+			) or 0
+		)
+	)
+
+	local waveCount = math.max(
+		0,
+		math.floor(
+			tonumber(
+				workspace:GetAttribute("DungeonPacingWaveCount")
+					or workspace:GetAttribute(
+						"DungeonEncounterWaveCount"
+					)
+			) or 0
+		)
+	)
+
+	if pacing == "ObjectivePreparation"
+		or pacing == "InterWave"
+		or pacing == "ObjectiveCompletion"
+		or pacing == "RoundTransition"
 		or pacing == "BossTransition"
 	then
 		local definition = PACING_LABELS[pacing]
 		if definition then
-			return definition[1], pacingRemaining > 0
-				and string.format("%s %ds", definition[2], pacingRemaining)
-				or definition[2], definition[3]
+			return
+				definition[1],
+				pacingRemaining > 0
+					and string.format(
+						"%s %ds",
+						definition[2],
+						pacingRemaining
+					)
+					or definition[2],
+				definition[3]
 		end
 	end
 
 	if mechanic == "HiddenPerimeterAmbush" then
-		local revealAt = tonumber(workspace:GetAttribute("DungeonAmbushRevealAt")) or 0
+		local revealAt =
+			tonumber(
+				workspace:GetAttribute("DungeonAmbushRevealAt")
+			) or 0
+
 		if revealAt > serverTime() then
-			return "EMBOSCADA OCULTA",
-				string.format("Revelação em %ds", math.ceil(revealAt - serverTime())),
+			return
+				"EMBOSCADA OCULTA",
+				string.format(
+					"Revelação em %ds",
+					math.ceil(revealAt - serverTime())
+				),
 				COLORS.Red
 		end
-		return "INIMIGOS REVELADOS", string.format("%d inimigos ativos", activeEnemies), COLORS.Red
+
+		return
+			"INIMIGOS REVELADOS",
+			string.format("%d inimigos ativos", activeEnemies),
+			COLORS.Red
+
 	elseif mechanic == "BreakWardsThenGuards" then
-		local wards = math.max(0, math.floor(tonumber(workspace:GetAttribute("DungeonGuardWardsRemaining")) or 0))
+		local wards = math.max(
+			0,
+			math.floor(
+				tonumber(
+					workspace:GetAttribute(
+						"DungeonGuardWardsRemaining"
+					)
+				) or 0
+			)
+		)
+
 		if wards > 0 then
-			return string.format("CRISTAIS %d", wards), "SIGA O DESTAQUE AZUL • ignore os Guardas", COLORS.Cyan
+			return
+				string.format("CRISTAIS %d", wards),
+				"SIGA O DESTAQUE AZUL • ignore os Guardas",
+				COLORS.Cyan
 		end
-		return "GUARDAS VULNERÁVEIS", "AGORA ATAQUE OS GUARDAS", COLORS.Green
+
+		return
+			"GUARDAS VULNERÁVEIS",
+			"AGORA ATAQUE OS GUARDAS",
+			COLORS.Green
+
 	elseif mechanic == "DefeatSupportsThenElite" then
-		local supports = math.max(0, math.floor(tonumber(workspace:GetAttribute("DungeonEliteShieldSupportsRemaining")) or 0))
+		local supports = math.max(
+			0,
+			math.floor(
+				tonumber(
+					workspace:GetAttribute(
+						"DungeonEliteShieldSupportsRemaining"
+					)
+				) or 0
+			)
+		)
+
 		if supports > 0 then
-			return string.format("PROTETORES %d", supports), "ELITE SELADO • elimine os laranjas", COLORS.Orange
+			return
+				string.format("PROTETORES %d", supports),
+				"ELITE SELADO • elimine os laranjas",
+				COLORS.Orange
 		end
-		return "ELITE LIBERADO", "ALVO DOURADO • ataque agora", COLORS.Gold
+
+		return
+			"ELITE LIBERADO",
+			"ALVO DOURADO • ataque agora",
+			COLORS.Gold
+
 	elseif mechanic == "HoldContestedZone" then
 		local beacon = activeBeacon()
+
 		if beacon then
-			local held = math.max(0, math.floor(tonumber(beacon:GetAttribute("BeaconHeldSeconds")) or 0))
-			local target = math.max(1, math.floor(tonumber(beacon:GetAttribute("BeaconTargetSeconds")) or 1))
-			local occupants = math.max(0, math.floor(tonumber(beacon:GetAttribute("BeaconOccupantCount")) or 0))
+			local held = math.max(
+				0,
+				math.floor(
+					tonumber(
+						beacon:GetAttribute("BeaconHeldSeconds")
+					) or 0
+				)
+			)
+
+			local target = math.max(
+				1,
+				math.floor(
+					tonumber(
+						beacon:GetAttribute("BeaconTargetSeconds")
+					) or 1
+				)
+			)
+
+			local occupants = math.max(
+				0,
+				math.floor(
+					tonumber(
+						beacon:GetAttribute("BeaconOccupantCount")
+					) or 0
+				)
+			)
+
 			if localInsideBeacon(beacon) then
-				return string.format("FAROL %d/%ds", held, target),
-					string.format("%d jogador(es) na área", occupants),
+				return
+					string.format("FAROL %d/%ds", held, target),
+					string.format(
+						"%d jogador(es) na área",
+						occupants
+					),
 					COLORS.Green
 			end
-			return string.format("FAROL %d/%ds", held, target), "ENTRE NA ÁREA DO FAROL", COLORS.Red
+
+			return
+				string.format("FAROL %d/%ds", held, target),
+				"ENTRE NA ÁREA DO FAROL",
+				COLORS.Red
 		end
-		return "LOCALIZE O FAROL", "Entre na zona marcada", COLORS.Purple
+
+		return
+			"LOCALIZE O FAROL",
+			"Entre na zona marcada",
+			COLORS.Purple
+
 	elseif mechanic == "DestroySpawners" then
 		local nests = livingNests()
-		return string.format("NINHOS RESTANTES %d", nests),
+		return
+			string.format("NINHOS RESTANTES %d", nests),
 			string.format("%d inimigos ativos", activeEnemies),
 			COLORS.Purple
+
 	elseif mechanic == "MarkedOpeningTarget" then
-		local focus = workspace:GetAttribute("DungeonObjectiveFocusTarget")
-		return focus and "ALVO MARCADO" or "LOCALIZANDO ALVO",
-			focus and "Ataque somente o alvo destacado" or "Aguarde o alvo aparecer",
+		local focus =
+			workspace:GetAttribute("DungeonObjectiveFocusTarget")
+
+		return
+			focus and "ALVO MARCADO" or "LOCALIZANDO ALVO",
+			focus
+				and "Ataque somente o alvo destacado"
+				or "Aguarde o alvo aparecer",
 			COLORS.Gold
+
 	elseif mechanic == "PriorityRangedTargets" then
 		local priority = livingPriorityTargets()
-		return string.format("ATIRADORES %d", priority),
+
+		return
+			string.format("ATIRADORES %d", priority),
 			"LINHA AZUL = DISPARO • APROXIME-SE",
 			COLORS.Cyan
 	end
 
 	if waveCount > 0 then
-		return string.format("ONDA %d/%d", math.max(1, waveIndex), waveCount),
+		return
+			string.format(
+				"ONDA %d/%d",
+				math.max(1, waveIndex),
+				waveCount
+			),
 			string.format("%d inimigos ativos", activeEnemies),
 			waveIndex >= waveCount and COLORS.Gold or COLORS.Red
 	end
 
 	if activeEnemies > 0 then
-		return "COMBATE", string.format("%d inimigos ativos", activeEnemies), COLORS.Red
+		return
+			"COMBATE",
+			string.format("%d inimigos ativos", activeEnemies),
+			COLORS.Red
 	end
 
 	local pacingDefinition = PACING_LABELS[pacing]
 	if pacingDefinition then
-		return pacingDefinition[1], pacingDefinition[2], pacingDefinition[3]
+		return
+			pacingDefinition[1],
+			pacingDefinition[2],
+			pacingDefinition[3]
 	end
-	return "OBJETIVO ATIVO", "Complete a condição para avançar", COLORS.Cyan
+
+	return
+		"OBJETIVO ATIVO",
+		"Complete a condição para avançar",
+		COLORS.Cyan
 end
 
 local function refresh()
-	local objectiveState = tostring(workspace:GetAttribute("DungeonObjectiveState") or "Inactive")
-	local bossState = tostring(workspace:GetAttribute("DungeonBossState") or "Unavailable")
-	if bossState == "Ready" or bossState == "Activating" or bossState == "Active" then
+	local objectiveState = tostring(
+		workspace:GetAttribute("DungeonObjectiveState") or "Inactive"
+	)
+	local bossState = tostring(
+		workspace:GetAttribute("DungeonBossState") or "Unavailable"
+	)
+
+	if bossState == "Ready"
+		or bossState == "Activating"
+		or bossState == "Active"
+	then
 		context.Visible = false
 		return
 	end
 
 	if objectiveState == "Inactive" or objectiveState == "Completed" then
-		local pacing = tostring(workspace:GetAttribute("DungeonPacingState") or "")
+		local pacing = tostring(
+			workspace:GetAttribute("DungeonPacingState") or ""
+		)
 		context.Visible = PACING_LABELS[pacing] ~= nil
 	else
 		context.Visible = true
 	end
 
-	local mechanic = tostring(workspace:GetAttribute("DungeonObjectiveMechanic") or "")
+	local mechanic = tostring(
+		workspace:GetAttribute("DungeonObjectiveMechanic") or ""
+	)
+
 	if mechanic == "" or mechanic == "Idle" then
-		local objectiveId = tostring(workspace:GetAttribute("DungeonObjectiveId") or "")
+		local objectiveId = tostring(
+			workspace:GetAttribute("DungeonObjectiveId") or ""
+		)
+
 		local fallback = {
 			FirstStrike = "MarkedOpeningTarget",
 			ClearThePath = "OpenCombat",
@@ -514,6 +812,7 @@ local function refresh()
 			EliteHunt = "DefeatSupportsThenElite",
 			FinalRewardBattle = "EscalatingRewardWaves",
 		}
+
 		mechanic = fallback[objectiveId] or "OpenCombat"
 	end
 
@@ -524,39 +823,96 @@ local function refresh()
 	setStyle(definition.Color)
 
 	local pacing, pacingRemaining = pacingState()
-	local top, bottom, statusColor = mechanicStatus(mechanic, pacing, pacingRemaining)
+	local top, bottom, statusColor =
+		mechanicStatus(mechanic, pacing, pacingRemaining)
 	setStatus(top, bottom, statusColor)
 
 	-- Mantém o painel principal curto e deixa os detalhes mecânicos neste cartão.
 	if pacing == "ObjectivePreparation" and pacingRemaining > 0 then
-		objectiveDetail.Text = string.format("Prepare-se — combate começa em %ds", pacingRemaining)
+		objectiveDetail.Text = string.format(
+			"Prepare-se — combate começa em %ds",
+			pacingRemaining
+		)
+
 	elseif pacing == "InterWave" and pacingRemaining > 0 then
-		objectiveDetail.Text = string.format("Respire — próxima onda em %ds", pacingRemaining)
-	elseif pacing == "ObjectiveCompletion" and pacingRemaining > 0 then
-		objectiveDetail.Text = string.format("Objetivo concluído — rota abre em %ds", pacingRemaining)
+		objectiveDetail.Text = string.format(
+			"Respire — próxima onda em %ds",
+			pacingRemaining
+		)
+
+	elseif pacing == "ObjectiveCompletion"
+		and pacingRemaining > 0
+	then
+		objectiveDetail.Text = string.format(
+			"Objetivo concluído — rota abre em %ds",
+			pacingRemaining
+		)
 	end
 
-	local waveIndex = math.max(0, math.floor(tonumber(workspace:GetAttribute("DungeonPacingWaveIndex")
-		or workspace:GetAttribute("DungeonEncounterWaveIndex")) or 0))
-	local waveCount = math.max(0, math.floor(tonumber(workspace:GetAttribute("DungeonPacingWaveCount")
-		or workspace:GetAttribute("DungeonEncounterWaveCount")) or 0))
-	if waveCount > 0 and waveIndex > 0 and mechanic ~= "HoldContestedZone" and mechanic ~= "DestroySpawners" then
+	local waveIndex = math.max(
+		0,
+		math.floor(
+			tonumber(
+				workspace:GetAttribute("DungeonPacingWaveIndex")
+					or workspace:GetAttribute(
+						"DungeonEncounterWaveIndex"
+					)
+			) or 0
+		)
+	)
+
+	local waveCount = math.max(
+		0,
+		math.floor(
+			tonumber(
+				workspace:GetAttribute("DungeonPacingWaveCount")
+					or workspace:GetAttribute(
+						"DungeonEncounterWaveCount"
+					)
+			) or 0
+		)
+	)
+
+	if waveCount > 0
+		and waveIndex > 0
+		and mechanic ~= "HoldContestedZone"
+		and mechanic ~= "DestroySpawners"
+	then
 		objectiveProgress.Text = string.format(
 			"%s   •   ONDA %d/%d",
-			objectiveProgress.Text:gsub("%s+•%s+ONDA.*$", ""),
+			objectiveProgress.Text:gsub(
+				"%s+•%s+ONDA.*$",
+				""
+			),
 			waveIndex,
 			waveCount
 		)
 	end
 
-	local recoveryCount = math.max(0, math.floor(tonumber(workspace:GetAttribute("DungeonObjectiveRecoveryCount")) or 0))
+	local recoveryCount = math.max(
+		0,
+		math.floor(
+			tonumber(
+				workspace:GetAttribute(
+					"DungeonObjectiveRecoveryCount"
+				)
+			) or 0
+		)
+	)
+
 	if recoveryCount > lastRecoveryCount then
 		lastRecoveryCount = recoveryCount
 		showRecovery(recoveryCount)
 	end
 
-	player:SetAttribute("DungeonHUDObjectiveMechanic", mechanic)
-	player:SetAttribute("DungeonHUDObjectivePacingState", pacing)
+	player:SetAttribute(
+		"DungeonHUDObjectiveMechanic",
+		mechanic
+	)
+	player:SetAttribute(
+		"DungeonHUDObjectivePacingState",
+		pacing
+	)
 end
 
 local watched = {
@@ -583,16 +939,28 @@ for _, attribute in ipairs(watched) do
 	workspace:GetAttributeChangedSignal(attribute):Connect(refresh)
 end
 
-CollectionService:GetInstanceAddedSignal("DungeonHoldBeacon"):Connect(refresh)
-CollectionService:GetInstanceRemovedSignal("DungeonHoldBeacon"):Connect(refresh)
-CollectionService:GetInstanceAddedSignal("DungeonSlimeNest"):Connect(refresh)
-CollectionService:GetInstanceRemovedSignal("DungeonSlimeNest"):Connect(refresh)
+CollectionService:GetInstanceAddedSignal(
+	"DungeonHoldBeacon"
+):Connect(refresh)
+CollectionService:GetInstanceRemovedSignal(
+	"DungeonHoldBeacon"
+):Connect(refresh)
+CollectionService:GetInstanceAddedSignal(
+	"DungeonSlimeNest"
+):Connect(refresh)
+CollectionService:GetInstanceRemovedSignal(
+	"DungeonSlimeNest"
+):Connect(refresh)
 
 local nextUpdate = 0
 RunService.RenderStepped:Connect(function()
 	local clock = os.clock()
-	if clock < nextUpdate then return end
+	if clock < nextUpdate then
+		return
+	end
+
 	nextUpdate = clock + UPDATE_INTERVAL
+
 	if context.Visible or recoveryToast.Visible then
 		refresh()
 	end
@@ -602,6 +970,9 @@ gui:SetAttribute("ObjectiveContextVersion", VERSION)
 player:SetAttribute("DungeonHUDObjectivesReady", true)
 player:SetAttribute("DungeonHUDObjectivesVersion", VERSION)
 workspace:SetAttribute("DungeonHUDObjectivesReady", true)
-workspace:SetAttribute("DungeonHUDObjectivesPolicy", "MechanicSpecificMobileThrottledV2")
+workspace:SetAttribute(
+	"DungeonHUDObjectivesPolicy",
+	"MechanicSpecificUpperCompactV3"
+)
 
 refresh()

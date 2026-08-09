@@ -1,658 +1,1234 @@
+--[[
+    Rebuild Part 03 — deterministic encounters.
+
+    FirstStrike:
+      1 slime.
+
+    ClearThePath:
+      3 slimes simultaneously.
+
+    FirstRewardBattle:
+      Wave 1 = 3 slimes.
+      Wait until all 3 die.
+      Wave 2 = 2 slimes.
+      Total = exactly 5 kills.
+
+    SkyAmbush:
+      1.05s warning delay.
+      Then exactly 4 Common slimes spawn around the island.
+
+    RangedThreat:
+      exactly 3 Role="Ranged" / Blue slimes.
+      Existing SlimeController handles strafe + projectile behavior.
+
+    BreakTheNests:
+      exactly 2 static CombatTarget nests with Humanoids.
+      Each death emits NestDestroyed directly.
+
+    SecondRewardBattle:
+      Wave 1 = 4 Common/Green.
+      Wave 2 = 3 Ranged/Blue.
+      Total = exactly 7 objective kills.
+
+    BreakTheGuard:
+      2 Guard monsters spawn dormant/invulnerable.
+      2 destructible wards must be broken first.
+      Last ward releases both Guards.
+      Progress counts only Guard deaths.
+
+    HoldTheBeacon:
+      one static hold zone.
+      staying inside accumulates seconds.
+      leaving pauses without resetting progress.
+      target = exactly 25 seconds.
+
+    NestCluster:
+      reuses the same deterministic Nest contract as BreakTheNests.
+      exactly 3 nests.
+      each nest has 90 HP.
+      progress counts only NestDestroyed.
+
+    EliteHunt:
+      exactly 1 Role="Elite" target.
+      IsElite=true is explicit in spawn options.
+      no support mobs or shield phase.
+      progress counts only the Elite death.
+
+    FinalRewardBattle:
+      Wave 1 = 3 Common/Green.
+      Wave 2 = 3 Ranged/Blue.
+      Wave 3 = 2 Guard/Red.
+      Total = exactly 8 objective kills.
+      no Elite is mixed into the final waves.
+
+    No EncounterCatalog / mechanic service / legacy actor service.
+]]
+
 local HttpService = game:GetService("HttpService")
+local CollectionService = game:GetService("CollectionService")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 
 local MonsterSpawner = require(script.Parent.Parent.BlockParkour.MonsterSpawner)
-local EncounterCatalog = require(script.Parent.EncounterCatalog)
-local ObjectiveActorService = require(script.Parent.ObjectiveActorService)
-local ObjectiveMechanicService = require(script.Parent.ObjectiveMechanicService)
-local ObjectiveService = require(script.Parent.ObjectiveService)
-local DungeonPacingService = require(script.Parent.DungeonPacingService)
+local ObjectiveSignalBridge = require(script.Parent.ObjectiveSignalBridge)
 
 local ObjectiveEncounterService = {}
 
-local IMPOSSIBLE_CHECK_INTERVAL_SECONDS = 1
-local IMPOSSIBLE_CONFIRM_SECONDS = 2.5
-local IMPOSSIBLE_GRACE_SECONDS = 4
-local MAX_PROACTIVE_RECOVERIES_PER_OBJECTIVE = 2
-
 local started = false
-local options = {}
 local current
-local tokenSerial = 0
-local proactiveRecoveryAttempts = {}
+local token = 0
+
+local ENCOUNTERS = {
+    FirstStrike = {
+        Waves = { 1 },
+        HealthMultiplier = 0.75,
+        DamageMultiplier = 0.60,
+        SpeedMultiplier = 0.90,
+    },
+    ClearThePath = {
+        Waves = { 3 },
+        HealthMultiplier = 0.85,
+        DamageMultiplier = 0.68,
+        SpeedMultiplier = 0.92,
+    },
+    FirstRewardBattle = {
+        Waves = { 3, 2 },
+        HealthMultiplier = 0.92,
+        DamageMultiplier = 0.76,
+        SpeedMultiplier = 0.95,
+    },
+    SkyAmbush = {
+        Waves = { 4 },
+        StartDelay = 1.05,
+        Role = "Common",
+        HealthMultiplier = 0.95,
+        DamageMultiplier = 0.80,
+        SpeedMultiplier = 0.98,
+        SlimeVariant = "Red",
+    },
+    RangedThreat = {
+        Waves = { 3 },
+        StartDelay = 0.82,
+        IntroState = "RangedWarning",
+        Role = "Ranged",
+        HealthMultiplier = 0.88,
+        DamageMultiplier = 0.72,
+        SpeedMultiplier = 0.88,
+        SlimeVariant = "Blue",
+    },
+    BreakTheNests = {
+        Mode = "Nests",
+        NestCount = 2,
+        NestHealth = 70,
+    },
+    SecondRewardBattle = {
+        Waves = { 4, 3 },
+        WaveRoles = { "Common", "Ranged" },
+        WaveVariants = { "Green", "Blue" },
+        HealthMultiplier = 0.96,
+        DamageMultiplier = 0.78,
+        SpeedMultiplier = 0.95,
+    },
+    BreakTheGuard = {
+        Mode = "GuardWards",
+        GuardCount = 2,
+        WardCount = 2,
+        WardHealth = 55,
+        Role = "Guard",
+        SlimeVariant = "Green",
+        HealthMultiplier = 1.00,
+        DamageMultiplier = 0.72,
+        SpeedMultiplier = 0.95,
+    },
+    HoldTheBeacon = {
+        Mode = "Beacon",
+        BeaconRadius = 14,
+        BeaconTargetSeconds = 25,
+    },
+    NestCluster = {
+        Mode = "Nests",
+        NestCount = 3,
+        NestHealth = 90,
+    },
+    EliteHunt = {
+        Waves = { 1 },
+        Role = "Elite",
+        IsElite = true,
+        SlimeVariant = "Red",
+        HealthMultiplier = 1.08,
+        DamageMultiplier = 0.82,
+        SpeedMultiplier = 0.98,
+    },
+    FinalRewardBattle = {
+        Waves = { 3, 3, 2 },
+        WaveRoles = { "Common", "Ranged", "Guard" },
+        WaveVariants = { "Green", "Blue", "Red" },
+        HealthMultiplier = 1.00,
+        DamageMultiplier = 0.82,
+        SpeedMultiplier = 0.96,
+    },
+}
 
 local function now()
-	return workspace:GetServerTimeNow()
+    return workspace:GetServerTimeNow()
 end
 
 local function sortedMarkers(folder)
-	local result = {}
-	if folder then
-		for _, child in ipairs(folder:GetChildren()) do
-			if child:IsA("BasePart") then
-				table.insert(result, child)
-			end
-		end
-	end
-	table.sort(result, function(a, b)
-		local left = tonumber(a:GetAttribute("MarkerIndex")) or 0
-		local right = tonumber(b:GetAttribute("MarkerIndex")) or 0
-		if left == right then
-			return a.Name < b.Name
-		end
-		return left < right
-	end)
-	return result
+    local result = {}
+    if folder then
+        for _, child in ipairs(folder:GetChildren()) do
+            if child:IsA("BasePart") then
+                table.insert(result, child)
+            end
+        end
+    end
+
+    table.sort(result, function(a, b)
+        local ai = tonumber(a:GetAttribute("MarkerIndex")) or 0
+        local bi = tonumber(b:GetAttribute("MarkerIndex")) or 0
+        if ai == bi then
+            return a.Name < b.Name
+        end
+        return ai < bi
+    end)
+    return result
 end
 
-local function encounterAlive(encounter)
-	return started
-		and current == encounter
-		and encounter.Active == true
-		and encounter.Completing ~= true
-		and encounter.Token == tokenSerial
+local function activeCount()
+    if not current then
+        return 0
+    end
+    return MonsterSpawner.GetObjectiveActiveCount(current.Id)
 end
 
-local function updateAttributes(encounter, state)
-	workspace:SetAttribute("DungeonEncounterState", state)
-	workspace:SetAttribute("DungeonEncounterId", encounter and encounter.Id or nil)
-	workspace:SetAttribute("DungeonEncounterObjectiveId", encounter and encounter.Definition.Id or nil)
-	workspace:SetAttribute("DungeonEncounterIsland", encounter and encounter.Definition.GlobalIslandIndex or nil)
-	workspace:SetAttribute("DungeonEncounterProfile", encounter and encounter.Plan.ProfileName or nil)
-	workspace:SetAttribute("DungeonEncounterActiveEnemies", encounter and MonsterSpawner.GetObjectiveActiveCount(encounter.Id) or 0)
-	workspace:SetAttribute("DungeonEncounterUpdatedAt", now())
+local function update(state)
+    workspace:SetAttribute("DungeonEncounterState", state)
+    workspace:SetAttribute("DungeonEncounterId", current and current.Id or nil)
+    workspace:SetAttribute("DungeonEncounterObjectiveId", current and current.ObjectiveId or nil)
+    workspace:SetAttribute("DungeonEncounterIsland", current and current.GlobalIslandIndex or nil)
+    workspace:SetAttribute("DungeonEncounterActiveEnemies", activeCount())
+    workspace:SetAttribute("DungeonEncounterUpdatedAt", now())
 end
 
-local function stopEncounter(encounter, reason)
-	if not encounter or encounter.Active == false then
-		return
-	end
-	encounter.Active = false
-	encounter.StopReason = reason
-	ObjectiveMechanicService.EndEncounter(encounter, reason)
-	ObjectiveActorService.DestroyEncounter(encounter.Id)
-	MonsterSpawner.DespawnObjectiveMonsters(encounter.Id)
-	if encounter.Context and encounter.Context.IslandModel then
-		encounter.Context.IslandModel:SetAttribute("ObjectiveEncounterActive", false)
-		encounter.Context.IslandModel:SetAttribute("ObjectiveEncounterStopReason", reason)
-	end
-	updateAttributes(encounter, reason or "Stopped")
+local function destroyCurrent(reason)
+    if not current then
+        return
+    end
+
+    MonsterSpawner.DespawnObjectiveMonsters(current.Id)
+
+    if current.BeaconHeartbeat then
+        current.BeaconHeartbeat:Disconnect()
+        current.BeaconHeartbeat = nil
+    end
+    if current.Beacon and current.Beacon.Parent then
+        current.Beacon:Destroy()
+    end
+
+    for _, nest in ipairs(current.Nests or {}) do
+        if nest and nest.Parent then
+            nest:Destroy()
+        end
+    end
+    for _, ward in ipairs(current.Wards or {}) do
+        if ward and ward.Parent then
+            ward:Destroy()
+        end
+    end
+
+    current = nil
+    update(reason or "Idle")
 end
 
-local function markerForSpawn(encounter)
-	local markers = encounter.EnemyMarkers
-	if #markers == 0 then
-		return encounter.Context.ObjectiveAnchor
-	end
-	encounter.MarkerCursor = (encounter.MarkerCursor % #markers) + 1
-	return markers[encounter.MarkerCursor]
+local function markerFor(markers, fallback, index)
+    if #markers > 0 then
+        return markers[((index - 1) % #markers) + 1]
+    end
+    return fallback
 end
 
-local function waitWhileAlive(encounter, seconds)
-	local remaining = math.max(0, tonumber(seconds) or 0)
-	local last = os.clock()
-	while encounterAlive(encounter) and remaining > 0 do
-		if encounter.Paused then
-			last = os.clock()
-			task.wait(0.15)
-		else
-			local currentClock = os.clock()
-			remaining -= currentClock - last
-			last = currentClock
-			if remaining > 0 then
-				task.wait(math.min(0.15, remaining))
-			end
-		end
-	end
-	return encounterAlive(encounter)
+local function spawnSingle(encounter, config, markers, fallback, waveIndex, indexInWave, globalSequence)
+    local marker = markerFor(markers, fallback, globalSequence)
+    if not marker or not marker:IsA("BasePart") then
+        return nil, "EnemySpawnMarkerMissing"
+    end
+
+    local model
+    local lastReason
+
+    for attempt = 1, 8 do
+        if not started or not current or current ~= encounter or token ~= encounter.Token then
+            return nil, "EncounterCancelled"
+        end
+
+        model, lastReason = MonsterSpawner.SpawnObjectiveMonster(
+            encounter.Context.IslandModel,
+            marker,
+            {
+                EncounterId = encounter.Id,
+                ObjectiveId = encounter.ObjectiveId,
+                GlobalIslandIndex = encounter.GlobalIslandIndex,
+                Role = (config.WaveRoles and config.WaveRoles[waveIndex])
+                    or config.Role
+                    or "Common",
+                SlimeVariant = (config.WaveVariants and config.WaveVariants[waveIndex])
+                    or config.SlimeVariant
+                    or "Green",
+                IsElite = config.IsElite == true,
+                HealthMultiplier = config.HealthMultiplier,
+                DamageMultiplier = config.DamageMultiplier,
+                SpeedMultiplier = config.SpeedMultiplier,
+                WaveIndex = waveIndex,
+                SpawnSequence = globalSequence,
+                Seed = encounter.GlobalIslandIndex * 10000
+                    + waveIndex * 1000
+                    + indexInWave * 100
+                    + attempt,
+                ForceHostile = true,
+            }
+        )
+
+        if model then
+            model:SetAttribute("RebuildProgressionTarget", true)
+            if globalSequence == 1 then
+                model:SetAttribute("ObjectiveFocusTarget", true)
+            end
+            return model
+        end
+
+        workspace:SetAttribute("DungeonEncounterLastSpawnError", tostring(lastReason))
+        task.wait(0.20)
+    end
+
+    return nil, tostring(lastReason or "ObjectiveMonsterSpawnFailed")
 end
 
-local function waitForCapacity(encounter)
-	while encounterAlive(encounter) do
-		if encounter.Paused then
-			task.wait(0.2)
-			continue
-		end
-		local active = MonsterSpawner.GetObjectiveActiveCount(encounter.Id)
-		workspace:SetAttribute("DungeonEncounterActiveEnemies", active)
-		if active < encounter.Plan.MaxAlive then
-			return true
-		end
-		task.wait(0.2)
-	end
-	return false
+local function waitForWaveClear(encounter)
+    while started and current == encounter and token == encounter.Token do
+        local alive = activeCount()
+        workspace:SetAttribute("DungeonEncounterActiveEnemies", alive)
+        if alive <= 0 then
+            return true
+        end
+        task.wait(0.15)
+    end
+    return false
 end
 
-local function spawnOne(encounter, enemy, waveIndex, sequenceIndex)
-	if not waitForCapacity(encounter) then
-		return nil
-	end
-	local marker = markerForSpawn(encounter)
-	if not marker then
-		warn("[ObjectiveEncounter] Ilha sem marcador de inimigo: " .. encounter.Definition.Id)
-		return nil
-	end
-	local attempts = 0
-	while encounterAlive(encounter) and attempts < 20 do
-		attempts += 1
-		local model, reason = MonsterSpawner.SpawnObjectiveMonster(
-			encounter.Context.IslandModel,
-			marker,
-			{
-				EncounterId = encounter.Id,
-				ObjectiveId = encounter.Definition.Id,
-				GlobalIslandIndex = encounter.Definition.GlobalIslandIndex,
-				Role = enemy.Role,
-				SlimeVariant = enemy.SlimeVariant,
-				IsElite = enemy.IsElite == true,
-				HealthMultiplier = enemy.HealthMultiplier,
-				DamageMultiplier = enemy.DamageMultiplier,
-				SpeedMultiplier = enemy.SpeedMultiplier,
-				WaveIndex = waveIndex,
-				SpawnSequence = sequenceIndex,
-				Seed = encounter.Seed + waveIndex * 1009 + sequenceIndex * 97,
-			}
-		)
-		if model then
-			encounter.SpawnedCount += 1
-			ObjectiveMechanicService.RegisterSpawnedEnemy(
-				encounter,
-				model,
-				enemy,
-				waveIndex,
-				sequenceIndex
-			)
-			workspace:SetAttribute("DungeonEncounterSpawnedCount", encounter.SpawnedCount)
-			return model
-		end
-		encounter.LastSpawnError = tostring(reason)
-		workspace:SetAttribute("DungeonEncounterLastSpawnError", encounter.LastSpawnError)
-		task.wait(0.35)
-	end
-	return nil
+local function createNestHealthBar(model, root, humanoid)
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name = "RebuildNestHealthBar"
+    billboard.Adornee = root
+    billboard.Size = UDim2.fromOffset(116, 30)
+    billboard.StudsOffsetWorldSpace = Vector3.new(0, 3.7, 0)
+    billboard.AlwaysOnTop = true
+    billboard.MaxDistance = 90
+    billboard.Parent = model
+
+    local title = Instance.new("TextLabel")
+    title.Size = UDim2.new(1, 0, 0, 14)
+    title.BackgroundTransparency = 1
+    title.Text = "NINHO"
+    title.TextColor3 = Color3.fromRGB(238, 230, 255)
+    title.Font = Enum.Font.GothamBold
+    title.TextSize = 11
+    title.Parent = billboard
+
+    local background = Instance.new("Frame")
+    background.Position = UDim2.fromOffset(5, 18)
+    background.Size = UDim2.new(1, -10, 0, 8)
+    background.BackgroundColor3 = Color3.fromRGB(27, 20, 35)
+    background.BorderSizePixel = 0
+    background.ClipsDescendants = true
+    background.Parent = billboard
+    Instance.new("UICorner", background).CornerRadius = UDim.new(1, 0)
+
+    local fill = Instance.new("Frame")
+    fill.Size = UDim2.fromScale(1, 1)
+    fill.BackgroundColor3 = Color3.fromRGB(183, 91, 255)
+    fill.BorderSizePixel = 0
+    fill.Parent = background
+    Instance.new("UICorner", fill).CornerRadius = UDim.new(1, 0)
+
+    local function refresh()
+        fill.Size = UDim2.fromScale(
+            math.clamp(humanoid.Health / math.max(1, humanoid.MaxHealth), 0, 1),
+            1
+        )
+    end
+
+    humanoid.HealthChanged:Connect(refresh)
+    refresh()
 end
 
-local function spawnEnemyList(encounter, enemies, waveIndex)
-	local sequenceIndex = 0
-	for _, enemy in ipairs(enemies or {}) do
-		for _ = 1, math.max(0, math.floor(tonumber(enemy.Count) or 0)) do
-			if not encounterAlive(encounter) then
-				return false
-			end
-			sequenceIndex += 1
-			spawnOne(encounter, enemy, waveIndex, sequenceIndex)
-			task.wait(0.12)
-		end
-	end
-	return encounterAlive(encounter)
+local function createNest(encounter, definition, marker, index, maxHealth)
+    local model = Instance.new("Model")
+    model.Name = string.format("RebuildObjectiveNest_%02d", index)
+    model:SetAttribute("ObjectiveActorType", "Nest")
+    model:SetAttribute("MonsterRole", "Nest")
+    model:SetAttribute("RuntimeMonster", false)
+    model:SetAttribute("ObjectiveSpawned", false)
+    model:SetAttribute("ObjectiveId", definition.Id)
+    model:SetAttribute("GlobalIslandIndex", definition.GlobalIslandIndex)
+    model:SetAttribute("RouteRoundIndex", definition.RoundIndex)
+    model:SetAttribute("RouteIslandIndex", definition.IslandIndex)
+    model:SetAttribute("ObjectiveTargetCompleted", false)
+    model:SetAttribute("NoKnockback", true)
+    model:SetAttribute("CanBeKnockedBack", false)
+    model:SetAttribute("CanBeStunned", false)
+    model:SetAttribute("UseCentralAI", false)
+    model:SetAttribute("SimulationActive", true)
+    model:SetAttribute("ObjectiveEncounterId", encounter.Id)
+    model:SetAttribute("RebuildProgressionTarget", true)
+
+    local root = Instance.new("Part")
+    root.Name = "HumanoidRootPart"
+    root.Shape = Enum.PartType.Ball
+    root.Size = Vector3.new(6.0, 3.4, 6.0)
+    root.CFrame = marker.CFrame * CFrame.new(0, 1.55, 0)
+    root.Anchored = true
+    root.CanCollide = true
+    root.CanTouch = false
+    root.CanQuery = true
+    root.Material = Enum.Material.Slate
+    root.Color = Color3.fromRGB(80, 49, 91)
+    root:SetAttribute("ObjectiveId", definition.Id)
+    root:SetAttribute("GlobalIslandIndex", definition.GlobalIslandIndex)
+    root.Parent = model
+
+    for podIndex, offset in ipairs({
+        Vector3.new(1.8, 1.0, 0.7),
+        Vector3.new(-1.5, 1.0, 1.1),
+        Vector3.new(0.4, 1.1, -1.7),
+    }) do
+        local pod = Instance.new("Part")
+        pod.Name = string.format("SlimePod_%02d", podIndex)
+        pod.Shape = Enum.PartType.Ball
+        pod.Size = Vector3.new(1.6, 1.6, 1.6)
+        pod.CFrame = root.CFrame * CFrame.new(offset)
+        pod.Anchored = true
+        pod.CanCollide = false
+        pod.CanTouch = false
+        pod.CanQuery = false
+        pod.Material = Enum.Material.Neon
+        pod.Color = podIndex == 2
+            and Color3.fromRGB(91, 153, 255)
+            or Color3.fromRGB(101, 232, 116)
+        pod.Parent = model
+    end
+
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "NestOutline"
+    highlight.FillTransparency = 1
+    highlight.OutlineColor = Color3.fromRGB(215, 124, 255)
+    highlight.OutlineTransparency = 0.08
+    highlight.DepthMode = Enum.HighlightDepthMode.Occluded
+    highlight.Parent = model
+
+    local humanoid = Instance.new("Humanoid")
+    humanoid.Name = "Humanoid"
+    humanoid.MaxHealth = math.max(1, math.floor(tonumber(maxHealth) or 70))
+    humanoid.Health = humanoid.MaxHealth
+    humanoid.DisplayName = "Ninho de Slime"
+    humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
+    humanoid.BreakJointsOnDeath = false
+    humanoid.Parent = model
+
+    model.PrimaryPart = root
+    model.Parent = encounter.Context.IslandModel
+
+    CollectionService:AddTag(model, "CombatTarget")
+    CollectionService:AddTag(model, "DungeonObjectiveTarget")
+    CollectionService:AddTag(model, "DungeonSlimeNest")
+
+    createNestHealthBar(model, root, humanoid)
+
+    local reported = false
+    humanoid.Died:Connect(function()
+        if reported then
+            return
+        end
+        reported = true
+
+        model:SetAttribute("ObjectiveTargetCompleted", true)
+        model:SetAttribute("SimulationActive", false)
+        root.CanCollide = false
+
+        ObjectiveSignalBridge.Report("NestDestroyed", {
+            Target = model,
+            GlobalIslandIndex = definition.GlobalIslandIndex,
+            Amount = 1,
+            SourceUserId = model:GetAttribute("LastDamagedByUserId"),
+        })
+
+        task.delay(0.65, function()
+            if model.Parent then
+                model:Destroy()
+            end
+        end)
+    end)
+
+    return model
 end
 
-local function waitForEncounterClear(encounter)
-	while encounterAlive(encounter) do
-		if encounter.Paused then
-			task.wait(0.2)
-			continue
-		end
-		local active = MonsterSpawner.GetObjectiveActiveCount(encounter.Id)
-		workspace:SetAttribute("DungeonEncounterActiveEnemies", active)
-		if active <= 0 then
-			return true
-		end
-		task.wait(0.25)
-	end
-	return false
+local function createNestsEncounter(encounter, config, definition)
+    local markers = sortedMarkers(encounter.Context.EnemySpawns)
+    local fallback = encounter.Context.ObjectiveAnchor or encounter.Context.SafeSpawn
+    local nestCount = math.max(1, math.floor(tonumber(config.NestCount) or 2))
+
+    workspace:SetAttribute("DungeonEncounterWaveIndex", 0)
+    workspace:SetAttribute("DungeonEncounterWaveCount", 0)
+    workspace:SetAttribute("DungeonEncounterWaveState", "NestsActive")
+    workspace:SetAttribute("DungeonEncounterExpectedKillCount", 0)
+    workspace:SetAttribute("DungeonEncounterExpectedNestCount", nestCount)
+    workspace:SetAttribute("DungeonEncounterSpawnedCount", 0)
+
+    encounter.Nests = {}
+
+    for index = 1, nestCount do
+        local marker = markerFor(markers, fallback, index)
+        if not marker or not marker:IsA("BasePart") then
+            workspace:SetAttribute("DungeonEncounterLastSpawnError", "NestMarkerMissing")
+            update("SpawnFailed")
+            return false, "NestMarkerMissing"
+        end
+
+        local nest = createNest(
+            encounter,
+            definition,
+            marker,
+            index,
+            config.NestHealth
+        )
+
+        table.insert(encounter.Nests, nest)
+        workspace:SetAttribute("DungeonEncounterSpawnedCount", index)
+
+        if index == 1 and nest.PrimaryPart then
+            workspace:SetAttribute("DungeonObjectiveWaypointPosition", nest.PrimaryPart.Position)
+            workspace:SetAttribute("DungeonObjectiveWaypointTarget", nest:GetFullName())
+            workspace:SetAttribute(
+                "DungeonObjectiveWaypointSerial",
+                (tonumber(workspace:GetAttribute("DungeonObjectiveWaypointSerial")) or 0) + 1
+            )
+        end
+    end
+
+    update("NestsActive")
+    return true
 end
 
-local function startWaveWorker(encounter)
-	task.spawn(function()
-		local waveCount = #(encounter.Plan.Waves or {})
-		for waveIndex, wave in ipairs(encounter.Plan.Waves or {}) do
-			if not waitWhileAlive(encounter, wave.DelaySeconds) then
-				return
-			end
-			if waveIndex > 1 then
-				local breakSeconds = DungeonPacingService.BeginWaveBreak(encounter, waveIndex, waveCount)
-				if not waitWhileAlive(encounter, breakSeconds) then
-					return
-				end
-			end
-			encounter.WaveIndex = waveIndex
-			workspace:SetAttribute("DungeonEncounterWaveIndex", waveIndex)
-			workspace:SetAttribute("DungeonEncounterWaveCount", waveCount)
-			DungeonPacingService.BeginWave(encounter, waveIndex, waveCount)
-			spawnEnemyList(encounter, wave.Enemies, waveIndex)
-			if wave.WaitForClear and waveIndex < waveCount then
-				if not waitForEncounterClear(encounter) then
-					return
-				end
-				DungeonPacingService.MarkWaveCleared(encounter, waveIndex, waveCount)
-			end
-		end
-		if encounterAlive(encounter) then
-			encounter.AllWavesSpawned = true
-			workspace:SetAttribute("DungeonEncounterAllWavesSpawned", true)
-			updateAttributes(encounter, "AllWavesSpawned")
-		end
-	end)
+local function createWard(encounter, definition, marker, index, maxHealth, onDestroyed)
+    local model = Instance.new("Model")
+    model.Name = string.format("RebuildGuardWard_%02d", index)
+    model:SetAttribute("ObjectiveActorType", "GuardWard")
+    model:SetAttribute("MonsterRole", "GuardWard")
+    model:SetAttribute("RuntimeMonster", false)
+    model:SetAttribute("ObjectiveSpawned", false)
+    model:SetAttribute("ObjectiveId", definition.Id)
+    model:SetAttribute("GlobalIslandIndex", definition.GlobalIslandIndex)
+    model:SetAttribute("RouteRoundIndex", definition.RoundIndex)
+    model:SetAttribute("RouteIslandIndex", definition.IslandIndex)
+    model:SetAttribute("ObjectiveTargetCompleted", false)
+    model:SetAttribute("NoKnockback", true)
+    model:SetAttribute("CanBeKnockedBack", false)
+    model:SetAttribute("CanBeStunned", false)
+    model:SetAttribute("UseCentralAI", false)
+    model:SetAttribute("SimulationActive", true)
+    model:SetAttribute("ObjectiveEncounterId", encounter.Id)
+
+    local root = Instance.new("Part")
+    root.Name = "HumanoidRootPart"
+    root.Shape = Enum.PartType.Ball
+    root.Size = Vector3.new(3.2, 5.4, 3.2)
+    root.CFrame = marker.CFrame * CFrame.new(0, 2.5, 0)
+    root.Anchored = true
+    root.CanCollide = true
+    root.CanTouch = false
+    root.CanQuery = true
+    root.Material = Enum.Material.Neon
+    root.Color = Color3.fromRGB(91, 169, 255)
+    root:SetAttribute("ObjectiveId", definition.Id)
+    root:SetAttribute("GlobalIslandIndex", definition.GlobalIslandIndex)
+    root.Parent = model
+
+    local ring = Instance.new("Part")
+    ring.Name = "WardRing"
+    ring.Shape = Enum.PartType.Cylinder
+    ring.Size = Vector3.new(0.35, 5.4, 5.4)
+    ring.CFrame = root.CFrame * CFrame.Angles(0, 0, math.rad(90))
+    ring.Anchored = true
+    ring.CanCollide = false
+    ring.CanTouch = false
+    ring.CanQuery = false
+    ring.Material = Enum.Material.Neon
+    ring.Color = Color3.fromRGB(159, 218, 255)
+    ring.Transparency = 0.18
+    ring.Parent = model
+
+    local light = Instance.new("PointLight")
+    light.Name = "WardLight"
+    light.Color = root.Color
+    light.Brightness = 2.1
+    light.Range = 12
+    light.Shadows = false
+    light.Parent = root
+
+    local humanoid = Instance.new("Humanoid")
+    humanoid.Name = "Humanoid"
+    humanoid.MaxHealth = math.max(1, math.floor(tonumber(maxHealth) or 55))
+    humanoid.Health = humanoid.MaxHealth
+    humanoid.DisplayName = "Cristal de Proteção"
+    humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
+    humanoid.BreakJointsOnDeath = false
+    humanoid.Parent = model
+
+    model.PrimaryPart = root
+    model.Parent = encounter.Context.IslandModel
+
+    CollectionService:AddTag(model, "CombatTarget")
+    CollectionService:AddTag(model, "DungeonObjectiveTarget")
+    CollectionService:AddTag(model, "DungeonGuardWard")
+
+    createNestHealthBar(model, root, humanoid)
+
+    local reported = false
+    humanoid.Died:Connect(function()
+        if reported then
+            return
+        end
+        reported = true
+
+        model:SetAttribute("ObjectiveTargetCompleted", true)
+        model:SetAttribute("SimulationActive", false)
+        root.CanCollide = false
+
+        if type(onDestroyed) == "function" then
+            onDestroyed(model)
+        end
+
+        task.delay(0.55, function()
+            if model.Parent then
+                model:Destroy()
+            end
+        end)
+    end)
+
+    return model
 end
 
-local function spawnNestMinion(encounter, nest)
-	if not encounterAlive(encounter)
-		or MonsterSpawner.GetObjectiveActiveCount(encounter.Id) >= encounter.Plan.MaxAlive
-	then
-		return false
-	end
-	local enemy = {
-		Role = encounter.Plan.NestMonsterRole or "Common",
-		SlimeVariant = encounter.Plan.NestMonsterVariant or "Green",
-		Count = 1,
-	}
-	local marker = markerForSpawn(encounter)
-	if marker and nest and nest.PrimaryPart then
-		-- Alterna os marcadores globais, mas registra qual ninho solicitou a cria.
-		marker:SetAttribute("LastNestSpawnSource", nest.Name)
-	end
-	return spawnOne(encounter, enemy, 90, encounter.SpawnedCount + 1) ~= nil
+local function unprotectGuards(encounter)
+    if not encounter or encounter.GuardsReleased == true then
+        return
+    end
+    encounter.GuardsReleased = true
+
+    workspace:SetAttribute("DungeonGuardWardsRemaining", 0)
+    workspace:SetAttribute("DungeonGuardPhase", "DefeatGuards")
+
+    for _, guard in ipairs(encounter.Guards or {}) do
+        if guard and guard.Parent then
+            guard:SetAttribute("GuardWardProtected", false)
+            guard:SetAttribute("Invulnerable", false)
+            guard:SetAttribute("SimulationActive", true)
+            guard:SetAttribute("ObjectivePriorityTarget", true)
+
+            local shield = guard:FindFirstChild("RebuildGuardShield")
+            if shield then
+                shield:Destroy()
+            end
+        end
+    end
 end
 
-local function createNests(encounter)
-	local markers = encounter.EnemyMarkers
-	local count = math.max(1, math.floor(tonumber(encounter.Plan.NestCount) or 1))
-	for index = 1, count do
-		local marker = markers[((index - 1) % math.max(1, #markers)) + 1]
-			or encounter.Context.ObjectiveAnchor
-		if marker then
-			ObjectiveActorService.CreateNest(encounter.Id, encounter.Definition, marker, {
-				Index = index,
-				MaxHealth = encounter.Plan.NestHealth,
-				SpawnInterval = encounter.Plan.NestSpawnInterval,
-				Parent = encounter.Context.IslandModel,
-				Token = encounter.Token,
-				OnSpawnRequested = function(nest)
-					spawnNestMinion(encounter, nest)
-				end,
-			})
-		end
-	end
-	if encounter.Plan.OpeningWave then
-		task.spawn(function()
-			waitWhileAlive(encounter, 0.25)
-			spawnEnemyList(encounter, encounter.Plan.OpeningWave, 1)
-		end)
-	end
+local function protectGuard(guard)
+    guard:SetAttribute("GuardWardProtected", true)
+    guard:SetAttribute("Invulnerable", true)
+    guard:SetAttribute("SimulationActive", false)
+
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "RebuildGuardShield"
+    highlight.FillColor = Color3.fromRGB(76, 170, 255)
+    highlight.FillTransparency = 0.68
+    highlight.OutlineColor = Color3.fromRGB(172, 226, 255)
+    highlight.OutlineTransparency = 0.05
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.Parent = guard
 end
 
-local function startBeaconDefense(encounter, initialProgress)
-	local beacon = ObjectiveActorService.CreateBeacon(
-		encounter.Id,
-		encounter.Definition,
-		encounter.Context.ObjectiveAnchor,
-		{
-			Radius = encounter.Plan.BeaconRadius,
-			Target = encounter.Definition.Target,
-			InitialProgress = initialProgress,
-			ParticipantUserIds = options.ParticipantUserIds,
-			Parent = encounter.Context.IslandModel,
-			Token = encounter.Token,
-		}
-	)
-	encounter.Beacon = beacon
-	task.spawn(function()
-		waitWhileAlive(encounter, 0.25)
-		spawnEnemyList(encounter, encounter.Plan.OpeningWave, 1)
-		local cycle = 1
-		while encounterAlive(encounter) do
-			if not waitWhileAlive(encounter, encounter.Plan.ContinuousInterval) then
-				return
-			end
-			cycle += 1
-			if MonsterSpawner.GetObjectiveActiveCount(encounter.Id) < encounter.Plan.MaxAlive then
-				spawnEnemyList(encounter, encounter.Plan.ContinuousWave, cycle)
-			end
-		end
-	end)
+local function createGuardEncounter(encounter, config, definition)
+    local markers = sortedMarkers(encounter.Context.EnemySpawns)
+    local fallback = encounter.Context.ObjectiveAnchor or encounter.Context.SafeSpawn
+
+    local wardCount = math.max(1, math.floor(tonumber(config.WardCount) or 2))
+    local guardCount = math.max(1, math.floor(tonumber(config.GuardCount) or 2))
+
+    encounter.Wards = {}
+    encounter.Guards = {}
+    encounter.WardsDestroyed = 0
+    encounter.GuardsReleased = false
+
+    workspace:SetAttribute("DungeonEncounterWaveIndex", 0)
+    workspace:SetAttribute("DungeonEncounterWaveCount", 0)
+    workspace:SetAttribute("DungeonEncounterWaveState", "GuardWards")
+    workspace:SetAttribute("DungeonEncounterExpectedKillCount", guardCount)
+    workspace:SetAttribute("DungeonEncounterExpectedWardCount", wardCount)
+    workspace:SetAttribute("DungeonEncounterSpawnedCount", 0)
+    workspace:SetAttribute("DungeonGuardWardsRemaining", wardCount)
+    workspace:SetAttribute("DungeonGuardPhase", "BreakWards")
+
+    -- Spawn Guards first, but keep them invulnerable and dormant.
+    for index = 1, guardCount do
+        local guard, reason = spawnSingle(
+            encounter,
+            config,
+            markers,
+            fallback,
+            1,
+            index,
+            index
+        )
+        if not guard then
+            workspace:SetAttribute("DungeonEncounterLastSpawnError", tostring(reason))
+            update("SpawnFailed")
+            return false, reason
+        end
+
+        protectGuard(guard)
+        table.insert(encounter.Guards, guard)
+        workspace:SetAttribute("DungeonEncounterSpawnedCount", index)
+    end
+
+    -- Place wards after Guard markers when possible so they do not overlap.
+    for index = 1, wardCount do
+        local marker = markerFor(markers, fallback, guardCount + index)
+        if not marker or not marker:IsA("BasePart") then
+            workspace:SetAttribute("DungeonEncounterLastSpawnError", "GuardWardMarkerMissing")
+            update("SpawnFailed")
+            return false, "GuardWardMarkerMissing"
+        end
+
+        local ward = createWard(
+            encounter,
+            definition,
+            marker,
+            index,
+            config.WardHealth,
+            function()
+                if current ~= encounter then
+                    return
+                end
+
+                encounter.WardsDestroyed += 1
+                local remaining = math.max(0, wardCount - encounter.WardsDestroyed)
+                workspace:SetAttribute("DungeonGuardWardsRemaining", remaining)
+
+                if remaining <= 0 then
+                    unprotectGuards(encounter)
+                end
+            end
+        )
+
+        table.insert(encounter.Wards, ward)
+
+        if index == 1 and ward.PrimaryPart then
+            workspace:SetAttribute("DungeonObjectiveWaypointPosition", ward.PrimaryPart.Position)
+            workspace:SetAttribute("DungeonObjectiveWaypointTarget", ward:GetFullName())
+            workspace:SetAttribute(
+                "DungeonObjectiveWaypointSerial",
+                (tonumber(workspace:GetAttribute("DungeonObjectiveWaypointSerial")) or 0) + 1
+            )
+        end
+    end
+
+    update("GuardWards")
+    return true
 end
 
-local function activateEncounter(encounter, beginOptions)
-	if not encounterAlive(encounter) then
-		return false
-	end
-	encounter.Preparing = false
-	encounter.Paused = false
-	encounter.ActivatedAt = now()
-	ObjectiveMechanicService.SetEncounterActive(encounter, true)
-	DungeonPacingService.BeginCombat(encounter)
-	if encounter.Plan.Mode == "Nests" then
-		createNests(encounter)
-		encounter.ObjectiveActorsCreated = true
-	elseif encounter.Plan.Mode == "Beacon" then
-		startBeaconDefense(
-			encounter,
-			math.max(0, math.floor(tonumber(beginOptions.InitialProgress) or 0))
-		)
-		encounter.ObjectiveActorsCreated = true
-	else
-		startWaveWorker(encounter)
-	end
-	updateAttributes(encounter, "Active")
-	return true
+local function livingPlayerRoot(player)
+    if not player or player.Parent ~= Players then
+        return nil
+    end
+    if player:GetAttribute("DungeonEliminated") == true
+        or player:GetAttribute("IsDowned") == true
+    then
+        return nil
+    end
+
+    local character = player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    if not humanoid or humanoid.Health <= 0 or not root or not root:IsA("BasePart") then
+        return nil
+    end
+    return root
 end
 
-local function currentObjectiveProgress(encounter)
-	if workspace:GetAttribute("DungeonObjectiveId") ~= encounter.Definition.Id then
-		return nil
-	end
-	local target = math.max(
-		1,
-		math.floor(tonumber(workspace:GetAttribute("DungeonObjectiveTarget")) or encounter.Definition.Target or 1)
-	)
-	local progress = math.clamp(
-		math.floor(tonumber(workspace:GetAttribute("DungeonObjectiveProgress")) or 0),
-		0,
-		target
-	)
-	return progress, target
+local function playerInsideBeacon(center, radius)
+    for _, player in ipairs(Players:GetPlayers()) do
+        local root = livingPlayerRoot(player)
+        if root then
+            local offset = root.Position - center
+            local horizontal = Vector2.new(offset.X, offset.Z).Magnitude
+            if horizontal <= radius and math.abs(offset.Y) <= 10 then
+                return player
+            end
+        end
+    end
+    return nil
 end
 
-local function impossibleEncounterReason(encounter)
-	if not encounterAlive(encounter)
-		or encounter.Preparing
-		or encounter.Paused
-		or encounter.RecoveryInProgress
-		or not encounter.ActivatedAt
-		or now() - encounter.ActivatedAt < IMPOSSIBLE_GRACE_SECONDS
-	then
-		return nil
-	end
+local function createBeaconEncounter(encounter, config, definition)
+    local marker = encounter.Context.ObjectiveAnchor or encounter.Context.SafeSpawn
+    if not marker or not marker:IsA("BasePart") then
+        workspace:SetAttribute("DungeonEncounterLastSpawnError", "BeaconMarkerMissing")
+        update("SpawnFailed")
+        return false, "BeaconMarkerMissing"
+    end
 
-	local progress, target = currentObjectiveProgress(encounter)
-	if not progress or progress >= target then
-		return nil
-	end
+    local radius = math.max(6, tonumber(config.BeaconRadius) or 14)
+    local targetSeconds = math.max(1, math.floor(tonumber(config.BeaconTargetSeconds) or 25))
 
-	if encounter.Plan.Mode == "Waves" then
-		if encounter.AllWavesSpawned == true
-			and MonsterSpawner.GetObjectiveActiveCount(encounter.Id) <= 0
-		then
-			return "WavesExhaustedBeforeTarget"
-		end
-	elseif encounter.Plan.Mode == "Nests" then
-		if encounter.ObjectiveActorsCreated == true
-			and ObjectiveActorService.GetAliveNestCount(encounter.Id) <= 0
-		then
-			return "NestsExhaustedBeforeTarget"
-		end
-	elseif encounter.Plan.Mode == "Beacon" then
-		if encounter.ObjectiveActorsCreated == true
-			and ObjectiveActorService.GetAliveBeaconCount(encounter.Id) <= 0
-		then
-			return "BeaconMissingBeforeTarget"
-		end
-	end
+    local model = Instance.new("Model")
+    model.Name = "RebuildHoldBeacon"
+    model:SetAttribute("ObjectiveActorType", "Beacon")
+    model:SetAttribute("ObjectiveId", definition.Id)
+    model:SetAttribute("GlobalIslandIndex", definition.GlobalIslandIndex)
+    model:SetAttribute("RouteRoundIndex", definition.RoundIndex)
+    model:SetAttribute("RouteIslandIndex", definition.IslandIndex)
+    model:SetAttribute("ObjectiveTargetCompleted", false)
+    model:SetAttribute("BeaconRadius", radius)
+    model:SetAttribute("BeaconTargetSeconds", targetSeconds)
+    model:SetAttribute("BeaconHeldSeconds", 0)
+    model:SetAttribute("BeaconOccupantCount", 0)
+    model:SetAttribute("BeaconActive", false)
+    model:SetAttribute("SimulationActive", true)
+    model:SetAttribute("ObjectiveEncounterId", encounter.Id)
+    model.Parent = encounter.Context.IslandModel
 
-	return nil
+    local base = Instance.new("Part")
+    base.Name = "BeaconBase"
+    base.Shape = Enum.PartType.Cylinder
+    base.Size = Vector3.new(1.2, 5.5, 5.5)
+    base.CFrame = marker.CFrame * CFrame.new(0, 0.65, 0) * CFrame.Angles(0, 0, math.rad(90))
+    base.Anchored = true
+    base.CanCollide = true
+    base.CanTouch = false
+    base.CanQuery = true
+    base.Material = Enum.Material.Metal
+    base.Color = Color3.fromRGB(77, 67, 112)
+    base.Parent = model
+
+    local core = Instance.new("Part")
+    core.Name = "BeaconCore"
+    core.Shape = Enum.PartType.Ball
+    core.Size = Vector3.new(2.3, 2.3, 2.3)
+    core.CFrame = marker.CFrame * CFrame.new(0, 3.2, 0)
+    core.Anchored = true
+    core.CanCollide = false
+    core.CanTouch = false
+    core.CanQuery = false
+    core.Material = Enum.Material.Neon
+    core.Color = Color3.fromRGB(143, 103, 255)
+    core.Parent = model
+
+    local light = Instance.new("PointLight")
+    light.Name = "BeaconLight"
+    light.Color = core.Color
+    light.Brightness = 2.3
+    light.Range = radius + 7
+    light.Shadows = false
+    light.Parent = core
+
+    local zone = Instance.new("Part")
+    zone.Name = "BeaconHoldZone"
+    zone.Shape = Enum.PartType.Cylinder
+    zone.Size = Vector3.new(0.18, radius * 2, radius * 2)
+    zone.CFrame = marker.CFrame * CFrame.new(0, 0.13, 0) * CFrame.Angles(0, 0, math.rad(90))
+    zone.Anchored = true
+    zone.CanCollide = false
+    zone.CanTouch = false
+    zone.CanQuery = false
+    zone.Material = Enum.Material.Neon
+    zone.Color = Color3.fromRGB(143, 103, 255)
+    zone.Transparency = 0.72
+    zone.Parent = model
+
+    local billboard = Instance.new("BillboardGui")
+    billboard.Name = "BeaconProgress"
+    billboard.Adornee = core
+    billboard.Size = UDim2.fromOffset(150, 40)
+    billboard.StudsOffsetWorldSpace = Vector3.new(0, 2.5, 0)
+    billboard.AlwaysOnTop = true
+    billboard.MaxDistance = 100
+    billboard.Parent = model
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.fromScale(1, 1)
+    label.BackgroundColor3 = Color3.fromRGB(20, 18, 34)
+    label.BackgroundTransparency = 0.15
+    label.BorderSizePixel = 0
+    label.Text = string.format("FAROL 0 / %d", targetSeconds)
+    label.TextColor3 = Color3.fromRGB(222, 205, 255)
+    label.Font = Enum.Font.GothamBold
+    label.TextSize = 13
+    label.Parent = billboard
+    Instance.new("UICorner", label).CornerRadius = UDim.new(0, 8)
+
+    CollectionService:AddTag(model, "DungeonObjectiveTarget")
+    CollectionService:AddTag(model, "DungeonHoldBeacon")
+
+    encounter.Beacon = model
+
+    workspace:SetAttribute("DungeonEncounterWaveIndex", 0)
+    workspace:SetAttribute("DungeonEncounterWaveCount", 0)
+    workspace:SetAttribute("DungeonEncounterWaveState", "BeaconActive")
+    workspace:SetAttribute("DungeonEncounterExpectedKillCount", 0)
+    workspace:SetAttribute("DungeonEncounterBeaconRadius", radius)
+    workspace:SetAttribute("DungeonEncounterBeaconTargetSeconds", targetSeconds)
+    workspace:SetAttribute("DungeonBeaconOccupantCount", 0)
+    workspace:SetAttribute("DungeonBeaconHeldSeconds", 0)
+
+    workspace:SetAttribute("DungeonObjectiveWaypointPosition", core.Position)
+    workspace:SetAttribute("DungeonObjectiveWaypointTarget", model:GetFullName())
+    workspace:SetAttribute(
+        "DungeonObjectiveWaypointSerial",
+        (tonumber(workspace:GetAttribute("DungeonObjectiveWaypointSerial")) or 0) + 1
+    )
+
+    local fractionalSeconds = 0
+    local lastTick = workspace:GetServerTimeNow()
+
+    encounter.BeaconHeartbeat = RunService.Heartbeat:Connect(function()
+        if current ~= encounter
+            or not model.Parent
+            or model:GetAttribute("SimulationActive") == false
+            or model:GetAttribute("ObjectiveTargetCompleted") == true
+        then
+            return
+        end
+
+        local currentTime = workspace:GetServerTimeNow()
+        local delta = math.clamp(currentTime - lastTick, 0, 0.25)
+        lastTick = currentTime
+
+        local occupant = playerInsideBeacon(marker.Position, radius)
+        local occupied = occupant ~= nil
+
+        model:SetAttribute("BeaconActive", occupied)
+        model:SetAttribute("BeaconOccupantCount", occupied and 1 or 0)
+        workspace:SetAttribute("DungeonBeaconOccupantCount", occupied and 1 or 0)
+
+        if not occupied then
+            return
+        end
+
+        fractionalSeconds += delta
+        local wholeSeconds = math.floor(fractionalSeconds)
+        if wholeSeconds <= 0 then
+            return
+        end
+        fractionalSeconds -= wholeSeconds
+
+        local accepted = ObjectiveSignalBridge.Report("BeaconHoldSeconds", {
+            Target = model,
+            GlobalIslandIndex = definition.GlobalIslandIndex,
+            SourceUserId = occupant.UserId,
+            Amount = wholeSeconds,
+        })
+
+        if accepted then
+            local held = math.max(
+                0,
+                math.floor(tonumber(model:GetAttribute("BeaconHeldSeconds")) or 0)
+            )
+            workspace:SetAttribute("DungeonBeaconHeldSeconds", held)
+            label.Text = string.format("FAROL %d / %d", held, targetSeconds)
+
+            if held >= targetSeconds then
+                model:SetAttribute("ObjectiveTargetCompleted", true)
+                model:SetAttribute("BeaconActive", false)
+                workspace:SetAttribute("DungeonBeaconOccupantCount", 0)
+            end
+        end
+    end)
+
+    update("BeaconActive")
+    return true
 end
 
-local function startImpossibleEncounterWatchdog(encounter)
-	task.spawn(function()
-		while encounterAlive(encounter) do
-			task.wait(IMPOSSIBLE_CHECK_INTERVAL_SECONDS)
-			if not encounterAlive(encounter) then
-				return
-			end
+local function runEncounter(encounter, config)
+    task.spawn(function()
+        local markers = sortedMarkers(encounter.Context.EnemySpawns)
+        local fallback = encounter.Context.ObjectiveAnchor or encounter.Context.SafeSpawn
+        local globalSequence = 0
+        local totalExpected = 0
 
-			local reason = impossibleEncounterReason(encounter)
-			if not reason then
-				encounter.ImpossibleReason = nil
-				encounter.ImpossibleSince = nil
-				continue
-			end
+        for _, count in ipairs(config.Waves) do
+            totalExpected += count
+        end
 
-			if encounter.ImpossibleReason ~= reason then
-				encounter.ImpossibleReason = reason
-				encounter.ImpossibleSince = now()
-				continue
-			end
-			if now() - (encounter.ImpossibleSince or now()) < IMPOSSIBLE_CONFIRM_SECONDS then
-				continue
-			end
+        workspace:SetAttribute("DungeonEncounterWaveCount", #config.Waves)
+        workspace:SetAttribute("DungeonEncounterExpectedKillCount", totalExpected)
+        workspace:SetAttribute("DungeonEncounterSpawnedCount", 0)
 
-			local objectiveId = encounter.Definition.Id
-			local attemptCount = proactiveRecoveryAttempts[objectiveId] or 0
-			if attemptCount >= MAX_PROACTIVE_RECOVERIES_PER_OBJECTIVE then
-				workspace:SetAttribute("DungeonEncounterProactiveRecoveryExhausted", true)
-				workspace:SetAttribute("DungeonEncounterProactiveRecoveryExhaustedId", objectiveId)
-				workspace:SetAttribute("DungeonEncounterProactiveRecoveryExhaustedReason", reason)
-				return
-			end
+        local startDelay = math.max(0, tonumber(config.StartDelay) or 0)
+        if startDelay > 0 then
+            local introState = tostring(config.IntroState or "AmbushWarning")
+            workspace:SetAttribute("DungeonEncounterWaveState", introState)
+            update(introState)
+            task.wait(startDelay)
+        end
 
-			local snapshot = ObjectiveService.GetSnapshot()
-			if snapshot.State ~= "Active" or snapshot.Id ~= objectiveId then
-				return
-			end
+        for waveIndex, waveCount in ipairs(config.Waves) do
+            if not started or current ~= encounter or token ~= encounter.Token then
+                return
+            end
 
-			encounter.RecoveryInProgress = true
-			proactiveRecoveryAttempts[objectiveId] = attemptCount + 1
-			workspace:SetAttribute("DungeonEncounterProactiveRecoveryReason", reason)
-			workspace:SetAttribute("DungeonEncounterProactiveRecoveryId", objectiveId)
-			workspace:SetAttribute("DungeonEncounterProactiveRecoveryAttempt", attemptCount + 1)
-			workspace:SetAttribute("DungeonEncounterProactiveRecoveryRequestedAt", now())
+            workspace:SetAttribute("DungeonEncounterWaveIndex", waveIndex)
+            workspace:SetAttribute("DungeonEncounterWaveState", "Spawning")
+            update("WaveSpawning")
 
-			local recovered = ObjectiveEncounterService.Recover(
-				encounter.Definition,
-				encounter.Context,
-				snapshot
-			)
-			if recovered then
-				ObjectiveService.MarkRecovered("ImpossibleEncounter:" .. reason, {
-					Reason = reason,
-					RecoverySource = "EncounterViabilityWatchdog",
-					RecoveryAttempt = attemptCount + 1,
-				})
-				workspace:SetAttribute("DungeonEncounterProactiveRecoveredAt", now())
-				return
-			end
+            for indexInWave = 1, waveCount do
+                globalSequence += 1
+                local model, reason = spawnSingle(
+                    encounter,
+                    config,
+                    markers,
+                    fallback,
+                    waveIndex,
+                    indexInWave,
+                    globalSequence
+                )
 
-			encounter.RecoveryInProgress = false
-			workspace:SetAttribute("DungeonEncounterProactiveRecoveryError", "EncounterRestartFailed")
-			encounter.ImpossibleSince = now()
-		end
-	end)
+                if not model then
+                    workspace:SetAttribute("DungeonEncounterSpawnFailureIndex", globalSequence)
+                    workspace:SetAttribute("DungeonEncounterLastSpawnError", tostring(reason))
+                    update("SpawnFailed")
+                    return
+                end
+
+                table.insert(encounter.Spawned, model)
+                encounter.SpawnedCount += 1
+                workspace:SetAttribute("DungeonEncounterSpawnedCount", encounter.SpawnedCount)
+
+                if globalSequence == 1 then
+                    local root = model:FindFirstChild("HumanoidRootPart", true) or model.PrimaryPart
+                    if root and root:IsA("BasePart") then
+                        workspace:SetAttribute("DungeonObjectiveWaypointPosition", root.Position)
+                        workspace:SetAttribute("DungeonObjectiveWaypointTarget", model:GetFullName())
+                        workspace:SetAttribute(
+                            "DungeonObjectiveWaypointSerial",
+                            (tonumber(workspace:GetAttribute("DungeonObjectiveWaypointSerial")) or 0) + 1
+                        )
+                    end
+                end
+
+                task.wait(0.10)
+            end
+
+            workspace:SetAttribute("DungeonEncounterWaveState", "Active")
+            update("Active")
+
+            if waveIndex < #config.Waves then
+                if not waitForWaveClear(encounter) then
+                    return
+                end
+
+                workspace:SetAttribute("DungeonEncounterWaveState", "Cleared")
+                update("WaveCleared")
+
+                -- Pequena pausa fixa. Não há pacing service.
+                task.wait(0.65)
+            end
+        end
+
+        if started and current == encounter and token == encounter.Token then
+            workspace:SetAttribute("DungeonEncounterAllWavesSpawned", true)
+            workspace:SetAttribute("DungeonEncounterWaveState", "FinalWaveActive")
+            update("AllWavesSpawned")
+        end
+    end)
 end
 
-function ObjectiveEncounterService.Start(startOptions)
-	if started then
-		return
-	end
-	started = true
-	options = type(startOptions) == "table" and startOptions or {}
-	options.PartySize = math.clamp(math.floor(tonumber(options.PartySize) or 1), 1, 4)
-	options.ParticipantUserIds = type(options.ParticipantUserIds) == "table"
-		and table.clone(options.ParticipantUserIds)
-		or {}
-	proactiveRecoveryAttempts = {}
-	ObjectiveMechanicService.Start()
-	workspace:SetAttribute("DungeonEncounterServiceReady", true)
-	workspace:SetAttribute("DungeonEncounterViabilityPolicy", "ProactiveImpossibleStateRecoveryV1")
-	workspace:SetAttribute("DungeonEncounterProactiveRecoveryExhausted", false)
-	updateAttributes(nil, "Idle")
+function ObjectiveEncounterService.Start()
+    if started then
+        return
+    end
+
+    started = true
+    token += 1
+    workspace:SetAttribute("DungeonEncounterServiceReady", true)
+    workspace:SetAttribute("DungeonEncounterPolicy", "RebuildDeterministicV13")
+    workspace:SetAttribute("DungeonEncounterWaveIndex", 0)
+    workspace:SetAttribute("DungeonEncounterWaveCount", 0)
+    workspace:SetAttribute("DungeonEncounterWaveState", "Idle")
+    update("Idle")
 end
 
 function ObjectiveEncounterService.Stop()
-	if current then
-		stopEncounter(current, "ServiceStopped")
-	end
-	current = nil
-	ObjectiveActorService.DestroyAll()
-	ObjectiveMechanicService.Stop()
-	MonsterSpawner.DespawnObjectiveMonsters(nil)
-	started = false
-	options = {}
-	proactiveRecoveryAttempts = {}
-	tokenSerial += 1
-	workspace:SetAttribute("DungeonEncounterServiceReady", false)
-	updateAttributes(nil, "Stopped")
+    token += 1
+    destroyCurrent("ServiceStopped")
+    started = false
+    workspace:SetAttribute("DungeonEncounterServiceReady", false)
 end
 
-function ObjectiveEncounterService.BeginObjective(definition, context, beginOptions)
-	if not started then
-		return false, "EncounterServiceNotStarted"
-	end
-	if type(definition) ~= "table" or type(context) ~= "table" or not context.IslandModel then
-		return false, "InvalidEncounterContext"
-	end
-	if current then
-		stopEncounter(current, "ReplacedByNextObjective")
-	end
-	beginOptions = type(beginOptions) == "table" and beginOptions or {}
-	tokenSerial += 1
-	local remainingTarget = math.max(
-		1,
-		math.floor(tonumber(beginOptions.RemainingTarget or definition.Target) or 1)
-	)
-	local plan = EncounterCatalog.Build(definition, options.PartySize, remainingTarget)
-	local encounter = {
-		Id = string.format(
-			"%s-%02d-%s",
-			definition.Id,
-			definition.GlobalIslandIndex,
-			string.sub(HttpService:GenerateGUID(false), 1, 8)
-		),
-		Token = tokenSerial,
-		Seed = math.floor(tonumber(context.Spec and context.Spec.Seed) or definition.GlobalIslandIndex * 104729),
-		Definition = definition,
-		Context = context,
-		Plan = plan,
-		Active = true,
-		EnemyMarkers = sortedMarkers(context.EnemySpawns),
-		MarkerCursor = 0,
-		SpawnedCount = 0,
-		WaveIndex = 0,
-		Recovery = beginOptions.Recovery == true,
-		StartedAt = now(),
-	}
-	current = encounter
-	ObjectiveActorService.BeginEncounter(encounter.Id, encounter.Token)
-	ObjectiveMechanicService.BeginEncounter(encounter)
-	context.IslandModel:SetAttribute("ObjectiveEncounterManaged", true)
-	context.IslandModel:SetAttribute("ObjectiveEncounterActive", true)
-	context.IslandModel:SetAttribute("ObjectiveEncounterId", encounter.Id)
-	context.IslandModel:SetAttribute("ObjectiveSpawnProfile", plan.ProfileName)
-	context.IslandModel:SetAttribute("ObjectiveEncounterMaxAlive", plan.MaxAlive)
-	context.IslandModel:SetAttribute("ObjectiveEncounterRecovery", encounter.Recovery)
-	workspace:SetAttribute("DungeonEncounterSpawnedCount", 0)
-	workspace:SetAttribute("DungeonEncounterWaveIndex", 0)
-	workspace:SetAttribute("DungeonEncounterWaveCount", #(plan.Waves or {}))
-	workspace:SetAttribute("DungeonEncounterAllWavesSpawned", false)
-	workspace:SetAttribute("DungeonEncounterLastSpawnError", nil)
-	local preparationSeconds = DungeonPacingService.BeginObjectivePreparation(
-		definition,
-		context,
-		plan,
-		encounter.Recovery
-	)
-	encounter.Preparing = preparationSeconds > 0
-	encounter.Paused = preparationSeconds > 0
-	context.IslandModel:SetAttribute("ObjectivePreparationSeconds", preparationSeconds)
-	context.IslandModel:SetAttribute(
-		"ObjectivePreparationEndsAt",
-		preparationSeconds > 0 and (now() + preparationSeconds) or nil
-	)
-	updateAttributes(encounter, encounter.Recovery and "Recovering" or (preparationSeconds > 0 and "Preparing" or "Starting"))
+function ObjectiveEncounterService.BeginObjective(definition, context)
+    if not started then
+        return false, "EncounterServiceNotStarted"
+    end
+    if type(definition) ~= "table" or type(context) ~= "table" or not context.IslandModel then
+        return false, "InvalidEncounterContext"
+    end
 
-	if preparationSeconds > 0 then
-		task.delay(preparationSeconds, function()
-			activateEncounter(encounter, beginOptions)
-		end)
-	else
-		activateEncounter(encounter, beginOptions)
-	end
-	startImpossibleEncounterWatchdog(encounter)
-	return true, encounter.Id
+    local config = ENCOUNTERS[definition.Id]
+    if not config then
+        return false, "ObjectiveNotImplemented"
+    end
+
+    -- Idempotence is mandatory because compatibility/runtime layers may ask
+    -- to begin the same objective more than once.
+    if current
+        and current.ObjectiveId == definition.Id
+        and current.GlobalIslandIndex == definition.GlobalIslandIndex
+        and current.Context == context
+    then
+        workspace:SetAttribute("DungeonEncounterDuplicateStartPrevented", true)
+        return true, current.Id
+    end
+
+    destroyCurrent("ReplacingEncounter")
+
+    token += 1
+    local encounterToken = token
+    local id = "Rebuild_" .. definition.Id .. "_" .. HttpService:GenerateGUID(false)
+
+    local encounter = {
+        Id = id,
+        ObjectiveId = definition.Id,
+        GlobalIslandIndex = definition.GlobalIslandIndex,
+        Token = encounterToken,
+        Context = context,
+        Spawned = {},
+        SpawnedCount = 0,
+    }
+
+    current = encounter
+
+    workspace:SetAttribute("DungeonEncounterAllWavesSpawned", false)
+    workspace:SetAttribute("DungeonEncounterWaveIndex", 0)
+    workspace:SetAttribute("DungeonEncounterWaveCount", #(config.Waves or {}))
+    workspace:SetAttribute("DungeonEncounterWaveState", "Preparing")
+    update("Preparing")
+
+    if config.Mode == "Nests" then
+        local success, reason = createNestsEncounter(encounter, config, definition)
+        if not success then
+            return false, reason
+        end
+    elseif config.Mode == "GuardWards" then
+        local success, reason = createGuardEncounter(encounter, config, definition)
+        if not success then
+            return false, reason
+        end
+    elseif config.Mode == "Beacon" then
+        local success, reason = createBeaconEncounter(encounter, config, definition)
+        if not success then
+            return false, reason
+        end
+    else
+        runEncounter(encounter, config)
+    end
+
+    return true, id
 end
 
 function ObjectiveEncounterService.CompleteObjective(objectiveId)
-	local encounter = current
-	if not encounter or (objectiveId and encounter.Definition.Id ~= objectiveId) then
-		return false, "EncounterObjectiveMismatch"
-	end
-	encounter.CompletedAt = now()
-	encounter.Completing = true
-	encounter.Context.IslandModel:SetAttribute("ObjectiveEncounterCompleted", true)
-	updateAttributes(encounter, "Completing")
-	task.defer(function()
-		if current == encounter then
-			stopEncounter(encounter, "ObjectiveCompleted")
-			current = nil
-			updateAttributes(nil, "ObjectiveCompleted")
-		end
-	end)
-	return true
+    if not current then
+        update("Completed")
+        return true
+    end
+    if objectiveId and current.ObjectiveId ~= objectiveId then
+        return false, "EncounterObjectiveMismatch"
+    end
+
+    local finished = current
+    local id = finished.Id
+
+    if finished.BeaconHeartbeat then
+        finished.BeaconHeartbeat:Disconnect()
+        finished.BeaconHeartbeat = nil
+    end
+
+    current = nil
+    workspace:SetAttribute("DungeonEncounterWaveState", "Completed")
+    update("Completed")
+
+    task.delay(1.0, function()
+        MonsterSpawner.DespawnObjectiveMonsters(id)
+        for _, nest in ipairs(finished.Nests or {}) do
+            if nest and nest.Parent then
+                nest:Destroy()
+            end
+        end
+        for _, ward in ipairs(finished.Wards or {}) do
+            if ward and ward.Parent then
+                ward:Destroy()
+            end
+        end
+        if finished.Beacon and finished.Beacon.Parent then
+            finished.Beacon:Destroy()
+        end
+    end)
+
+    return true
 end
 
 function ObjectiveEncounterService.Recover(definition, context, snapshot)
-	if not started then
-		return false
-	end
-	local target = math.max(1, math.floor(tonumber(snapshot and snapshot.Target or definition.Target) or 1))
-	local progress = math.max(0, math.floor(tonumber(snapshot and snapshot.Progress) or 0))
-	local remaining = math.max(1, target - progress)
-	local success = ObjectiveEncounterService.BeginObjective(definition, context, {
-		RemainingTarget = remaining,
-		InitialProgress = progress,
-		Recovery = true,
-	})
-	if success then
-		workspace:SetAttribute("DungeonEncounterRecoveredAt", now())
-		workspace:SetAttribute("DungeonEncounterRecoveryRemaining", remaining)
-	end
-	return success == true
+    if not started or not definition then
+        return false
+    end
+
+    local target = math.max(
+        1,
+        math.floor(tonumber(snapshot and snapshot.Target or definition.Target) or 1)
+    )
+    local progress = math.max(
+        0,
+        math.floor(tonumber(snapshot and snapshot.Progress) or 0)
+    )
+
+    if progress >= target then
+        return true
+    end
+
+    -- Nesta fase inicial recovery reinicia apenas o encontro físico.
+    -- O contador autoritativo continua no DungeonProgressionService.
+    workspace:SetAttribute("DungeonEncounterRecoveryRemaining", target - progress)
+    return ObjectiveEncounterService.BeginObjective(definition, context)
 end
 
 function ObjectiveEncounterService.SetCombatEnabled(enabled)
-	local encounter = current
-	if not encounter then
-		return false
-	end
-	enabled = enabled == true
-	if enabled and encounter.Preparing == true then
-		updateAttributes(encounter, "Preparing")
-		return true
-	end
-	encounter.Paused = not enabled
-	ObjectiveActorService.SetEncounterActive(encounter.Id, enabled)
-	ObjectiveMechanicService.SetEncounterActive(encounter, enabled)
-	MonsterSpawner.SetObjectiveMonstersActive(encounter.Id, enabled)
-	updateAttributes(encounter, enabled and "Active" or "Paused")
-	return true
+    if not current then
+        return false
+    end
+
+    MonsterSpawner.SetObjectiveMonstersActive(current.Id, enabled == true)
+    update(enabled and "Active" or "Paused")
+    return true
 end
 
 function ObjectiveEncounterService.GetSnapshot()
-	local encounter = current
-	if not encounter then
-		return {
-			Started = started,
-			State = workspace:GetAttribute("DungeonEncounterState"),
-			Active = false,
-		}
-	end
-	return {
-		Started = started,
-		State = workspace:GetAttribute("DungeonEncounterState"),
-		Active = encounter.Active,
-		EncounterId = encounter.Id,
-		ObjectiveId = encounter.Definition.Id,
-		GlobalIslandIndex = encounter.Definition.GlobalIslandIndex,
-		ProfileName = encounter.Plan.ProfileName,
-		Mode = encounter.Plan.Mode,
-		WaveIndex = encounter.WaveIndex,
-		WaveCount = #(encounter.Plan.Waves or {}),
-		SpawnedCount = encounter.SpawnedCount,
-		ActiveEnemyCount = MonsterSpawner.GetObjectiveActiveCount(encounter.Id),
-		AliveNestCount = ObjectiveActorService.GetAliveNestCount(encounter.Id),
-		Recovery = encounter.Recovery,
-		Mechanic = ObjectiveMechanicService.GetSnapshot(encounter),
-		StartedAt = encounter.StartedAt,
-	}
+    return {
+        Started = started,
+        State = workspace:GetAttribute("DungeonEncounterState"),
+        EncounterId = current and current.Id or nil,
+        ObjectiveId = current and current.ObjectiveId or nil,
+        GlobalIslandIndex = current and current.GlobalIslandIndex or nil,
+        ActiveEnemies = activeCount(),
+        WaveIndex = workspace:GetAttribute("DungeonEncounterWaveIndex"),
+        WaveCount = workspace:GetAttribute("DungeonEncounterWaveCount"),
+    }
 end
 
 return ObjectiveEncounterService

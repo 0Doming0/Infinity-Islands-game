@@ -10,6 +10,9 @@ local PhaseSelectionService = require(script.Parent.PhaseSelectionService)
 local LobbyRouletteService = require(script.Parent.LobbyRouletteService)
 local LobbyEquipmentService = require(script.Parent.LobbyEquipmentService)
 local LobbyInteractionService = require(script.Parent.LobbyInteractionService)
+local LobbyGuidedIntroRedirectService = require(
+	script.Parent.LobbyGuidedIntroRedirectService
+)
 
 GameContext.SetCurrentPlaceType("Lobby")
 workspace:SetAttribute("GamePlaceType", "Lobby")
@@ -35,6 +38,10 @@ servicesReady = startService("PhaseSelection", PhaseSelectionService.Start) and 
 servicesReady = startService("Roulette", LobbyRouletteService.Start) and servicesReady
 servicesReady = startService("Equipment", LobbyEquipmentService.Start) and servicesReady
 servicesReady = startService("Interactions", LobbyInteractionService.Start) and servicesReady
+servicesReady = startService(
+	"GuidedIntroRedirect",
+	LobbyGuidedIntroRedirectService.Start
+) and servicesReady
 
 local function removeFunctionalTools(container)
 	if not container then
@@ -54,29 +61,49 @@ end
 
 local function setupPlayer(player)
 	PlayerDataService.Load(player)
+
 	player:SetAttribute("LobbyCombatDisabled", true)
 	player:SetAttribute("CanFly", false)
 	player:SetAttribute("AbilitiesDisabled", true)
 	player:SetAttribute("CompanionCombatDisabled", true)
 	player:SetAttribute("DungeonRuntimeManaged", false)
+
 	removeFunctionalTools(player:WaitForChild("Backpack"))
+
 	player.CharacterAdded:Connect(function(character)
 		character:SetAttribute("LobbyCosmeticOnly", true)
 		removeFunctionalTools(character)
 	end)
+
 	if player.Character then
 		player.Character:SetAttribute("LobbyCosmeticOnly", true)
 		removeFunctionalTools(player.Character)
 	end
+
+	task.defer(function()
+		if player.Parent ~= Players then
+			return
+		end
+
+		local ok, reason = LobbyGuidedIntroRedirectService.Evaluate(player)
+		if not ok and reason ~= "AlreadyEvaluatedThisLobbyEntry" then
+			player:SetAttribute(
+				"GuidedIntroRedirectLastEvaluation",
+				tostring(reason)
+			)
+		end
+	end)
 end
 
 Players.PlayerAdded:Connect(function(player)
 	task.spawn(setupPlayer, player)
 end)
+
 Players.PlayerRemoving:Connect(function(player)
 	PlayerDataService.Save(player, true)
 	PlayerDataService.Release(player)
 end)
+
 for _, player in ipairs(Players:GetPlayers()) do
 	task.spawn(setupPlayer, player)
 end

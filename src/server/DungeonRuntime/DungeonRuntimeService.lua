@@ -50,6 +50,7 @@ local rewardEvent
 local runUpgradeEvent
 local lifeEvent
 local bossEvent
+local sessionPlayers
 
 local function forEachSessionPlayer(callback)
 	for _, player in ipairs(sessionPlayers()) do
@@ -188,7 +189,7 @@ local function teleportBack(player, reason)
 	pcall(TeleportService.TeleportAsync, TeleportService, PlaceConfig.LobbyPlaceId, { player }, options)
 end
 
-local function sessionPlayers()
+sessionPlayers = function()
 	local result = {}
 	if not session then
 		return result
