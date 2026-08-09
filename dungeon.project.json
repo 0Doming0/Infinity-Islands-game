@@ -11,7 +11,40 @@
     },
     "StarterPlayer": {
       "StarterPlayerScripts": {
-        "$path": "src/client"
+        "$className": "StarterPlayerScripts",
+        "DungeonArtHUDController": {
+          "$path": "src/client/DungeonArtHUDController.client.luau"
+        },
+        "InputProfileController": {
+          "$path": "src/client/InputProfileController.client.luau"
+        },
+        "DungeonCameraController": {
+          "$path": "src/client/DungeonCameraController.client.luau"
+        },
+        "SprintController": {
+          "$path": "src/client/SprintController.client.luau"
+        },
+        "SneakController": {
+          "$path": "src/client/SneakController.client.luau"
+        },
+        "SwordInputClient": {
+          "$path": "src/client/SwordInputClient.client.luau"
+        },
+        "MobilityPerksController": {
+          "$path": "src/client/MobilityPerksController.client.luau"
+        },
+        "AdaptivePerformanceController": {
+          "$path": "src/client/AdaptivePerformanceController.client.luau"
+        },
+        "AdaptiveDecorationCulling": {
+          "$path": "src/client/AdaptiveDecorationCulling.client.luau"
+        },
+        "IslandEffectCulling": {
+          "$path": "src/client/IslandEffectCulling.client.luau"
+        },
+        "ProgressiveAssetPreloader": {
+          "$path": "src/client/ProgressiveAssetPreloader.client.luau"
+        }
       }
     }
   }
