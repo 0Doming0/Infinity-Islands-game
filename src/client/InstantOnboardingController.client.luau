@@ -1,29 +1,15 @@
 --[[
-	Infinity Islands - Task 16
-	InstantOnboardingController V1
+	Infinity Islands - Direct Island Start Controller
 
-	Client presentation guarantee:
-	- suppress legacy blocking Start/Tutorial screens;
-	- optionally control a Studio-authored BasicControls panel;
+	Purpose:
+	- never block gameplay behind Start/Tutorial/Loading legacy screens;
+	- stay compatible with the simplified InstantOnboardingConfig;
 	- never create HUD;
-	- never wait for user confirmation;
-	- gameplay remains live underneath the controls hint.
-
-	Authored optional root:
-	Tag: DungeonHUD_BasicControls
-
-	Accepted fallback names:
-	BasicControls
-	BasicControlsPanel
-	ControlsPanel
-	ControlsHint
-	GameplayControls
+	- preserve the authored DungeonHUD.
 ]]
 
-local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -35,538 +21,206 @@ local Config = require(
 		:WaitForChild("InstantOnboardingConfig")
 )
 
-local startedAt = os.clock()
-local controlsRoot
-local controlsHidden = false
-local suppressCount = 0
+local BLOCKED_GUI_NAMES = {
+	StartScreen = true,
+	StartUI = true,
+	DungeonStartScreen = true,
+	DungeonStartUI = true,
+	ReadyScreen = true,
+	ReadyUI = true,
+	TutorialScreen = true,
+	TutorialUI = true,
+	InitialScreen = true,
+	InitialUI = true,
+	SpawnScreen = true,
+	SpawnUI = true,
+	LoadingScreen = true,
+	LoadingUI = true,
+	DungeonLoadingScreen = true,
+	DungeonLoadingUI = true,
+	StartMenu = true,
+	DungeonStartMenu = true,
+}
 
-local function setGuiVisible(instance, visible)
+local BLOCKED_SCRIPT_NAMES = {
+	DungeonSpectator = true,
+	WorldEventUI = true,
+	VillagerUI = true,
+	TutorialUI = true,
+	MonetizationUI = true,
+	LeaderboardUI = true,
+	RewardWheelUI = true,
+	DungeonPartyLifeHUD = true,
+	DungeonUnifiedHUD = true,
+	DungeonObjectiveHUD = true,
+	DungeonRewardsHUD = true,
+}
+
+local function setHidden(instance)
 	if instance:IsA("ScreenGui") then
-		instance.Enabled = visible
+		instance.Enabled = false
 		return true
 	end
 
 	if instance:IsA("GuiObject") then
-		instance.Visible = visible
+		instance.Visible = false
 		return true
 	end
 
 	return false
 end
 
-local function suppressLegacy(instance)
-	if not instance
-		or not instance.Parent
-	then
-		return false
+local function suppress(instance)
+	if not instance or not instance.Parent then
+		return
 	end
 
-	local blocked =
-		Config.BlockedGuiNames[instance.Name]
-			== true
-
-	if blocked then
-		if setGuiVisible(
-			instance,
-			false
-		)
-		then
-			suppressCount += 1
-
+	if BLOCKED_GUI_NAMES[instance.Name] then
+		if setHidden(instance) then
 			instance:SetAttribute(
-				"SuppressedByInstantOnboarding",
+				"SuppressedByDirectIslandStart",
 				true
 			)
 
-			player:SetAttribute(
-				"DungeonInstantOnboardingSuppressedCount",
-				suppressCount
-			)
+			if instance:IsA("ScreenGui") then
+				if instance:GetAttribute(
+					"DirectIslandStartBound"
+				) ~= true then
+					instance:SetAttribute(
+						"DirectIslandStartBound",
+						true
+					)
 
-			-- If some old controller tries to reopen it, keep it suppressed.
-			if instance:GetAttribute(
-				"InstantOnboardingSuppressionBound"
-			) ~= true
-			then
-				instance:SetAttribute(
-					"InstantOnboardingSuppressionBound",
-					true
-				)
-
-				if instance:IsA("ScreenGui") then
 					instance:GetPropertyChangedSignal(
 						"Enabled"
 					):Connect(function()
-						if instance.Parent
-							and instance.Enabled
-						then
+						if instance.Parent and instance.Enabled then
 							instance.Enabled = false
 						end
 					end)
-				elseif instance:IsA("GuiObject") then
+				end
+			elseif instance:IsA("GuiObject") then
+				if instance:GetAttribute(
+					"DirectIslandStartBound"
+				) ~= true then
+					instance:SetAttribute(
+						"DirectIslandStartBound",
+						true
+					)
+
 					instance:GetPropertyChangedSignal(
 						"Visible"
 					):Connect(function()
-						if instance.Parent
-							and instance.Visible
-						then
+						if instance.Parent and instance.Visible then
 							instance.Visible = false
 						end
 					end)
 				end
 			end
 		end
-
-		return true
 	end
 
 	if instance:IsA("LocalScript")
-		and Config.BlockedScriptNames[
-			instance.Name
-		] == true
+		and BLOCKED_SCRIPT_NAMES[instance.Name]
 	then
 		instance.Disabled = true
-
 		instance:SetAttribute(
-			"DisabledByInstantOnboarding",
+			"DisabledByDirectIslandStart",
 			true
 		)
-
-		return true
-	end
-
-	return false
-end
-
-local function suppressExistingLegacy()
-	for _, descendant in ipairs(
-		playerGui:GetDescendants()
-	) do
-		suppressLegacy(descendant)
-	end
-
-	for _, child in ipairs(
-		playerGui:GetChildren()
-	) do
-		suppressLegacy(child)
-	end
-
-	local playerScripts =
-		player:FindFirstChildOfClass(
-			"PlayerScripts"
-		)
-
-	if playerScripts then
-		for _, descendant in ipairs(
-			playerScripts:GetDescendants()
-		) do
-			suppressLegacy(descendant)
-		end
 	end
 end
 
-local function isGuiRoot(instance)
-	return instance
-		and (
-			instance:IsA("ScreenGui")
-				or instance:IsA("GuiObject")
-		)
-end
-
-local function findControlsRoot()
-	for _, tagged in ipairs(
-		CollectionService:GetTagged(
-			Config.BasicControlsTag
-		)
-	) do
-		if isGuiRoot(tagged)
-			and tagged:IsDescendantOf(
-				playerGui
-			)
-		then
-			return tagged
-		end
+local function suppressAll()
+	for _, instance in ipairs(playerGui:GetDescendants()) do
+		suppress(instance)
 	end
 
-	for _, name in ipairs(
-		Config.BasicControlsRootNames
-	) do
-		local candidate =
-			playerGui:FindFirstChild(
-				name,
-				true
-			)
-
-		if isGuiRoot(candidate) then
-			return candidate
-		end
+	for _, instance in ipairs(playerGui:GetChildren()) do
+		suppress(instance)
 	end
 
-	return nil
-end
-
-local function findText(
-	root,
-	names
-)
-	if not root then
-		return nil
-	end
-
-	for _, name in ipairs(names) do
-		local candidate =
-			root:FindFirstChild(
-				name,
-				true
-			)
-
-		if candidate
-			and (
-				candidate:IsA("TextLabel")
-					or candidate:IsA("TextButton")
-			)
-		then
-			return candidate
-		end
-	end
-
-	return nil
-end
-
-local function inputProfile()
-	local profile =
-		tostring(
-			player:GetAttribute(
-				"DungeonCurrentInputProfile"
-			)
-				or player:GetAttribute(
-					"DungeonEntryInputProfile"
-				)
-				or ""
-		)
-
-	if profile == "Touch"
-		or (
-			profile == ""
-				and UserInputService.TouchEnabled
-		)
-	then
-		return "Touch"
-	end
-
-	if profile == "Gamepad"
-		or UserInputService.GamepadEnabled
-			and not UserInputService.KeyboardEnabled
-	then
-		return "Gamepad"
-	end
-
-	return "Keyboard"
-end
-
-local function copyForProfile()
-	local profile = inputProfile()
-
-	if profile == "Touch" then
-		return Config.TouchCopy,
-			profile
-	elseif profile == "Gamepad" then
-		return Config.GamepadCopy,
-			profile
-	end
-
-	return Config.KeyboardCopy,
-		profile
-end
-
-local function applyControlsCopy(root)
-	local copy,
-		profile =
-			copyForProfile()
-
-	local movement =
-		findText(
-			root,
-			{
-				"MovementText",
-				"MoveText",
-				"Movement",
-				"Move",
-			}
-		)
-
-	local attack =
-		findText(
-			root,
-			{
-				"AttackText",
-				"Attack",
-				"PrimaryActionText",
-			}
-		)
-
-	local sprint =
-		findText(
-			root,
-			{
-				"SprintText",
-				"RunText",
-				"Sprint",
-				"Run",
-			}
-		)
-
-	local hint =
-		findText(
-			root,
-			{
-				"HintText",
-				"ObjectiveText",
-				"InstructionText",
-				"Description",
-			}
-		)
-
-	if movement then
-		movement.Text =
-			copy.Movement
-	end
-
-	if attack then
-		attack.Text =
-			copy.Attack
-	end
-
-	if sprint then
-		sprint.Text =
-			copy.Sprint
-	end
-
-	if hint then
-		hint.Text =
-			copy.Hint
-	end
-
-	root:SetAttribute(
-		"RuntimeInputProfile",
-		profile
-	)
-
-	root:SetAttribute(
-		"RuntimeOnboardingVersion",
-		Config.Version
-	)
-end
-
-local function showControls()
-	if controlsHidden then
-		return
-	end
-
-	controlsRoot =
-		controlsRoot
-			or findControlsRoot()
-
-	if not controlsRoot then
-		player:SetAttribute(
-			"DungeonBasicControlsAuthoredRootFound",
-			false
-		)
-
-		return
-	end
-
-	player:SetAttribute(
-		"DungeonBasicControlsAuthoredRootFound",
-		true
-	)
-
-	applyControlsCopy(
-		controlsRoot
-	)
-
-	setGuiVisible(
-		controlsRoot,
-		true
-	)
-
-	player:SetAttribute(
-		"DungeonBasicControlsVisible",
-		true
-	)
-end
-
-local function hideControls(reason)
-	if controlsHidden then
-		return
-	end
-
-	controlsHidden = true
-
-	if controlsRoot
-		and controlsRoot.Parent
-	then
-		setGuiVisible(
-			controlsRoot,
-			false
-		)
-	end
-
-	player:SetAttribute(
-		"DungeonBasicControlsVisible",
-		false
-	)
-
-	player:SetAttribute(
-		"DungeonBasicControlsHiddenReason",
-		reason
-	)
-
-	player:SetAttribute(
-		"DungeonBasicControlsHiddenAt",
-		workspace:GetServerTimeNow()
-	)
-end
-
-local function enoughMinimumTime()
-	return os.clock() - startedAt
-		>= Config.BasicControlsMinimumVisibleSeconds
-end
-
-local function evaluateEarlyHide()
-	if controlsHidden
-		or not enoughMinimumTime()
-	then
-		return
-	end
-
-	if Config.HideBasicControlsAfterFirstXP
-		and (
-			tonumber(
-				player:GetAttribute(
-					"PlayerTotalXP"
-				)
-			) or 0
-		) > 0
-	then
-		hideControls(
-			"FirstXP"
-		)
-
-		return
-	end
-
-	if Config.HideBasicControlsAfterLeavingFirstIsland
-		and (
-			tonumber(
-				player:GetAttribute(
-					"CurrentGlobalIslandIndex"
-				)
-			) or 1
-		) > 1
-	then
-		hideControls(
-			"LeftFirstIsland"
-		)
-	end
-end
-
--- Initial hard guarantee against blockers already copied into PlayerGui.
-suppressExistingLegacy()
-
-playerGui.DescendantAdded:Connect(
-	function(descendant)
-		task.defer(
-			suppressLegacy,
-			descendant
-		)
-
-		if not controlsRoot then
-			task.defer(
-				showControls
-			)
-		end
-	end
-)
-
-local playerScripts =
-	player:FindFirstChildOfClass(
+	local playerScripts = player:FindFirstChildOfClass(
 		"PlayerScripts"
 	)
 
-if playerScripts then
-	playerScripts.DescendantAdded:Connect(
-		function(descendant)
-			task.defer(
-				suppressLegacy,
-				descendant
-			)
+	if playerScripts then
+		for _, instance in ipairs(
+			playerScripts:GetDescendants()
+		) do
+			suppress(instance)
 		end
-	)
-end
-
-for _, attribute in ipairs({
-	"PlayerTotalXP",
-	"CurrentGlobalIslandIndex",
-}) do
-	player:GetAttributeChangedSignal(
-		attribute
-	):Connect(
-		evaluateEarlyHide
-	)
-end
-
-player:GetAttributeChangedSignal(
-	"DungeonCurrentInputProfile"
-):Connect(function()
-	if controlsRoot
-		and controlsRoot.Parent
-		and not controlsHidden
-	then
-		applyControlsCopy(
-			controlsRoot
-		)
 	end
+end
+
+local function forceDirectStartAttributes()
+	player:SetAttribute("DungeonRuntimeAutoStart", true)
+	player:SetAttribute("InitialGameStarted", true)
+	player:SetAttribute(
+		"DungeonStartConfirmationRequired",
+		false
+	)
+	player:SetAttribute("DungeonTutorialBlocking", false)
+	player:SetAttribute("DungeonGuideEnabled", false)
+	player:SetAttribute(
+		"DungeonOnboardingBlocksGameplay",
+		false
+	)
+	player:SetAttribute(
+		"DungeonInstantOnboardingClientReady",
+		true
+	)
+	player:SetAttribute(
+		"DungeonInstantOnboardingVersion",
+		Config.Version
+	)
+	player:SetAttribute(
+		"DungeonInstantOnboardingPolicy",
+		Config.Policy
+	)
+end
+
+suppressAll()
+forceDirectStartAttributes()
+
+playerGui.DescendantAdded:Connect(function(instance)
+	task.defer(suppress, instance)
 end)
 
--- Never wait for the controls panel before gameplay.
-task.defer(showControls)
-
-task.delay(
-	Config.BasicControlsMinimumVisibleSeconds,
-	evaluateEarlyHide
+local playerScripts = player:FindFirstChildOfClass(
+	"PlayerScripts"
 )
 
+if playerScripts then
+	playerScripts.DescendantAdded:Connect(function(instance)
+		task.defer(suppress, instance)
+	end)
+end
+
+for _, attributeName in ipairs({
+	"InitialGameStarted",
+	"DungeonStartConfirmationRequired",
+	"DungeonTutorialBlocking",
+	"DungeonGuideEnabled",
+}) do
+	player:GetAttributeChangedSignal(
+		attributeName
+	):Connect(function()
+		task.defer(forceDirectStartAttributes)
+	end)
+end
+
 task.delay(
-	Config.BasicControlsVisibleSeconds,
+	math.max(
+		0.5,
+		tonumber(Config.TargetTimeToControlSeconds) or 2.5
+	),
 	function()
-		hideControls(
-			"Timeout"
-		)
+		suppressAll()
+		forceDirectStartAttributes()
 	end
 )
 
-player:SetAttribute(
-	"DungeonInstantOnboardingClientReady",
-	true
-)
-
-player:SetAttribute(
-	"DungeonInstantOnboardingVersion",
-	Config.Version
-)
-
-player:SetAttribute(
-	"DungeonInstantOnboardingPolicy",
-	Config.Policy
-)
-
-player:SetAttribute(
-	"DungeonOnboardingBlocksGameplay",
-	false
-)
-
-player:SetAttribute(
-	"DungeonStartConfirmationRequired",
-	false
+print(
+	"[DirectIslandStart] Client ready; legacy start/tutorial/loading blockers suppressed."
 )

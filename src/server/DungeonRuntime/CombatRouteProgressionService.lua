@@ -1,29 +1,13 @@
 --[[
-	Infinity Islands - Task 09
-	CombatRouteProgressionService V1
+	Infinity Islands - CombatRouteProgressionService V2 Free Recommended Route
 
-	New progression authority for the linear MVP:
-
-		current island
-			-> kill all planned mobs
-			-> IslandCombatService publishes Cleared=true
-			-> current exit unlocks
-			-> next GlobalIslandIndex becomes allowed
-			-> entering the next island advances the party checkpoint
-			-> that island locks its own exit until cleared
-
-	No:
-	- old objective sequence;
-	- Reward Island commits;
-	- Round gates;
-	- Boss requirement;
-	- hard PlayerLevel gate.
-
-	RecommendedLevel stays informational only.
-
-	This service publishes compatibility DungeonObjective* attributes so old
-	presentation/analytics code can remain alive during migration without owning
-	progression.
+	MVP policy:
+	- player may enter any materialized Combat Island;
+	- RecommendedLevel is a warning, never a hard gate;
+	- no physical CombatGateBarrier;
+	- no teleport/reposition because previous island was not cleared;
+	- clearing an island still updates progression/HUD feedback;
+	- current island remains the active HUD objective.
 ]]
 
 local Players = game:GetService("Players")
@@ -31,14 +15,6 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local CombatRouteProgressionConfig = require(
 	ReplicatedStorage.Shared.Configs.CombatRouteProgressionConfig
-)
-
-local IslandAdvanceFeedbackConfig = require(
-	ReplicatedStorage.Shared.Configs.IslandAdvanceFeedbackConfig
-)
-
-local CombatGateService = require(
-	script.Parent.CombatGateService
 )
 
 local DungeonSpawnService = require(
@@ -52,15 +28,10 @@ local generation = 0
 local options = {}
 
 local currentIsland = 1
-local highestUnlockedIsland = 1
-local currentContext
-
+local currentContext = nil
 local completed = {}
 local watchedContexts = {}
 local contextConnections = {}
-
-local rejectedAt =
-	setmetatable({}, { __mode = "k" })
 
 local routeComplete = false
 local clearSerial = 0
@@ -72,13 +43,11 @@ end
 
 local function cleanIndex(value)
 	local number = tonumber(value)
-
 	if not number then
 		return nil
 	end
 
 	number = math.floor(number)
-
 	return number >= 1 and number or nil
 end
 
@@ -91,93 +60,42 @@ local function totalIslandCount()
 					"DungeonPlannedCombatIslandCount"
 				)
 			)
-				or CombatRouteProgressionConfig
-					.DefaultTotalIslandCount
+			or CombatRouteProgressionConfig.DefaultTotalIslandCount
 		)
 	)
 end
 
-local function safeCallback(name, ...)
-	local callback = options[name]
-
-	if type(callback) ~= "function" then
-		return true
-	end
-
-	local ok, result =
-		pcall(callback, ...)
-
-	if not ok then
-		workspace:SetAttribute(
-			"DungeonCombatRouteCallbackError",
-			name .. ": " .. tostring(result)
-		)
-
-		warn(
-			"[CombatRouteProgressionService] "
-				.. name
-				.. " falhou: "
-				.. tostring(result)
-		)
-
-		return false
-	end
-
-	return result ~= false
-end
-
 local function getContext(index)
-	if type(options.GetIslandContext)
-		~= "function"
-	then
+	if type(options.GetIslandContext) ~= "function" then
 		return nil
 	end
 
 	local ok, result =
-		pcall(
-			options.GetIslandContext,
-			index
-		)
+		pcall(options.GetIslandContext, index)
 
-	if not ok then
-		return nil
-	end
-
-	return result
+	return ok and result or nil
 end
 
 local function requestThrough(index)
-	if type(options.RequestRouteThrough)
-		~= "function"
-	then
+	if type(options.RequestRouteThrough) ~= "function" then
 		return false
 	end
-
-	local total = totalIslandCount()
 
 	index = math.clamp(
 		math.floor(tonumber(index) or 1),
 		1,
-		total
+		totalIslandCount()
 	)
 
-	local ok =
-		pcall(
-			options.RequestRouteThrough,
-			index
-		)
-
-	return ok
+	return pcall(options.RequestRouteThrough, index)
 end
 
-local function objectiveNumbers()
-	local context =
-		currentContext
-			or getContext(currentIsland)
+local function islandFor(context)
+	return context and context.IslandModel
+end
 
-	local island =
-		context
-			and context.IslandModel
+local function objectiveNumbers(context)
+	local island = islandFor(context)
 
 	if not island then
 		return 0, 0, 0, false, "Dormant"
@@ -188,9 +106,7 @@ local function objectiveNumbers()
 			0,
 			math.floor(
 				tonumber(
-					island:GetAttribute(
-						"MobTargetCount"
-					)
+					island:GetAttribute("MobTargetCount")
 				) or 0
 			)
 		)
@@ -200,9 +116,7 @@ local function objectiveNumbers()
 			0,
 			math.floor(
 				tonumber(
-					island:GetAttribute(
-						"MobSpawnedCount"
-					)
+					island:GetAttribute("MobSpawnedCount")
 				) or 0
 			)
 		)
@@ -212,9 +126,7 @@ local function objectiveNumbers()
 			0,
 			math.floor(
 				tonumber(
-					island:GetAttribute(
-						"MobAliveCount"
-					)
+					island:GetAttribute("MobAliveCount")
 				) or 0
 			)
 		)
@@ -225,51 +137,86 @@ local function objectiveNumbers()
 			math.floor(
 				tonumber(
 					island:GetAttribute("MobDefeatedCount")
-				) or math.max(0, spawned - alive)
+				)
+				or math.max(0, spawned - alive)
 			)
-		)
-
-	local progress =
-		math.clamp(
-			defeated,
-			0,
-			target
 		)
 
 	local cleared =
 		island:GetAttribute("Cleared") == true
-			or island:GetAttribute(
-				"CombatState"
-			) == "Cleared"
 
 	local combatState =
 		tostring(
-			island:GetAttribute(
-				"CombatState"
-			) or "Dormant"
+			island:GetAttribute("CombatState")
+			or "Dormant"
 		)
 
-	if cleared and target > 0 then
-		progress = target
-	end
-
-	return progress,
+	return math.clamp(defeated, 0, math.max(target, defeated)),
 		target,
 		alive,
 		cleared,
 		combatState
 end
 
-local function publish()
-	local progress,
-		target,
-		alive,
-		cleared,
-		combatState =
-			objectiveNumbers()
+local function currentRecommendedLevel(context)
+	local island = islandFor(context)
 
-	local total =
-		totalIslandCount()
+	return math.max(
+		1,
+		math.floor(
+			tonumber(
+				island
+				and (
+					island:GetAttribute("RecommendedLevel")
+					or island:GetAttribute("IslandLevel")
+				)
+			) or currentIsland
+		)
+	)
+end
+
+local function isCombatRunningState(state)
+	return state == "Active"
+		or state == "WaveActive"
+		or state == "RespawnCooldown"
+end
+
+local function publish()
+	local context =
+		currentContext
+		or getContext(currentIsland)
+
+	if context then
+		currentContext = context
+	end
+
+	local progress, target, alive, cleared, combatState =
+		objectiveNumbers(context)
+
+	local total = totalIslandCount()
+	local recommended =
+		currentRecommendedLevel(context)
+
+	local completedCount = 0
+	for _, done in pairs(completed) do
+		if done == true then
+			completedCount += 1
+		end
+	end
+
+	routeComplete =
+		completedCount >= total
+
+	local state
+	if routeComplete then
+		state = "RouteCompleted"
+	elseif cleared then
+		state = "TravelOpen"
+	elseif isCombatRunningState(combatState) then
+		state = "CombatActive"
+	else
+		state = "WaitingForCombat"
+	end
 
 	workspace:SetAttribute(
 		"DungeonCombatRouteProgressionReady",
@@ -277,7 +224,7 @@ local function publish()
 	)
 	workspace:SetAttribute(
 		"DungeonCombatRouteProgressionVersion",
-		CombatRouteProgressionConfig.Version
+		"CombatRouteProgressionFreeV2"
 	)
 	workspace:SetAttribute(
 		"DungeonProgressionReady",
@@ -285,31 +232,28 @@ local function publish()
 	)
 	workspace:SetAttribute(
 		"DungeonProgressionVersion",
-		CombatRouteProgressionConfig.Version
+		"CombatRouteProgressionFreeV2"
 	)
-
 	workspace:SetAttribute(
 		"DungeonProgressionState",
-		routeComplete
-			and "RouteCompleted"
-			or cleared
-				and "TravelUnlocked"
-				or combatState == "Active"
-					and "CombatActive"
-					or "WaitingForCombat"
+		state
 	)
 
 	workspace:SetAttribute(
-		"DungeonObjectiveSequenceState",
-		workspace:GetAttribute(
-			"DungeonProgressionState"
-		)
+		"DungeonRouteProgressionAuthority",
+		"CombatRouteProgressionService"
 	)
 	workspace:SetAttribute(
-		"DungeonRoundProgressState",
-		workspace:GetAttribute(
-			"DungeonProgressionState"
-		)
+		"DungeonRouteEntryPolicy",
+		"FreeRecommendedLevelV2"
+	)
+	workspace:SetAttribute(
+		"DungeonCombatRouteProgressionPolicy",
+		"FreeTraversalKillForXP"
+	)
+	workspace:SetAttribute(
+		"DungeonRecommendedLevelIsHardGate",
+		false
 	)
 
 	workspace:SetAttribute(
@@ -318,7 +262,7 @@ local function publish()
 	)
 	workspace:SetAttribute(
 		"DungeonHighestUnlockedCombatIsland",
-		highestUnlockedIsland
+		total
 	)
 	workspace:SetAttribute(
 		"DungeonCombatRouteTotalIslands",
@@ -333,52 +277,19 @@ local function publish()
 		"DungeonObjectiveType",
 		"ClearCombatIsland"
 	)
-	local advanceActive =
-		cleared
-			and not routeComplete
-			and currentIsland < total
-
-	local nextIsland =
-		advanceActive
-			and currentIsland + 1
-			or nil
-
 	workspace:SetAttribute(
 		"DungeonObjectiveTitle",
-		routeComplete
-			and IslandAdvanceFeedbackConfig.RouteCompleteTitle
-			or cleared
-				and IslandAdvanceFeedbackConfig.ClearTitle
-				or CombatRouteProgressionConfig.ObjectiveTitle
+		cleared
+			and "ILHA CONCLUIDA"
+			or CombatRouteProgressionConfig.ObjectiveTitle
 	)
 	workspace:SetAttribute(
 		"DungeonObjectiveDescription",
-		routeComplete
-			and IslandAdvanceFeedbackConfig.RouteCompleteDescription
-			or advanceActive
-				and string.format(
-					IslandAdvanceFeedbackConfig.AdvanceDescriptionFormat,
-					nextIsland
-				)
-				or CombatRouteProgressionConfig.ObjectiveDescription
+		cleared
+			and "Continue ou arrisque uma ilha mais forte."
+			or CombatRouteProgressionConfig.ObjectiveDescription
 	)
 
-	workspace:SetAttribute(
-		"DungeonIslandAdvanceFeedbackVersion",
-		IslandAdvanceFeedbackConfig.Version
-	)
-	workspace:SetAttribute(
-		"DungeonIslandAdvanceActive",
-		advanceActive
-	)
-	workspace:SetAttribute(
-		"DungeonIslandAdvanceFromIsland",
-		advanceActive and currentIsland or nil
-	)
-	workspace:SetAttribute(
-		"DungeonIslandAdvanceToIsland",
-		nextIsland
-	)
 	workspace:SetAttribute(
 		"DungeonObjectiveGlobalIslandIndex",
 		currentIsland
@@ -391,7 +302,6 @@ local function publish()
 		"DungeonObjectiveRoundIndex",
 		nil
 	)
-
 	workspace:SetAttribute(
 		"DungeonObjectiveProgress",
 		progress
@@ -408,47 +318,27 @@ local function publish()
 		"DungeonObjectiveState",
 		cleared
 			and "Completed"
-			or combatState == "Active"
+			or isCombatRunningState(combatState)
 				and "Active"
 				or "Inactive"
 	)
 
+	-- HARD GATE REMOVED.
 	workspace:SetAttribute(
 		"DungeonObjectiveExitLocked",
-		not cleared
-			and currentIsland < total
-	)
-	workspace:SetAttribute(
-		"DungeonCurrentIslandIsRoundExit",
 		false
 	)
 	workspace:SetAttribute(
-		"DungeonCurrentRoundExitCommitted",
-		false
-	)
-	workspace:SetAttribute(
-		"DungeonRoundRewardPending",
-		false
-	)
-	workspace:SetAttribute(
-		"DungeonRewardPendingRound",
+		"DungeonCombatGateError",
 		nil
-	)
-	workspace:SetAttribute(
-		"DungeonFinalRewardCommitted",
-		false
 	)
 
 	workspace:SetAttribute(
-		"DungeonLegacyObjectiveSystemDisabled",
-		true
+		"DungeonCurrentIslandRecommendedLevel",
+		recommended
 	)
 	workspace:SetAttribute(
-		"DungeonLegacyRewardProgressionDisabled",
-		true
-	)
-	workspace:SetAttribute(
-		"DungeonLegacyBossProgressionDisabled",
+		"DungeonRecommendedLevelWarningActive",
 		true
 	)
 
@@ -466,435 +356,20 @@ local function publish()
 	)
 end
 
-local function applyGate(
-	index,
-	locked,
-	reason
-)
-	if index >= totalIslandCount() then
-		return true
+local function markCleared(index, context)
+	if completed[index] == true then
+		return
 	end
 
-	local context =
-		watchedContexts[index]
-			or getContext(index)
-
-	if not context
-		or not context.IslandModel
-		or not context.IslandModel.Parent
+	local island = islandFor(context)
+	if not island
+		or island:GetAttribute("Cleared") ~= true
 	then
-		return false, "IslandContextUnavailable"
-	end
-
-	watchedContexts[index] = context
-
-	local ok,
-		success,
-		firstGate,
-		gates =
-			pcall(
-				CombatGateService.Apply,
-				context,
-				locked == true,
-				reason
-			)
-
-	if not ok then
-		workspace:SetAttribute(
-			"DungeonCombatGateError",
-			tostring(success)
-		)
-
-		return false, tostring(success)
-	end
-
-	if success == false then
-		workspace:SetAttribute(
-			"DungeonCombatGateError",
-			tostring(firstGate)
-		)
-
-		return false, firstGate
-	end
-
-
-	context.IslandModel:SetAttribute(
-		"CombatExitLocked",
-		locked == true
-	)
-	context.IslandModel:SetAttribute(
-		"CombatExitLockReason",
-		locked
-			and tostring(
-				reason or "CombatActive"
-			)
-			or nil
-	)
-	context.IslandModel:SetAttribute(
-		"CombatRouteProgressionVersion",
-		CombatRouteProgressionConfig.Version
-	)
-
-	workspace:SetAttribute(
-		"DungeonCombatGateError",
-		nil
-	)
-
-	return true, firstGate, gates
-end
-
-local function currentDefinition()
-	local progress,
-		target,
-		alive,
-		cleared,
-		combatState =
-			objectiveNumbers()
-
-	return {
-		Id =
-			CombatRouteProgressionConfig
-				.ObjectiveId,
-		Type = "ClearCombatIsland",
-		Title =
-			CombatRouteProgressionConfig
-				.ObjectiveTitle,
-		Description =
-			CombatRouteProgressionConfig
-				.ObjectiveDescription,
-
-		GlobalIslandIndex =
-			currentIsland,
-		IslandIndex =
-			currentIsland,
-		RoundIndex = nil,
-
-		Target = target,
-		Progress = progress,
-		MobAliveCount = alive,
-		Completed = cleared,
-		CombatState = combatState,
-
-		ObjectiveKind =
-			"ClearCombatIsland",
-		SpawnProfile =
-			"IslandCombatManaged",
-	}
-end
-
-local function snapshot()
-	local definition =
-		currentDefinition()
-
-	local completedCount = 0
-
-	for _, isCleared in pairs(
-		completed
-	) do
-		if isCleared == true then
-			completedCount += 1
-		end
-	end
-
-	return {
-		Started = started,
-		Version =
-			CombatRouteProgressionConfig
-				.Version,
-
-		State =
-			workspace:GetAttribute(
-				"DungeonProgressionState"
-			),
-
-		Id = definition.Id,
-		Type = definition.Type,
-		Title = definition.Title,
-		Description =
-			definition.Description,
-
-		CurrentObjective = definition,
-
-		CurrentGlobalIslandIndex =
-			currentIsland,
-		GlobalIslandIndex =
-			currentIsland,
-		IslandIndex =
-			currentIsland,
-		RoundIndex = nil,
-
-		Progress =
-			definition.Progress,
-		Target =
-			definition.Target,
-		Completed =
-			definition.Completed,
-		MobAliveCount =
-			definition.MobAliveCount,
-		CombatState =
-			definition.CombatState,
-
-		HighestUnlockedIsland =
-			highestUnlockedIsland,
-		TotalIslandCount =
-			totalIslandCount(),
-		CompletedCount =
-			completedCount,
-
-		ExitLocked =
-			workspace:GetAttribute(
-				"DungeonObjectiveExitLocked"
-			) == true,
-
-		IslandContext =
-			currentContext
-				or getContext(
-					currentIsland
-				),
-
-		RouteComplete =
-			routeComplete,
-
-		RewardPendingRound = nil,
-		HighestCompletedRound = 0,
-		CompletedRounds = {},
-		CurrentIslandIsRoundExit =
-			false,
-		RoundCompleted = false,
-		FinalRewardCommitted = false,
-	}
-end
-
-local function commitCheckpoint(
-	context,
-	reason
-)
-	local ok,
-		success,
-		detail =
-			pcall(
-				DungeonSpawnService
-					.CommitLinearRouteCheckpoint,
-				context,
-				reason,
-				false
-			)
-
-	if not ok then
-		workspace:SetAttribute(
-			"DungeonLinearRouteCheckpointHealthy",
-			false
-		)
-		workspace:SetAttribute(
-			"DungeonLinearRouteCheckpointError",
-			tostring(success)
-		)
-
-		return false
-	end
-
-	workspace:SetAttribute(
-		"DungeonLinearRouteCheckpointHealthy",
-		success == true
-	)
-	workspace:SetAttribute(
-		"DungeonLinearRouteCheckpointError",
-		success
-			and nil
-			or tostring(detail)
-	)
-
-	return success == true
-end
-
-local function reject(
-	player,
-	requestedIndex,
-	reason
-)
-	if not player
-		or player.Parent ~= Players
-	then
-		return false, reason
-	end
-
-	local timestamp = now()
-
-	if timestamp
-			- (rejectedAt[player] or 0)
-		>= 0.35
-	then
-		rejectedAt[player] = timestamp
-
-		player:SetAttribute(
-			"DungeonRouteRejectedReason",
-			reason
-		)
-		player:SetAttribute(
-			"DungeonRouteRejectedIsland",
-			requestedIndex
-		)
-		player:SetAttribute(
-			"DungeonRouteRejectedAt",
-			timestamp
-		)
-
-		safeCallback(
-			"OnRouteRejected",
-			player,
-			requestedIndex,
-			reason,
-			highestUnlockedIsland
-		)
-
-		task.defer(function()
-			DungeonSpawnService.PositionPlayer(
-				player,
-				"RouteRejected:"
-					.. tostring(reason)
-			)
-		end)
-	end
-
-	return false, reason
-end
-
-local handleIslandCleared
-
-local function watchContext(index, context)
-	if not context
-		or not context.IslandModel
-	then
-		return false
-	end
-
-	local island =
-		context.IslandModel
-
-	if watchedContexts[index]
-		and watchedContexts[index].IslandModel
-			== island
-	then
-		return true
-	end
-
-	local old =
-		contextConnections[index]
-
-	if old then
-		for _, connection in ipairs(old) do
-			connection:Disconnect()
-		end
-	end
-
-	watchedContexts[index] = context
-	contextConnections[index] = {}
-
-	local function bindAttribute(name)
-		table.insert(
-			contextConnections[index],
-			island
-				:GetAttributeChangedSignal(
-					name
-				)
-				:Connect(function()
-					if not started then
-						return
-					end
-
-					if name == "Cleared"
-						or name
-							== "CombatState"
-					then
-						if island:GetAttribute(
-							"Cleared"
-						) == true
-							or island:GetAttribute(
-								"CombatState"
-							) == "Cleared"
-						then
-							handleIslandCleared(
-								index,
-								context
-							)
-						end
-					end
-
-					if index == currentIsland then
-						publish()
-					end
-				end)
-		)
-	end
-
-	for _, name in ipairs({
-		"Cleared",
-		"CombatState",
-		"MobTargetCount",
-		"MobKillQuota",
-		"MobDefeatedCount",
-		"MobSpawnedCount",
-		"MobAliveCount",
-	}) do
-		bindAttribute(name)
-	end
-
-	if island:GetAttribute("Cleared")
-			== true
-		or island:GetAttribute(
-			"CombatState"
-		) == "Cleared"
-	then
-		task.defer(
-			handleIslandCleared,
-			index,
-			context
-		)
-	end
-
-	return true
-end
-
-handleIslandCleared = function(
-	index,
-	context
-)
-	if not started
-		or completed[index] == true
-	then
-		return false
+		return
 	end
 
 	completed[index] = true
 	clearSerial += 1
-
-	local island =
-		context
-			and context.IslandModel
-
-	if island then
-		island:SetAttribute(
-			"CombatRouteCleared",
-			true
-		)
-		island:SetAttribute(
-			"CombatRouteClearedAt",
-			now()
-		)
-		island:SetAttribute(
-			"CombatRouteClearSerial",
-			clearSerial
-		)
-	end
-
-	applyGate(
-		index,
-		false,
-		"CombatIslandCleared"
-	)
-
-	local total =
-		totalIslandCount()
 
 	workspace:SetAttribute(
 		"DungeonIslandClearFeedbackSerial",
@@ -908,119 +383,144 @@ handleIslandCleared = function(
 		"DungeonIslandClearFeedbackIsland",
 		index
 	)
+	workspace:SetAttribute(
+		"DungeonIslandClearFeedbackNextIsland",
+		index < totalIslandCount()
+			and index + 1
+			or nil
+	)
 
-	if index >= total then
-		workspace:SetAttribute(
-			"DungeonIslandClearFeedbackNextIsland",
-			nil
-		)
-
-		routeComplete = true
-		highestUnlockedIsland =
-			math.max(
-				highestUnlockedIsland,
-				total
-			)
-
-		workspace:SetAttribute(
-			"DungeonLinearRouteComplete",
-			true
-		)
-		workspace:SetAttribute(
-			"DungeonLinearRouteCompletedAt",
-			now()
-		)
-		workspace:SetAttribute(
-			"DungeonLinearRouteCompletedIsland",
-			index
-		)
-	else
-		local nextIndex = index + 1
-
-		workspace:SetAttribute(
-			"DungeonIslandClearFeedbackNextIsland",
-			nextIndex
-		)
-
-		highestUnlockedIsland =
-			math.max(
-				highestUnlockedIsland,
-				nextIndex
-			)
-
-		workspace:SetAttribute(
-			"DungeonNextCombatIslandUnlocked",
-			nextIndex
-		)
-		workspace:SetAttribute(
-			"DungeonNextCombatIslandUnlockedAt",
-			now()
-		)
-
-		requestThrough(
-			math.min(
-				total,
-				index
-					+ CombatRouteProgressionConfig
-						.FutureLookahead
-			)
-		)
-	end
-
-	if index == currentIsland then
-		workspace:SetAttribute(
-			"DungeonObjectiveCompletedAt",
-			now()
-		)
-		workspace:SetAttribute(
-			"DungeonObjectiveCompletionReason",
-			"KillQuotaReached"
-		)
-	end
+	island:SetAttribute(
+		"CombatRouteCleared",
+		true
+	)
+	island:SetAttribute(
+		"CombatExitLocked",
+		false
+	)
+	island:SetAttribute(
+		"RecommendedLevelIsHardGate",
+		false
+	)
 
 	publish()
+end
+
+local function disconnectContext(index)
+	local list = contextConnections[index]
+	if not list then
+		return
+	end
+
+	for _, connection in ipairs(list) do
+		connection:Disconnect()
+	end
+
+	contextConnections[index] = nil
+end
+
+local function watchContext(index, context)
+	local island = islandFor(context)
+
+	if not island then
+		return false
+	end
+
+	if watchedContexts[index]
+		and watchedContexts[index].IslandModel == island
+	then
+		return true
+	end
+
+	disconnectContext(index)
+
+	watchedContexts[index] = context
+	contextConnections[index] = {}
+
+	island:SetAttribute("CombatExitLocked", false)
+	island:SetAttribute(
+		"RecommendedLevelIsHardGate",
+		false
+	)
+
+	for _, name in ipairs({
+		"Cleared",
+		"CombatState",
+		"MobTargetCount",
+		"MobKillQuota",
+		"MobDefeatedCount",
+		"MobSpawnedCount",
+		"MobAliveCount",
+		"RecommendedLevel",
+		"IslandLevel",
+	}) do
+		table.insert(
+			contextConnections[index],
+			island:GetAttributeChangedSignal(name)
+				:Connect(function()
+					if not started then
+						return
+					end
+
+					if name == "Cleared" then
+						markCleared(index, context)
+					end
+
+					if index == currentIsland then
+						publish()
+					end
+				end)
+		)
+	end
+
+	if island:GetAttribute("Cleared") == true then
+		task.defer(markCleared, index, context)
+	end
 
 	return true
 end
 
-local function prepareCurrentIsland(
-	index,
-	context
-)
-	watchContext(index, context)
+local function commitForwardCheckpoint(context, index)
+	local checkpoint =
+		DungeonSpawnService.GetCheckpoint
+			and DungeonSpawnService.GetCheckpoint()
+			or nil
 
-	if completed[index] == true
-		or (
-			context.IslandModel
-			and context.IslandModel:GetAttribute(
-				"Cleared"
-			) == true
-		)
+	local checkpointIndex =
+		type(checkpoint) == "table"
+			and cleanIndex(checkpoint.GlobalIslandIndex)
+			or nil
+
+	if checkpointIndex
+		and index <= checkpointIndex
 	then
-		applyGate(
-			index,
-			false,
-			"AlreadyCleared"
-		)
 		return
 	end
 
-	applyGate(
-		index,
-		true,
-		"CombatIslandActive"
+	pcall(
+		DungeonSpawnService.CommitLinearRouteCheckpoint,
+		context,
+		"FreeRouteIslandEntered:" .. tostring(index),
+		false
 	)
 end
 
-local function setCurrentIsland(
-	index,
-	context,
-	player
-)
+local function setCurrentIsland(index, context, player)
 	currentIsland = index
 	currentContext = context
-
 	entrySerial += 1
+
+	watchContext(index, context)
+
+	requestThrough(
+		math.min(
+			totalIslandCount(),
+			index
+				+ CombatRouteProgressionConfig.FutureLookahead
+		)
+	)
+
+	commitForwardCheckpoint(context, index)
 
 	workspace:SetAttribute(
 		"DungeonIslandAdvanceEnteredIsland",
@@ -1030,25 +530,13 @@ local function setCurrentIsland(
 		"DungeonIslandAdvanceEnteredAt",
 		now()
 	)
-
-	prepareCurrentIsland(
-		index,
-		context
+	workspace:SetAttribute(
+		"DungeonLastAcceptedCombatIsland",
+		index
 	)
-
-	requestThrough(
-		math.min(
-			totalIslandCount(),
-			index
-				+ CombatRouteProgressionConfig
-					.FutureLookahead
-		)
-	)
-
-	commitCheckpoint(
-		context,
-		"LinearCombatIslandEntered:"
-			.. tostring(index)
+	workspace:SetAttribute(
+		"DungeonLastAcceptedCombatIslandAt",
+		now()
 	)
 
 	if player then
@@ -1064,87 +552,60 @@ local function setCurrentIsland(
 			"DungeonCombatRouteEntryAt",
 			now()
 		)
+		player:SetAttribute(
+			"DungeonRouteRejectedReason",
+			nil
+		)
 	end
-
-	workspace:SetAttribute(
-		"DungeonLastAcceptedCombatIsland",
-		index
-	)
-	workspace:SetAttribute(
-		"DungeonLastAcceptedCombatIslandAt",
-		now()
-	)
 
 	publish()
 end
 
 local function discoverContexts()
-	local total =
-		totalIslandCount()
+	local total = totalIslandCount()
 
 	local maximum =
 		math.min(
 			total,
-			math.max(
-				highestUnlockedIsland
-					+ CombatRouteProgressionConfig
-						.FutureLookahead,
-				currentIsland
-					+ CombatRouteProgressionConfig
-						.FutureLookahead
-			)
+			currentIsland
+				+ CombatRouteProgressionConfig.FutureLookahead
 		)
 
 	for index = 1, maximum do
-		local context =
-			getContext(index)
+		local context = getContext(index)
 
 		if context
 			and context.IslandModel
 			and context.IslandModel.Parent
 		then
-			watchContext(
-				index,
-				context
-			)
+			watchContext(index, context)
 
 			if index == currentIsland
 				and not currentContext
 			then
 				currentContext = context
-				prepareCurrentIsland(
-					index,
-					context
-				)
 			end
 		end
 	end
 end
 
-function CombatRouteProgressionService.Start(
-	startOptions
-)
+function CombatRouteProgressionService.Start(startOptions)
 	if started then
 		return false, "AlreadyStarted"
 	end
 
 	started = true
 	generation += 1
-
 	options =
 		type(startOptions) == "table"
 			and startOptions
 			or {}
 
 	currentIsland = 1
-	highestUnlockedIsland = 1
 	currentContext = nil
 	completed = {}
 	watchedContexts = {}
 	contextConnections = {}
-	rejectedAt =
-		setmetatable({}, { __mode = "k" })
-
 	routeComplete = false
 	clearSerial = 0
 	entrySerial = 0
@@ -1152,40 +613,24 @@ function CombatRouteProgressionService.Start(
 	local token = generation
 
 	workspace:SetAttribute(
-		"DungeonRouteProgressionAuthority",
-		"CombatRouteProgressionService"
-	)
-	workspace:SetAttribute(
 		"DungeonRouteEntryPolicy",
-		"PreviousClearedThenNextV1"
-	)
-	workspace:SetAttribute(
-		"DungeonCombatRouteProgressionPolicy",
-		"KillQuotaUnlocksNextIsland"
-	)
-	workspace:SetAttribute(
-		"DungeonCombatRouteMobsRemainAfterClear",
-		true
+		"FreeRecommendedLevelV2"
 	)
 	workspace:SetAttribute(
 		"DungeonRecommendedLevelIsHardGate",
 		false
 	)
 	workspace:SetAttribute(
-		"DungeonRoundRewardPending",
+		"DungeonObjectiveExitLocked",
 		false
 	)
-	workspace:SetAttribute(
-		"DungeonIslandAdvanceFeedbackVersion",
-		IslandAdvanceFeedbackConfig.Version
-	)
-	workspace:SetAttribute(
-		"DungeonIslandAdvanceActive",
-		false
-	)
-	workspace:SetAttribute(
-		"DungeonIslandClearFeedbackSerial",
-		0
+
+	requestThrough(
+		math.min(
+			totalIslandCount(),
+			1
+				+ CombatRouteProgressionConfig.FutureLookahead
+		)
 	)
 
 	publish()
@@ -1198,8 +643,7 @@ function CombatRouteProgressionService.Start(
 			publish()
 
 			task.wait(
-				CombatRouteProgressionConfig
-					.ReconcileSeconds
+				CombatRouteProgressionConfig.ReconcileSeconds
 			)
 		end
 	end)
@@ -1215,17 +659,10 @@ function CombatRouteProgressionService.Stop()
 	started = false
 	generation += 1
 
-	for _, connections in pairs(
-		contextConnections
-	) do
-		for _, connection in ipairs(
-			connections
-		) do
-			connection:Disconnect()
-		end
+	for index in pairs(contextConnections) do
+		disconnectContext(index)
 	end
 
-	contextConnections = {}
 	watchedContexts = {}
 	options = {}
 
@@ -1234,11 +671,10 @@ function CombatRouteProgressionService.Stop()
 	return true
 end
 
-function CombatRouteProgressionService
-	.HandleIslandEntered(
-		player,
-		context
-	)
+function CombatRouteProgressionService.HandleIslandEntered(
+	player,
+	context
+)
 	if not started
 		or not player
 		or player.Parent ~= Players
@@ -1248,159 +684,130 @@ function CombatRouteProgressionService
 	end
 
 	if context.IsOptionalRoute == true then
-		return reject(
-			player,
-			cleanIndex(
-				context.GlobalIslandIndex
-			) or 0,
-			"OptionalRoutesDisabled"
-		)
+		return false, "OptionalRoutesDisabled"
 	end
 
 	if context.IsBossSanctuary == true then
-		return reject(
-			player,
-			totalIslandCount() + 1,
-			"BossProgressionDisabled"
-		)
+		return false, "BossProgressionDisabled"
 	end
 
 	local requestedIndex =
-		cleanIndex(
-			context.GlobalIslandIndex
-		)
+		cleanIndex(context.GlobalIslandIndex)
 
 	if not requestedIndex then
 		return false, "InvalidGlobalIslandIndex"
 	end
 
-	local total =
-		totalIslandCount()
-
-	if requestedIndex > total then
-		return reject(
-			player,
-			requestedIndex,
-			routeComplete
-				and "RouteAlreadyCompleted"
-				or "OutsideCombatRoute"
-		)
+	if requestedIndex > totalIslandCount() then
+		return false, "OutsideCombatRoute"
 	end
 
-	watchContext(
-		requestedIndex,
-		context
-	)
-
-	if requestedIndex
-		> highestUnlockedIsland
-	then
-		return reject(
-			player,
-			requestedIndex,
-			"PreviousIslandNotCleared"
-		)
-	end
-
-	-- Backtracking never moves global progression or the checkpoint backwards.
-	if requestedIndex < currentIsland then
-		return true, "BacktrackingAllowed"
-	end
-
-	if requestedIndex == currentIsland then
-		currentContext = context
-		prepareCurrentIsland(
-			requestedIndex,
-			context
-		)
-		publish()
-
-		return true,
-			completed[requestedIndex]
-				and "CombatIslandCleared"
-				or "CombatIslandActive"
-	end
-
-	-- Since HighestUnlocked is advanced only by clearing N, the only legal
-	-- forward move is N -> N+1.
-	if requestedIndex
-		~= currentIsland + 1
-	then
-		return reject(
-			player,
-			requestedIndex,
-			"CombatRouteSequenceSkipped"
-		)
-	end
-
-	if completed[currentIsland]
-		~= true
-	then
-		return reject(
-			player,
-			requestedIndex,
-			"PreviousIslandNotCleared"
-		)
-	end
-
+	-- FREE ROUTE: no PreviousIslandNotCleared rejection.
 	setCurrentIsland(
 		requestedIndex,
 		context,
 		player
 	)
 
-	return true, "CombatIslandEntered"
+	return true, "CombatIslandEnteredFreeRoute"
 end
 
-function CombatRouteProgressionService
-	.GetSnapshot()
-	return snapshot()
+function CombatRouteProgressionService.GetSnapshot()
+	local context =
+		currentContext
+		or getContext(currentIsland)
+
+	local progress, target, alive, cleared, combatState =
+		objectiveNumbers(context)
+
+	return {
+		Started = started,
+		Version = "CombatRouteProgressionFreeV2",
+		State = workspace:GetAttribute(
+			"DungeonProgressionState"
+		),
+		Id = CombatRouteProgressionConfig.ObjectiveId,
+		Type = "ClearCombatIsland",
+		Title = workspace:GetAttribute(
+			"DungeonObjectiveTitle"
+		),
+		Description = workspace:GetAttribute(
+			"DungeonObjectiveDescription"
+		),
+		CurrentGlobalIslandIndex = currentIsland,
+		GlobalIslandIndex = currentIsland,
+		IslandIndex = currentIsland,
+		RoundIndex = nil,
+		Progress = progress,
+		Target = target,
+		Completed = cleared,
+		MobAliveCount = alive,
+		CombatState = combatState,
+		HighestUnlockedIsland = totalIslandCount(),
+		TotalIslandCount = totalIslandCount(),
+		ExitLocked = false,
+		IslandContext = context,
+		RouteComplete = routeComplete,
+		RewardPendingRound = nil,
+		HighestCompletedRound = 0,
+		CompletedRounds = {},
+		CurrentIslandIsRoundExit = false,
+		RoundCompleted = false,
+		FinalRewardCommitted = false,
+	}
 end
 
-function CombatRouteProgressionService
-	.GetCurrentDefinition()
-	return currentDefinition()
+function CombatRouteProgressionService.GetCurrentDefinition()
+	local snapshot =
+		CombatRouteProgressionService.GetSnapshot()
+
+	return {
+		Id = snapshot.Id,
+		Type = snapshot.Type,
+		Title = snapshot.Title,
+		Description = snapshot.Description,
+		GlobalIslandIndex =
+			snapshot.GlobalIslandIndex,
+		IslandIndex = snapshot.IslandIndex,
+		RoundIndex = nil,
+		Target = snapshot.Target,
+		Progress = snapshot.Progress,
+		MobAliveCount = snapshot.MobAliveCount,
+		Completed = snapshot.Completed,
+		CombatState = snapshot.CombatState,
+		ObjectiveKind = "ClearCombatIsland",
+		SpawnProfile = "IslandCombatManaged",
+	}
 end
 
-function CombatRouteProgressionService
-	.GetCurrentContext()
+function CombatRouteProgressionService.GetCurrentContext()
 	return currentContext
 		or getContext(currentIsland)
 end
 
-function CombatRouteProgressionService
-	.GetHighestUnlockedIsland()
-	return highestUnlockedIsland
+function CombatRouteProgressionService.GetHighestUnlockedIsland()
+	return totalIslandCount()
 end
 
-function CombatRouteProgressionService
-	.IsRouteComplete()
+function CombatRouteProgressionService.IsRouteComplete()
 	return routeComplete
 end
 
-function CombatRouteProgressionService
-	.EscalateWaypoint()
+function CombatRouteProgressionService.EscalateWaypoint()
 	local context =
 		currentContext
-			or getContext(currentIsland)
+		or getContext(currentIsland)
 
 	if not context then
 		return false, "ContextUnavailable"
 	end
 
-	local marker
+	local marker =
+		context.ObjectiveAnchor
+		or context.SafeSpawn
+		or context.Exit
 
-	if completed[currentIsland] == true then
-		marker = context.Exit
-	else
-		marker =
-			context.ObjectiveAnchor
-				or context.SafeSpawn
-	end
-
-	if not marker
-		or not marker.Parent
-	then
+	if not marker or not marker.Parent then
 		return false, "WaypointUnavailable"
 	end
 
@@ -1409,8 +816,7 @@ function CombatRouteProgressionService
 	if marker:IsA("BasePart") then
 		position = marker.Position
 	elseif marker:IsA("Model") then
-		position =
-			marker:GetPivot().Position
+		position = marker:GetPivot().Position
 	end
 
 	if not position then
@@ -1443,33 +849,27 @@ function CombatRouteProgressionService
 	return true
 end
 
-function CombatRouteProgressionService
-	.RecoverCurrentIsland()
+function CombatRouteProgressionService.RecoverCurrentIsland()
 	local context =
 		currentContext
-			or getContext(currentIsland)
+		or getContext(currentIsland)
 
-	if not context then
-		requestThrough(
-			math.min(
-				totalIslandCount(),
-				currentIsland
-					+ CombatRouteProgressionConfig
-						.FutureLookahead
-			)
+	requestThrough(
+		math.min(
+			totalIslandCount(),
+			currentIsland
+				+ CombatRouteProgressionConfig.FutureLookahead
 		)
-
-		return true,
-			"RouteMaterializationRequested"
-	end
-
-	prepareCurrentIsland(
-		currentIsland,
-		context
 	)
 
-	return true,
-		"CombatIslandRefreshed"
+	if not context then
+		return true, "RouteMaterializationRequested"
+	end
+
+	watchContext(currentIsland, context)
+	publish()
+
+	return true, "CombatIslandRefreshed"
 end
 
 return CombatRouteProgressionService
