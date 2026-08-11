@@ -565,6 +565,8 @@ local function setMimicState(state, newState)
 		state.Humanoid.AutoRotate = false
 		state.Humanoid.WalkSpeed = state.OriginalWalkSpeed
 		state.Humanoid.HealthDisplayType = Enum.HumanoidHealthDisplayType.DisplayWhenDamaged
+		state.Humanoid.HealthDisplayDistance = 18
+		state.Humanoid.NameDisplayDistance = 18
 		setProceduralScriptsEnabled(state, true)
 		synchronizeAnimation(state)
 	elseif newState == STATE_RETURNING then

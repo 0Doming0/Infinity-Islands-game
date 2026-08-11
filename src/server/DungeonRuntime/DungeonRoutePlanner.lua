@@ -1,24 +1,21 @@
 --[[
-	Infinity Islands - Tarefa 02
-	Linear Combat Route V1
+	Infinity Islands - Linear Combat Route V8
+	Fix: HorizontalLaneReused
 
-	A rota principal deixa de ser baseada em rounds, reward islands, diamonds
-	e boss sanctuary.
+	Problem in the previous planner:
+	- it preferred an unvisited horizontal lane;
+	- when no preferred neighbor was available, its fallback ignored visitedLanes;
+	- the safety validator correctly rejected the resulting route with
+	  HorizontalLaneReused before the map could materialize.
 
-	Contrato principal:
-	- 24 Combat Islands por padrao;
-	- 1 predecessor e no maximo 1 sucessor;
-	- todas possuem GlobalIslandIndex;
-	- nenhuma ilha principal e Optional/Reward/RoundExit/Boss;
-	- direcao varia deterministicamente pela seed;
-	- cada passo sobe exatamente um LogicalLevel.
+	V8 uses a deterministic square spiral:
+	- segment lengths: 1, 1, 2, 2, 3, 3, ...
+	- seed chooses initial cardinal direction;
+	- seed chooses clockwise/counter-clockwise turns;
+	- every logical X/Z coordinate is unique by construction;
+	- every step is still cardinal and increases LogicalLevel by exactly 1.
 
-	IMPORTANTE:
-	RoundIndex/IslandIndex continuam publicados SOMENTE para compatibilidade
-	temporaria com sistemas antigos. Eles nao controlam a topologia.
-
-	A rota final do MVP termina na ultima Combat Island.
-	Nao existe BossSanctuary, Reward Island ou branch opcional.
+	The validator is intentionally NOT weakened.
 ]]
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -40,18 +37,12 @@ local DungeonRoutePlanner = {}
 local MAXIMUM_SEED = 2147483647
 local DEFAULT_COMBAT_ISLAND_COUNT = 24
 
+-- Clockwise order in the logical X/Z plane.
 local DIRECTION_IDS = table.freeze({
 	"East",
 	"South",
 	"West",
 	"North",
-})
-
-local OPPOSITE_DIRECTION = table.freeze({
-	East = "West",
-	West = "East",
-	North = "South",
-	South = "North",
 })
 
 local function normalizedSeed(value)
@@ -86,21 +77,6 @@ local function mixedSeed(
 		) % MAXIMUM_SEED
 
 	return normalizedSeed(value)
-end
-
-local function shuffledDirections(seed)
-	local result = table.clone(DIRECTION_IDS)
-	local random = Random.new(seed)
-
-	for index = #result, 2, -1 do
-		local other =
-			random:NextInteger(1, index)
-
-		result[index], result[other] =
-			result[other], result[index]
-	end
-
-	return result
 end
 
 local function directionDelta(directionId)
@@ -242,63 +218,80 @@ local function applyCompactPhysicalCenter(
 end
 
 local function laneKey(x, z)
-	return tostring(x) .. ":" .. tostring(z)
+	return tostring(x)
+		.. ":"
+		.. tostring(z)
 end
 
-local function chooseNextDirection(
-	baseSeed,
-	globalIndex,
-	current,
-	previousDirection,
-	visitedLanes
-)
-	local directions =
-		shuffledDirections(
+---------------------------------------------------------------------
+-- Guaranteed self-avoiding route
+---------------------------------------------------------------------
+
+local function createSpiralState(baseSeed)
+	local random =
+		Random.new(
 			mixedSeed(
 				baseSeed,
-				globalIndex,
-				current.LaneX,
-				current.LaneZ,
-				current.Level,
-				49979687
+				1,
+				0,
+				0,
+				0,
+				86028157
 			)
 		)
 
-	local opposite =
-		previousDirection
-			and OPPOSITE_DIRECTION[
-				previousDirection
-			]
-			or nil
+	return {
+		DirectionIndex =
+			random:NextInteger(
+				1,
+				#DIRECTION_IDS
+			),
 
-	-- Preferencia 1:
-	-- nao voltar imediatamente e nao reutilizar uma coordenada horizontal.
-	for _, directionId in ipairs(directions) do
-		if directionId ~= opposite then
-			local dx, dz =
-				directionDelta(directionId)
+		-- +1 = clockwise in DIRECTION_IDS,
+		-- -1 = counter-clockwise.
+		TurnStep =
+			random:NextInteger(0, 1) == 0
+				and 1
+				or -1,
 
-			local key =
-				laneKey(
-					current.LaneX + dx,
-					current.LaneZ + dz
-				)
+		SegmentLength = 1,
+		StepsRemaining = 1,
+		SegmentsAtCurrentLength = 0,
+	}
+end
 
-			if not visitedLanes[key] then
-				return directionId
-			end
+local function nextSpiralDirection(state)
+	local directionId =
+		DIRECTION_IDS[
+			state.DirectionIndex
+		]
+
+	state.StepsRemaining -= 1
+
+	if state.StepsRemaining <= 0 then
+		state.DirectionIndex =
+			(
+				(
+					state.DirectionIndex
+					- 1
+					+ state.TurnStep
+				) % #DIRECTION_IDS
+			) + 1
+
+		state.SegmentsAtCurrentLength += 1
+
+		-- Spiral contract:
+		-- 1,1,2,2,3,3,...
+		if state.SegmentsAtCurrentLength >= 2 then
+			state.SegmentsAtCurrentLength = 0
+			state.SegmentLength += 1
 		end
+
+		state.StepsRemaining =
+			state.SegmentLength
 	end
 
-	-- Preferencia 2:
-	-- ainda evita um U-turn imediato.
-	for _, directionId in ipairs(directions) do
-		if directionId ~= opposite then
-			return directionId
-		end
-	end
-
-	return directions[1]
+	return directionId
 end
 
 local function incomingConnection(
@@ -326,8 +319,7 @@ end
 local function compatibilityRoundIndices(
 	globalIndex
 )
-	-- Mantem as 12 primeiras ilhas alinhadas aos consumidores antigos:
-	-- 1-3 / 4-7 / 8-12.
+	-- Legacy metadata only.
 	if globalIndex <= 3 then
 		return 1, globalIndex
 	elseif globalIndex <= 7 then
@@ -336,7 +328,6 @@ local function compatibilityRoundIndices(
 		return 3, globalIndex - 7
 	end
 
-	-- Depois da ilha 12 os valores continuam apenas como metadata.
 	local offset = globalIndex - 13
 
 	return
@@ -424,12 +415,14 @@ local function createCombatSpec(
 	spec.IsRouteConvergence = false
 	spec.IsRouteBranchPoint = false
 
-	-- Nova metadata explicita.
 	spec.CombatRoute = true
 	spec.CombatIsland = true
 	spec.LinearRoute = true
 	spec.RouteArchitecture =
 		"LinearCombatRouteV1"
+
+	spec.HorizontalLanePolicy =
+		"SeededSquareSpiralV1"
 
 	return spec
 end
@@ -476,6 +469,7 @@ function DungeonRoutePlanner.Build(options)
 	current.RouteNodeOrder = 1
 	current.CombatRouteCompactSpacingVersion =
 		CombatRouteSpacingConfig.Version
+
 	current.IncomingConnectorHorizontalCells = nil
 	current.IncomingConnectorHorizontalStuds = nil
 	current.IncomingConnectorEstimatedWalkSeconds = nil
@@ -483,10 +477,15 @@ function DungeonRoutePlanner.Build(options)
 	current.IncomingVerticalRiseStuds = nil
 
 	nodes[1] = current
-	materializationIndexByGlobalIndex[1] = 1
-	visitedLanes[laneKey(0, 0)] = true
 
-	local previousDirection
+	materializationIndexByGlobalIndex[1] =
+		1
+
+	visitedLanes[laneKey(0, 0)] =
+		true
+
+	local spiral =
+		createSpiralState(baseSeed)
 
 	local totalConnectorHorizontalCells = 0
 	local maximumConnectorHorizontalCells = 0
@@ -494,22 +493,44 @@ function DungeonRoutePlanner.Build(options)
 
 	for globalIndex = 2, totalIslandCount do
 		local directionId =
-			chooseNextDirection(
-				baseSeed,
-				globalIndex,
-				current,
-				previousDirection,
-				visitedLanes
+			nextSpiralDirection(
+				spiral
 			)
 
 		local dx, dz =
-			directionDelta(directionId)
+			directionDelta(
+				directionId
+			)
+
+		local nextLaneX =
+			current.LaneX + dx
+
+		local nextLaneZ =
+			current.LaneZ + dz
+
+		local nextLaneKey =
+			laneKey(
+				nextLaneX,
+				nextLaneZ
+			)
+
+		-- This should be impossible with the spiral.
+		-- Keep the invariant explicit so a future edit cannot silently
+		-- reintroduce HorizontalLaneReused.
+		assert(
+			not visitedLanes[nextLaneKey],
+			string.format(
+				"SeededSquareSpiral invariant failed at island %d: %s",
+				globalIndex,
+				nextLaneKey
+			)
+		)
 
 		local nextSpec =
 			createCombatSpec(
 				baseSeed,
-				current.LaneX + dx,
-				current.LaneZ + dz,
+				nextLaneX,
+				nextLaneZ,
 				current.Level + 1,
 				globalIndex,
 				incomingConnection(
@@ -546,9 +567,11 @@ function DungeonRoutePlanner.Build(options)
 
 		current.NextDirectionId =
 			directionId
+
 		current.OutgoingDirectionIds = {
 			directionId,
 		}
+
 		current.OutgoingConnections = {
 			outgoingConnection(
 				nextSpec.Key,
@@ -563,23 +586,17 @@ function DungeonRoutePlanner.Build(options)
 			globalIndex
 		] = globalIndex
 
-		visitedLanes[
-			laneKey(
-				nextSpec.LaneX,
-				nextSpec.LaneZ
-			)
-		] = true
+		visitedLanes[nextLaneKey] =
+			true
 
 		current = nextSpec
-		previousDirection = directionId
 	end
 
-	-- O ultimo Combat Island e realmente terminal na nova rota.
+	-- Last Combat Island is terminal.
 	current.NextDirectionId = nil
 	current.OutgoingDirectionIds = {}
 	current.OutgoingConnections = {}
 	current.RouteChoiceCount = 0
-
 
 	local connectionCount =
 		math.max(
@@ -600,7 +617,7 @@ function DungeonRoutePlanner.Build(options)
 	end
 
 	return {
-		Version = 7,
+		Version = 8,
 		MarkerContractVersion = 2,
 
 		CompactSpacingVersion =
@@ -608,6 +625,12 @@ function DungeonRoutePlanner.Build(options)
 
 		CompactSpacingPolicy =
 			CombatRouteSpacingConfig.Policy,
+
+		HorizontalLanePolicy =
+			"SeededSquareSpiralV1",
+
+		HorizontalLaneReuseAllowed =
+			false,
 
 		ConnectorHorizontalCellsMinimum =
 			minimumConnectorHorizontalCells,
@@ -654,17 +677,20 @@ function DungeonRoutePlanner.Build(options)
 
 		Seed = baseSeed,
 
-		-- A nova rota nao possui rounds logicos.
+		-- Legacy metadata is intentionally empty.
 		RoundLengths = {},
 		RewardGlobalIndices = {},
 		RoundExitGlobalIndices = {},
 
 		TotalIslandCount =
 			totalIslandCount,
+
 		ObjectiveIslandCount =
 			totalIslandCount,
+
 		PhysicalIslandCount =
 			totalIslandCount,
+
 		OptionalIslandCount = 0,
 
 		InitialWindowSize =

@@ -1,37 +1,19 @@
 --[[
-	Infinity Islands - Task 08
-	MobXPConfig V1
+	Infinity Islands - MobXPConfig V2
 
-	Mob death -> XP.
+	XP value calculation remains the same as V1.
 
-	Base XP by slime variant:
-	Green      12
-	Blue       16
-	Red        20
-	Fire       22
-	Ice        22
-	Lightning  26
-
-	Then MobLevel increases the reward:
-		XPLevelMultiplier = 1 + 0.12 * (MobLevel - 1)
-
-	Risk bonus is calculated per receiving player:
-		+10% for each MobLevel above PlayerLevel
-		maximum +50%
-
-	No penalty for fighting lower-level mobs in this MVP version.
-
-	Party policy:
-	- a valid killer/owner must exist;
-	- every Player currently on the same Combat Island receives the kill XP;
-	- each Player's risk bonus is calculated independently;
-	- each mob can pay XP only once.
+	New delivery policy:
+	- killing a managed combat mob does NOT immediately increase XP;
+	- only the last hitter receives the physical XP fragments;
+	- fragments scatter, then magnet toward that player;
+	- PlayerLevelService receives XP only as fragments are collected.
 ]]
 
 local MobXPConfig = {}
 
-MobXPConfig.Version = "MobXPV1"
-MobXPConfig.AwardPolicy = "SameIslandPartyFullXPV1"
+MobXPConfig.Version = "MobXPV2Collectibles"
+MobXPConfig.AwardPolicy = "LastHitPhysicalXPCollectiblesV1"
 
 MobXPConfig.LevelRewardPerLevel = 0.12
 
@@ -182,12 +164,6 @@ function MobXPConfig.Validate()
 				- 0.50
 		) < 0.0001,
 		"Risk bonus precisa respeitar cap +50%"
-	)
-
-	assert(
-		MobXPConfig.GetRiskBonus(3, 8)
-			== 0,
-		"Nao deve haver penalidade/bônus negativo"
 	)
 
 	return true

@@ -1425,7 +1425,9 @@ local function spawnClone(
 		Enum.HumanoidDisplayDistanceType.Viewer
 	humanoid.NameDisplayDistance = 18
 	humanoid.HealthDisplayType =
-		Enum.HumanoidHealthDisplayType.AlwaysOff
+		Enum.HumanoidHealthDisplayType.DisplayWhenDamaged
+	humanoid.HealthDisplayDistance = 18
+	humanoid.NameDisplayDistance = 18
 	humanoid.BreakJointsOnDeath = false
 
 	humanoid.WalkSpeed =

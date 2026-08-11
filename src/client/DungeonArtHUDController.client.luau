@@ -1,52 +1,99 @@
--- DungeonArtHUDController.client.luau
--- Authored HUD Controller V12 - New Core Binding
---
--- REGRA PRINCIPAL:
--- Este script NAO desenha HUD por codigo.
--- Nao cria ScreenGui/Frame/TextLabel/ImageLabel/UICorner/UIStroke/UIScale.
--- Ele apenas:
---   1) encontra os componentes criados manualmente no Studio;
---   2) atualiza propriedades/textos;
---   3) anima propriedades existentes;
---   4) clona templates visuais que o designer criou manualmente.
---
--- Tags obrigatorias nos quatro blocos principais:
---   ObjectivePanel -> DungeonHUD_Objective
---   PlayerStatus   -> DungeonHUD_PlayerStatus
---   MiniMap        -> DungeonHUD_Minimap
---   MissionsPanel -> DungeonHUD_Missions (opcional; oculto no MVP simplificado)
+--[[
+	Infinity Islands - DungeonArtHUDController V16
+	Menu-Safe Persistent Authored HUD Watchdog
+
+	Goal:
+	- NEVER fail permanently because the HUD loaded late.
+	- NEVER depend on a 10s/20s generation timeout.
+	- NEVER require tags when the authored names are correct.
+	- Re-find and re-bind the authored UI if PlayerGui is rebuilt after respawn,
+	  map generation, Rojo sync, or another system changes GUI hierarchy.
+
+	This controller does not construct the HUD art.
+	It may only:
+	- clone the complete designer-authored StarterGui.DungeonHUD;
+	- clone authored minimap templates;
+	- update properties/text of existing authored elements.
+]]
 
 local CollectionService = game:GetService("CollectionService")
+local GuiService = game:GetService("GuiService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local StarterGui = game:GetService("StarterGui")
 local TweenService = game:GetService("TweenService")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local IslandAdvanceFeedbackConfig = require(
-	ReplicatedStorage
-		:WaitForChild("Shared")
-		:WaitForChild("Configs")
-		:WaitForChild("IslandAdvanceFeedbackConfig")
-)
+local VERSION = "AuthoredHUDV17StaticFrontPortrait"
 
-local TAGS = {
-	Objective = "DungeonHUD_Objective",
-	PlayerStatus = "DungeonHUD_PlayerStatus",
-	Minimap = "DungeonHUD_Minimap",
-	Missions = "DungeonHUD_Missions",
-	ItemHotbar = "DungeonHUD_ItemHotbar",       -- opcional/futuro
-	BasicControls = "DungeonHUD_BasicControls", -- opcional/futuro
+local CORE_ALIASES = {
+	ObjectivePanel = {
+		"ObjectivePanel", "Objective", "ObjectiveFrame",
+		"ObjectiveContainer", "ObjectiveHolder",
+	},
+	PlayerStatus = {
+		"PlayerStatus", "Status", "PlayerStatusFrame",
+		"StatusPanel", "PlayerHUD", "PlayerInfo",
+	},
+	MiniMap = {
+		"MiniMap", "Minimap", "Map", "MiniMapFrame",
+		"MapPanel", "Radar",
+	},
+	MissionsPanel = {
+		"MissionsPanel", "Missions", "MissionPanel",
+		"QuestPanel", "QuestsPanel", "QuestListPanel",
+	},
 }
 
-local OBJECTIVE_DESCRIPTION_MAX = 43
-local MINIMAP_RANGE = 420
-local MINIMAP_UPDATE_INTERVAL = 0.10
+local TAGS = {
+	ObjectivePanel = "DungeonHUD_Objective",
+	PlayerStatus = "DungeonHUD_PlayerStatus",
+	MiniMap = "DungeonHUD_Minimap",
+	MissionsPanel = "DungeonHUD_Missions",
+}
 
 local function normalize(value)
-	return string.lower(string.gsub(tostring(value or ""), "[^%w]", ""))
+	return string.lower(
+		string.gsub(tostring(value or ""), "[^%w]", "")
+	)
+end
+
+local SAFE_SUFFIXES = {
+	"frame", "label", "text", "image", "button",
+	"panel", "container", "holder", "bar",
+	"icon", "background", "gui",
+}
+
+local function semantic(value)
+	local result = normalize(value)
+	local changed = true
+
+	while changed do
+		changed = false
+
+		for _, suffix in ipairs(SAFE_SUFFIXES) do
+			if #result > #suffix + 3
+				and string.sub(result, -#suffix) == suffix
+			then
+				result = string.sub(
+					result,
+					1,
+					#result - #suffix
+				)
+				changed = true
+				break
+			end
+		end
+	end
+
+	return result
+end
+
+local function isGui(object)
+	return object and object:IsA("GuiObject")
 end
 
 local function isText(object)
@@ -58,107 +105,328 @@ local function isText(object)
 		)
 end
 
-local function isGui(object)
-	return object and object:IsA("GuiObject")
+local function isImage(object)
+	return object
+		and (
+			object:IsA("ImageLabel")
+			or object:IsA("ImageButton")
+		)
 end
 
-local function descendantsIncludingChildren(root)
+local function allIncludingRoot(rootObject)
 	local result = {}
-	for _, child in ipairs(root:GetChildren()) do
-		table.insert(result, child)
+
+	if not rootObject then
+		return result
 	end
-	for _, descendant in ipairs(root:GetDescendants()) do
-		if descendant.Parent ~= root then
-			table.insert(result, descendant)
-		end
+
+	table.insert(result, rootObject)
+
+	for _, descendant in ipairs(
+		rootObject:GetDescendants()
+	) do
+		table.insert(result, descendant)
 	end
+
 	return result
 end
 
-local SAFE_SUFFIXES = {
-	"frame",
-	"label",
-	"text",
-	"image",
-	"button",
-	"panel",
-	"container",
-	"holder",
-	"bar",
-	"icon",
-	"background",
-}
+local function nameScore(objectName, aliases)
+	local actual = normalize(objectName)
+	local actualSemantic = semantic(objectName)
+	local best = 0
 
-local function semanticName(value)
-	local name = normalize(value)
-	local changed = true
-	while changed do
-		changed = false
-		for _, suffix in ipairs(SAFE_SUFFIXES) do
-			if #name > #suffix + 3 and string.sub(name, -#suffix) == suffix then
-				name = string.sub(name, 1, #name - #suffix)
-				changed = true
-				break
-			end
+	for _, alias in ipairs(aliases) do
+		local wanted = normalize(alias)
+		local wantedSemantic = semantic(alias)
+
+		if actual == wanted then
+			best = math.max(best, 100)
+		elseif actualSemantic == wantedSemantic
+			and #wantedSemantic >= 4
+		then
+			best = math.max(best, 90)
+		elseif #wanted >= 5
+			and string.find(actual, wanted, 1, true)
+		then
+			best = math.max(best, 70)
+		elseif #actual >= 5
+			and string.find(wanted, actual, 1, true)
+		then
+			best = math.max(best, 60)
 		end
 	end
-	return name
+
+	return best
 end
 
-local function findAuthored(root, aliases, predicate)
-	if not root then
+local function taggedCandidate(tagName, rootObject, predicate)
+	if not tagName then
 		return nil
 	end
 
-	local pool = descendantsIncludingChildren(root)
-
-	-- 1) match exato normalizado.
-	for _, alias in ipairs(aliases) do
-		local wanted = normalize(alias)
-		for _, object in ipairs(pool) do
-			if (not predicate or predicate(object)) and normalize(object.Name) == wanted then
-				return object
-			end
-		end
-	end
-
-	-- 2) equivalencia segura removendo apenas sufixos comuns de GUI.
-	for _, alias in ipairs(aliases) do
-		local wanted = semanticName(alias)
-		if #wanted >= 4 then
-			for _, object in ipairs(pool) do
-				if (not predicate or predicate(object))
-					and semanticName(object.Name) == wanted
-				then
-					return object
-				end
-			end
+	for _, object in ipairs(
+		CollectionService:GetTagged(tagName)
+	) do
+		if object.Parent
+			and (
+				not rootObject
+				or object:IsDescendantOf(rootObject)
+			)
+			and (
+				not predicate
+				or predicate(object)
+			)
+		then
+			return object
 		end
 	end
 
 	return nil
 end
 
-local missingWarnings = {}
-
-local function warnMissing(path, aliases)
-	if missingWarnings[path] then
-		return
+local function findBest(
+	rootObject,
+	aliases,
+	predicate,
+	tagName
+)
+	if not rootObject then
+		return nil
 	end
-	missingWarnings[path] = true
-	warn(string.format(
-		"[AuthoredHUD] Elemento manual ausente: %s | esperado: %s",
-		path,
-		table.concat(aliases, " / ")
-	))
+
+	local tagged = taggedCandidate(
+		tagName,
+		rootObject,
+		predicate
+	)
+
+	if tagged then
+		return tagged
+	end
+
+	local bestObject
+	local bestScore = -math.huge
+	local bestDepth = math.huge
+
+	for _, object in ipairs(
+		allIncludingRoot(rootObject)
+	) do
+		if not predicate or predicate(object) then
+			local score = nameScore(
+				object.Name,
+				aliases
+			)
+
+			if score > 0 then
+				local depth = 0
+				local current = object
+
+				while current
+					and current ~= rootObject
+				do
+					depth += 1
+					current = current.Parent
+				end
+
+				-- Prefer the closest valid match if scores tie.
+				if score > bestScore
+					or (
+						score == bestScore
+						and depth < bestDepth
+					)
+				then
+					bestObject = object
+					bestScore = score
+					bestDepth = depth
+				end
+			end
+		end
+	end
+
+	return bestObject
 end
 
-local function authored(root, path, aliases, predicate)
-	local object = findAuthored(root, aliases, predicate)
-	if not object then
-		warnMissing(path, aliases)
+local function findScreenGuiNamed(
+	container,
+	wantedName
+)
+	if not container then
+		return nil
 	end
-	return object
+
+	local direct =
+		container:FindFirstChild(wantedName)
+
+	if direct and direct:IsA("ScreenGui") then
+		return direct
+	end
+
+	for _, descendant in ipairs(
+		container:GetDescendants()
+	) do
+		if descendant:IsA("ScreenGui")
+			and normalize(descendant.Name)
+				== normalize(wantedName)
+		then
+			return descendant
+		end
+	end
+
+	return nil
+end
+
+local function resolveCore(hud)
+	if not hud then
+		return {}
+	end
+
+	return {
+		ObjectivePanel = findBest(
+			hud,
+			CORE_ALIASES.ObjectivePanel,
+			isGui,
+			TAGS.ObjectivePanel
+		),
+		PlayerStatus = findBest(
+			hud,
+			CORE_ALIASES.PlayerStatus,
+			isGui,
+			TAGS.PlayerStatus
+		),
+		MiniMap = findBest(
+			hud,
+			CORE_ALIASES.MiniMap,
+			isGui,
+			TAGS.MiniMap
+		),
+		MissionsPanel = findBest(
+			hud,
+			CORE_ALIASES.MissionsPanel,
+			isGui,
+			TAGS.MissionsPanel
+		),
+	}
+end
+
+local function coreScore(hud)
+	if not hud or not hud:IsA("ScreenGui") then
+		return 0
+	end
+
+	local core = resolveCore(hud)
+	local score = 0
+
+	if core.ObjectivePanel then score += 1 end
+	if core.PlayerStatus then score += 1 end
+	if core.MiniMap then score += 1 end
+
+	return score
+end
+
+local function findHud(container)
+	-- V15 intentionally resolves ONLY the authored ScreenGui named DungeonHUD.
+	-- Never fall back to an arbitrary ScreenGui based on matching child names:
+	-- that could incorrectly bind SettingsUI or another modal overlay.
+	return findScreenGuiNamed(
+		container,
+		"DungeonHUD"
+	)
+end
+
+local function configureHud(hud)
+	if not hud then
+		return
+	end
+
+	hud.Enabled = true
+	hud.ResetOnSpawn = false
+
+	hud:SetAttribute(
+		"ResponsiveGenericOptOut",
+		true
+	)
+	hud:SetAttribute(
+		"ControllerVersion",
+		VERSION
+	)
+	hud:SetAttribute(
+		"ControllerCreatesVisuals",
+		false
+	)
+end
+
+local function ensureHud()
+	local current = findHud(playerGui)
+
+	if current then
+		configureHud(current)
+
+		player:SetAttribute(
+			"DungeonArtHUDSource",
+			"PlayerGui"
+		)
+
+		return current
+	end
+
+	local source = findHud(StarterGui)
+
+	if not source then
+		return nil
+	end
+
+	-- Recheck immediately before cloning to avoid duplicate races.
+	current = findHud(playerGui)
+
+	if current then
+		configureHud(current)
+		return current
+	end
+
+	local clone = source:Clone()
+	clone.Name = "DungeonHUD"
+	clone:SetAttribute(
+		"ClonedByDungeonArtHUDController",
+		true
+	)
+	configureHud(clone)
+	clone.Parent = playerGui
+
+	player:SetAttribute(
+		"DungeonArtHUDSource",
+		"StarterGuiClone"
+	)
+
+	return clone
+end
+
+---------------------------------------------------------------------
+-- Generic child resolution
+---------------------------------------------------------------------
+
+local function text(rootObject, aliases)
+	return findBest(
+		rootObject,
+		aliases,
+		isText
+	)
+end
+
+local function gui(rootObject, aliases)
+	return findBest(
+		rootObject,
+		aliases,
+		isGui
+	)
+end
+
+local function image(rootObject, aliases)
+	return findBest(
+		rootObject,
+		aliases,
+		isImage
+	)
 end
 
 local function setText(object, value)
@@ -167,820 +435,1422 @@ local function setText(object, value)
 	end
 end
 
-local function truncateUtf8(value, maximum)
-	local text = tostring(value or "")
-	local ok, length = pcall(utf8.len, text)
-	if not ok or not length or length <= maximum then
-		return text
-	end
-
-	local byteIndex = utf8.offset(text, maximum + 1)
-	return byteIndex and string.sub(text, 1, byteIndex - 1) or text
-end
-
-local function tween(object, duration, properties)
-	if not object or not object.Parent then
+local function tween(
+	object,
+	duration,
+	properties
+)
+	if not object
+		or not object.Parent
+	then
 		return
 	end
+
 	TweenService:Create(
 		object,
-		TweenInfo.new(duration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		TweenInfo.new(
+			duration,
+			Enum.EasingStyle.Quad,
+			Enum.EasingDirection.Out
+		),
 		properties
 	):Play()
 end
 
-local function taggedInPlayerGui(tagName)
-	for _, object in ipairs(CollectionService:GetTagged(tagName)) do
-		if object:IsA("GuiObject") and object:IsDescendantOf(playerGui) then
-			return object
-		end
-	end
-	return nil
-end
-
-local function waitForDungeonHUD(timeout)
-	local hud = playerGui:FindFirstChild("DungeonHUD")
-	if hud and hud:IsA("ScreenGui") then
-		return hud
-	end
-
-	local deadline = os.clock() + (timeout or 10)
-	while os.clock() < deadline do
-		task.wait(0.05)
-		hud = playerGui:FindFirstChild("DungeonHUD")
-		if hud and hud:IsA("ScreenGui") then
-			return hud
-		end
-	end
-
-	return nil
-end
-
--- Primary resolution strategy:
--- 1) exact DungeonHUD authored by the designer;
--- 2) exact known child names inside that ScreenGui;
--- 3) CollectionService tags only as a fallback.
---
--- This prevents false positives from SettingsUI while avoiding a hard
--- dependency on tags being copied into PlayerGui.
-local hud = waitForDungeonHUD(10)
-
-local function directOrTagged(parent, exactName, tagName)
-	if parent then
-		local direct = parent:FindFirstChild(exactName)
-		if direct and direct:IsA("GuiObject") then
-			return direct
-		end
-	end
-	return taggedInPlayerGui(tagName)
-end
-
-local objectivePanel = directOrTagged(hud, "ObjectivePanel", TAGS.Objective)
-local playerStatus = directOrTagged(hud, "PlayerStatus", TAGS.PlayerStatus)
-local miniMap = directOrTagged(hud, "MiniMap", TAGS.Minimap)
-local missionsPanel = directOrTagged(hud, "MissionsPanel", TAGS.Missions)
-
-if not hud then
-	warn("[AuthoredHUD] DungeonHUD nao foi encontrado em PlayerGui.")
-end
-
-if not objectivePanel then
-	warn("[AuthoredHUD] ObjectivePanel nao encontrado dentro de DungeonHUD.")
-end
-if not playerStatus then
-	warn("[AuthoredHUD] PlayerStatus nao encontrado dentro de DungeonHUD.")
-end
-if not miniMap then
-	warn("[AuthoredHUD] MiniMap nao encontrado dentro de DungeonHUD.")
-end
-if not missionsPanel then
-	warn("[AuthoredHUD] MissionsPanel nao encontrado dentro de DungeonHUD.")
-end
-
-if not objectivePanel and not playerStatus and not miniMap and not missionsPanel then
-	player:SetAttribute("DungeonArtHUDControllerReady", false)
-	player:SetAttribute("DungeonArtHUDFailure", "AuthoredDungeonHUDNotFound")
-	warn("[AuthoredHUD] Nenhum bloco manual foi encontrado. Controller encerrado.")
-	return
-end
-
-if not hud then
-	local function ownerScreenGui(object)
-		local current = object
-		while current and current ~= playerGui do
-			if current:IsA("ScreenGui") then
-				return current
-			end
-			current = current.Parent
-		end
-		return nil
-	end
-
-	hud = ownerScreenGui(objectivePanel)
-		or ownerScreenGui(playerStatus)
-		or ownerScreenGui(miniMap)
-		or ownerScreenGui(missionsPanel)
-end
-
-if hud then
-	hud.Enabled = true
-	hud.ResetOnSpawn = false
-	hud:SetAttribute("ResponsiveGenericOptOut", true)
-	hud:SetAttribute("ControllerVersion", "AuthoredHUDStrictV11ReadableDistance")
-	hud:SetAttribute("ControllerCreatesVisuals", false)
-end
-
--- Compatibility flag for legacy gameplay controllers such as SprintController.
--- It prevents them from showing their old fallback stamina HUD.
-player:SetAttribute("DungeonUnifiedHUDReady", true)
----------------------------------------------------------------------
--- Objective
----------------------------------------------------------------------
-
-local objectiveTitle
-local objectiveDescription
-local objectiveCounter
-local objectiveProgressBackground
-local objectiveProgressFill
-local objectiveCompletedIcon
-local objectiveFullX
-local currentObjective
-local lastObjectiveProgress
-
-local islandClearFeedbackSerial =
-	math.floor(
-		tonumber(
-			workspace:GetAttribute(
-				"DungeonIslandClearFeedbackSerial"
-			)
-		) or 0
-	)
-
-local objectivePulseSerial = 0
-
-if objectivePanel then
-	objectiveTitle = authored(
-		objectivePanel,
-		"Objective.Title",
-		{ "Title", "ObjectiveTitle", "Titulo" },
-		isText
-	)
-
-	objectiveDescription = authored(
-		objectivePanel,
-		"Objective.Description",
-		{ "Description", "ObjectiveDescription", "Descricao", "Detail" },
-		isText
-	)
-
-	objectiveCounter = authored(
-		objectivePanel,
-		"Objective.Counter",
-		{ "Counter", "ProgressText", "ObjectiveCounter", "Count" },
-		isText
-	)
-
-	objectiveProgressBackground = authored(
-		objectivePanel,
-		"Objective.ProgressBackground",
-		{ "ProgressBackground", "BarBackground", "Track" },
-		isGui
-	)
-
-	objectiveProgressFill = authored(
-		objectivePanel,
-		"Objective.ProgressFill",
-		{ "ProgressFill", "BarFill", "Fill" },
-		isGui
-	)
-
-	objectiveCompletedIcon = authored(
-		objectivePanel,
-		"Objective.CompletedIcon",
-		{ "CompletedIcon", "CompleteIcon", "CheckIcon", "Completed" },
-		isGui
-	)
-
-	setText(objectiveTitle, "Objetivo")
-
-	if objectiveProgressFill then
-		local x = objectiveProgressFill.Size.X
-		if objectiveProgressBackground then
-			if objectiveProgressFill.Parent == objectiveProgressBackground then
-				objectiveFullX = UDim.new(1, 0)
-			elseif objectiveProgressFill.Parent == objectiveProgressBackground.Parent then
-				objectiveFullX = objectiveProgressBackground.Size.X
-			end
-		end
-		objectiveFullX = objectiveFullX or x
-	end
-end
-
-local function readObjective()
-	return {
-		State = tostring(workspace:GetAttribute("DungeonObjectiveState") or "Inactive"),
-		Id = workspace:GetAttribute("DungeonObjectiveId"),
-		Title = workspace:GetAttribute("DungeonObjectiveTitle"),
-		Description = workspace:GetAttribute("DungeonObjectiveDescription"),
-		RoundIndex = workspace:GetAttribute("DungeonObjectiveRoundIndex"),
-		IslandIndex = workspace:GetAttribute("DungeonObjectiveIslandIndex"),
-		GlobalIslandIndex = workspace:GetAttribute("DungeonObjectiveGlobalIslandIndex"),
-		Progress = workspace:GetAttribute("DungeonObjectiveProgress") or 0,
-		Target = workspace:GetAttribute("DungeonObjectiveTarget") or 1,
-		WaypointEscalated = workspace:GetAttribute("DungeonObjectiveWaypointEscalated") == true,
-		ExitLocked = workspace:GetAttribute("DungeonObjectiveExitLocked") == true,
-	}
-end
-
-local function objectiveIslandMetadata(globalIndex)
-	globalIndex = math.floor(
-		tonumber(globalIndex) or 0
-	)
-
-	if globalIndex <= 0 then
-		return nil
-	end
-
-	for _, folder in ipairs(
-		CollectionService:GetTagged(
-			"DungeonGameplayMarkers"
-		)
-	) do
-		if folder:IsA("Folder")
-			and folder.Parent
-		then
-			local island = folder.Parent
-
-			local index =
-				math.floor(
-					tonumber(
-						island:GetAttribute(
-							"GlobalIslandIndex"
-						)
-							or folder:GetAttribute(
-								"GlobalIslandIndex"
-							)
-					) or 0
-				)
-
-			if index == globalIndex then
-				return {
-					Island = island,
-					GlobalIslandIndex = index,
-					IslandLevel =
-						math.max(
-							1,
-							math.floor(
-								tonumber(
-									island:GetAttribute(
-										"IslandLevel"
-									)
-								) or 1
-							)
-						),
-					RecommendedLevel =
-						math.max(
-							1,
-							math.floor(
-								tonumber(
-									island:GetAttribute(
-										"RecommendedLevel"
-									)
-								)
-									or tonumber(
-										island:GetAttribute(
-											"IslandLevel"
-										)
-									)
-									or 1
-							)
-						),
-					Cleared =
-						island:GetAttribute(
-							"Cleared"
-						) == true,
-					CombatState =
-						tostring(
-							island:GetAttribute(
-								"CombatState"
-							) or "Dormant"
-						),
-				}
-			end
-		end
-	end
-
-	return nil
-end
-
-local function setFillRatio(fill, fullX, ratio, duration)
-	if not fill or not fullX then
-		return
-	end
-
-	ratio = math.clamp(tonumber(ratio) or 0, 0, 1)
-	local y = fill.Size.Y
-
-	tween(fill, duration or 0.20, {
-		Size = UDim2.new(
-			fullX.Scale * ratio,
-			math.floor(fullX.Offset * ratio + 0.5),
-			y.Scale,
-			y.Offset
-		),
-	})
-end
-
-local function pulseAuthoredText(
-	textObject,
-	scale,
-	upSeconds,
-	downSeconds
+local function resolveBar(
+	rootObject,
+	aliases
 )
-	if not textObject
-		or not textObject.Parent
-		or not (
-			textObject:IsA("TextLabel")
-				or textObject:IsA("TextButton")
-		)
-	then
-		return
-	end
-
-	objectivePulseSerial += 1
-	local serial = objectivePulseSerial
-	local originalSize = textObject.TextSize
-
-	if originalSize <= 0 then
-		return
-	end
-
-	local up =
-		TweenService:Create(
-			textObject,
-			TweenInfo.new(
-				upSeconds,
-				Enum.EasingStyle.Quad,
-				Enum.EasingDirection.Out
-			),
-			{
-				TextSize = originalSize * scale,
-			}
-		)
-
-	up:Play()
-
-	up.Completed:Once(function()
-		if objectivePulseSerial ~= serial
-			or not textObject.Parent
-		then
-			return
-		end
-
-		TweenService:Create(
-			textObject,
-			TweenInfo.new(
-				downSeconds,
-				Enum.EasingStyle.Back,
-				Enum.EasingDirection.Out
-			),
-			{
-				TextSize = originalSize,
-			}
-		):Play()
-	end)
-end
-
-local function pulseObjectiveClear()
-	pulseAuthoredText(
-		objectiveTitle,
-		IslandAdvanceFeedbackConfig.ClearPulseScale,
-		IslandAdvanceFeedbackConfig.ClearPulseUpSeconds,
-		IslandAdvanceFeedbackConfig.ClearPulseDownSeconds
+	local barRoot = gui(
+		rootObject,
+		aliases
 	)
 
-	pulseAuthoredText(
-		objectiveDescription,
-		1
-			+ (
-				IslandAdvanceFeedbackConfig.ClearPulseScale - 1
-			) * 0.55,
-		IslandAdvanceFeedbackConfig.ClearPulseUpSeconds,
-		IslandAdvanceFeedbackConfig.ClearPulseDownSeconds
-	)
-end
-
-local function updateIslandClearFeedbackSerial()
-	local serial =
-		math.floor(
-			tonumber(
-				workspace:GetAttribute(
-					"DungeonIslandClearFeedbackSerial"
-				)
-			) or 0
-		)
-
-	if serial <= islandClearFeedbackSerial then
-		return
-	end
-
-	islandClearFeedbackSerial = serial
-
-	player:SetAttribute(
-		"DungeonIslandClearFeedbackSerialSeen",
-		serial
-	)
-	player:SetAttribute(
-		"DungeonIslandClearFeedbackSeenAt",
-		workspace:GetServerTimeNow()
-	)
-
-	task.defer(pulseObjectiveClear)
-end
-
-local function advanceMarkerScale()
-	if workspace:GetAttribute(
-		"DungeonIslandAdvanceActive"
-	) ~= true
-	then
-		return 1
-	end
-
-	local minimum =
-		IslandAdvanceFeedbackConfig.MarkerPulseMinimumScale
-
-	local maximum =
-		IslandAdvanceFeedbackConfig.MarkerPulseMaximumScale
-
-	local wave =
-		(
-			math.sin(
-				os.clock()
-					* math.pi
-					* 2
-					* IslandAdvanceFeedbackConfig
-						.MarkerPulseCyclesPerSecond
-			)
-				+ 1
-		) * 0.5
-
-	return minimum
-		+ (maximum - minimum) * wave
-end
-
-local function renderObjective(snapshot)
-	snapshot = snapshot or readObjective()
-	currentObjective = snapshot
-
-	if not objectivePanel then
-		return
-	end
-
-	local state =
-		tostring(snapshot.State or "Inactive")
-
-	local active =
-		state == "Active"
-			or state == "Completed"
-
-	objectivePanel.Visible = active
-
-	if not active then
-		return
-	end
-
-	local progress =
-		math.max(
-			0,
-			math.floor(
-				tonumber(snapshot.Progress) or 0
-			)
-		)
-
-	local target =
-		math.max(
-			1,
-			math.floor(
-				tonumber(snapshot.Target) or 1
-			)
-		)
-
-	local metadata =
-		objectiveIslandMetadata(
-			snapshot.GlobalIslandIndex
-				or workspace:GetAttribute(
-					"DungeonCurrentObjectiveIsland"
-				)
-		)
-
-	if state == "Completed" then
-		setText(
-			objectiveTitle,
-			workspace:GetAttribute(
-				"DungeonLinearRouteComplete"
-			) == true
-				and "ROTA CONCLUÍDA"
-				or "ILHA LIMPA"
-		)
-
-		local routeComplete =
-			workspace:GetAttribute(
-				"DungeonLinearRouteComplete"
-			) == true
-
-		local nextIsland =
-			tonumber(
-				workspace:GetAttribute(
-					"DungeonIslandAdvanceToIsland"
-				)
-					or workspace:GetAttribute(
-						"DungeonNextCombatIslandUnlocked"
-					)
-			)
-
-		setText(
-			objectiveDescription,
-			routeComplete
-				and IslandAdvanceFeedbackConfig.RouteCompleteDescription
-				or nextIsland
-					and string.format(
-						IslandAdvanceFeedbackConfig
-							.AdvanceDescriptionFormat,
-						math.floor(nextIsland)
-					)
-					or "AVANCE"
-		)
-
-		setText(
-			objectiveCounter,
-			"✓"
-		)
-
-		setFillRatio(
-			objectiveProgressFill,
-			objectiveFullX,
-			1,
-			0.24
-		)
-	else
-		setText(
-			objectiveTitle,
-			truncateUtf8(
-				snapshot.Title
-					or "DERROTE OS INIMIGOS",
-				OBJECTIVE_DESCRIPTION_MAX
-			)
-		)
-
-		local description
-
-		if metadata then
-			description =
-				string.format(
-					"ILHA %d  •  RECOMENDADO: NÍVEL %d",
-					metadata.GlobalIslandIndex,
-					metadata.RecommendedLevel
-				)
-		else
-			description =
-				snapshot.Description
-					or "ELIMINE TODOS OS INIMIGOS"
-		end
-
-		setText(
-			objectiveDescription,
-			truncateUtf8(
-				description,
-				OBJECTIVE_DESCRIPTION_MAX
-			)
-		)
-
-		setText(
-			objectiveCounter,
-			string.format(
-				"%d / %d",
-				math.min(progress, target),
-				target
-			)
-		)
-
-		setFillRatio(
-			objectiveProgressFill,
-			objectiveFullX,
-			progress / target,
-			0.28
-		)
-	end
-
-	if objectiveCompletedIcon then
-		objectiveCompletedIcon.Visible =
-			state == "Completed"
-	end
-
-	objectivePanel:SetAttribute(
-		"RuntimeCombatState",
-		metadata
-			and metadata.CombatState
-			or state
-	)
-
-	objectivePanel:SetAttribute(
-		"RuntimeGlobalIslandIndex",
-		metadata
-			and metadata.GlobalIslandIndex
-			or snapshot.GlobalIslandIndex
-	)
-
-	objectivePanel:SetAttribute(
-		"RuntimeRecommendedLevel",
-		metadata
-			and metadata.RecommendedLevel
-			or nil
-	)
-
-	lastObjectiveProgress = progress
-end
-
----------------------------------------------------------------------
--- Player Status
----------------------------------------------------------------------
-
-local playerName
-local avatarImage
-local levelText
-
-local function resolveBar(root, rootAliases, label)
-	if not root then
-		return nil
-	end
-
-	local barRoot = authored(root, label, rootAliases, isGui)
 	if not barRoot then
 		return nil
 	end
 
-	local background = authored(
+	local fill = gui(
 		barRoot,
-		label .. ".Background",
-		{ "Background", "BarBackground", "Track", "Back" },
-		isGui
+		{
+			"Fill", "ProgressFill", "BarFill",
+			"ValueFill", "Foreground",
+		}
 	)
 
-	local fill = authored(
+	local background = gui(
 		barRoot,
-		label .. ".Fill",
-		{ "Fill", "BarFill", "ProgressFill", "ValueFill" },
-		isGui
+		{
+			"Background", "ProgressBackground",
+			"BarBackground", "Track",
+		}
 	)
 
-	local value = authored(
+	local value = text(
 		barRoot,
-		label .. ".Value",
-		{ "Value", "ValueText", "Counter", "Amount", "Text" },
-		isText
+		{
+			"Value", "ValueText", "Counter",
+			"ProgressText", "Amount", "Text",
+		}
 	)
 
 	local fullX
+
 	if fill then
-		if background then
-			if fill.Parent == background then
-				fullX = UDim.new(1, 0)
-			elseif fill.Parent == background.Parent then
-				fullX = background.Size.X
-			end
+		if background
+			and fill.Parent == background
+		then
+			fullX = UDim.new(1, 0)
+		elseif background
+			and fill.Parent == background.Parent
+		then
+			fullX = background.Size.X
+		else
+			fullX = fill.Size.X
 		end
-		fullX = fullX or fill.Size.X
 	end
 
 	return {
 		Root = barRoot,
-		Background = background,
 		Fill = fill,
+		Background = background,
 		Value = value,
 		FullX = fullX,
 	}
 end
 
-local healthBar
-local staminaBar
-local xpBar
-
-if playerStatus then
-	playerStatus.Visible = true
-
-	playerName = authored(
-		playerStatus,
-		"PlayerStatus.PlayerName",
-		{ "PlayerName", "DisplayName", "NameLabel", "Username" },
-		isText
-	)
-
-	local portrait = authored(
-		playerStatus,
-		"PlayerStatus.Portrait",
-		{ "Portrait", "PlayerPortrait", "AvatarHolder" },
-		isGui
-	) or playerStatus
-
-	avatarImage = authored(
-		portrait,
-		"PlayerStatus.AvatarImage",
-		{ "AvatarImage", "Avatar", "Headshot", "PlayerImage" },
-		function(object)
-			return object:IsA("ImageLabel") or object:IsA("ImageButton")
-		end
-	)
-
-	levelText = authored(
-		portrait,
-		"PlayerStatus.LevelText",
-		{ "LevelText", "Level", "Lvl", "PlayerLevel" },
-		isText
-	) or authored(
-		playerStatus,
-		"PlayerStatus.LevelText",
-		{ "LevelText", "Level", "Lvl", "PlayerLevel" },
-		isText
-	)
-
-	healthBar = resolveBar(
-		playerStatus,
-		{ "HealthBar", "HPBar", "Health", "Vida" },
-		"HealthBar"
-	)
-
-	staminaBar = resolveBar(
-		playerStatus,
-		{ "StaminaBar", "EnergyBar", "Stamina", "Energia" },
-		"StaminaBar"
-	)
-
-	xpBar = resolveBar(
-		playerStatus,
-		{ "XPBar", "ExperienceBar", "ExpBar", "XP", "Experience" },
-		"XPBar"
-	)
-
-	setText(playerName, player.DisplayName)
-end
-
-local function setBar(bar, ratio, text)
+local function setBar(
+	bar,
+	ratio,
+	valueText
+)
 	if not bar then
 		return
 	end
 
-	setText(bar.Value, text)
-	setFillRatio(bar.Fill, bar.FullX, ratio, 0.18)
+	setText(bar.Value, valueText)
+
+	if bar.Fill and bar.FullX then
+		ratio = math.clamp(
+			tonumber(ratio) or 0,
+			0,
+			1
+		)
+
+		local y = bar.Fill.Size.Y
+
+		tween(
+			bar.Fill,
+			0.15,
+			{
+				Size = UDim2.new(
+					bar.FullX.Scale * ratio,
+					math.floor(
+						bar.FullX.Offset
+							* ratio
+							+ 0.5
+					),
+					y.Scale,
+					y.Offset
+				),
+			}
+		)
+	end
 end
 
-local currentCharacter
-local currentHumanoid
-local characterConnections = {}
+---------------------------------------------------------------------
+-- Binding state
+---------------------------------------------------------------------
 
-local function clearCharacterConnections()
-	for _, connection in ipairs(characterConnections) do
+local boundHud
+local refs = {}
+
+
+---------------------------------------------------------------------
+-- Static front-facing 3D character portrait
+---------------------------------------------------------------------
+
+local PORTRAIT_VERSION =
+	"StaticCharacterFrontViewportV2"
+
+local portraitState = {
+	Host = nil,
+	Viewport = nil,
+	WorldModel = nil,
+	Camera = nil,
+	Character = nil,
+	BuildSerial = 0,
+	Connections = {},
+	PendingRebuild = false,
+}
+
+local function disconnectPortraitConnections()
+	for _, connection in ipairs(
+		portraitState.Connections
+	) do
 		connection:Disconnect()
 	end
-	table.clear(characterConnections)
-end
 
-local function updateHealth()
-	if not currentHumanoid or not currentHumanoid.Parent then
-		setBar(healthBar, 0, "0 / 0")
-		return
-	end
-
-	local maximum = math.max(1, currentHumanoid.MaxHealth)
-	local current = math.max(0, currentHumanoid.Health)
-
-	setBar(
-		healthBar,
-		current / maximum,
-		string.format("%d / %d", math.floor(current + 0.5), math.floor(maximum + 0.5))
+	table.clear(
+		portraitState.Connections
 	)
 end
 
-local function updateStamina()
-	if not currentCharacter or not currentCharacter.Parent then
-		return
+local function destroyPortraitViewport()
+	if portraitState.Viewport
+		and portraitState.Viewport.Parent
+	then
+		portraitState.Viewport:Destroy()
 	end
 
-	local maximum = tonumber(currentCharacter:GetAttribute("SprintStaminaMax"))
-	local current = tonumber(currentCharacter:GetAttribute("SprintStamina"))
+	portraitState.Host = nil
+	portraitState.Viewport = nil
+	portraitState.WorldModel = nil
+	portraitState.Camera = nil
+	portraitState.Character = nil
+end
 
-	if not maximum or maximum <= 0 or current == nil then
-		return
-	end
-
-	setBar(
-		staminaBar,
-		current / maximum,
-		string.format("%.1f / %.1f", math.max(0, current), maximum)
+local function setPortraitDiagnostics(
+	ready,
+	reason
+)
+	player:SetAttribute(
+		"DungeonPortrait3DReady",
+		ready == true
+	)
+	player:SetAttribute(
+		"DungeonPortrait3DVersion",
+		PORTRAIT_VERSION
+	)
+	player:SetAttribute(
+		"DungeonPortrait3DMode",
+		"StaticFrontFacingCloneNoAnimation"
+	)
+	player:SetAttribute(
+		"DungeonPortrait3DLastStatus",
+		tostring(reason or "Unknown")
 	)
 end
 
-local lastLevel =
-	math.max(
+local function removeAnimationAndRuntimeObjects(
+	characterClone
+)
+	for _, descendant in ipairs(
+		characterClone:GetDescendants()
+	) do
+		if descendant:IsA("BaseScript")
+			or descendant:IsA("Animator")
+			or descendant:IsA("AnimationController")
+			or descendant:IsA("BillboardGui")
+			or descendant:IsA("SurfaceGui")
+			or descendant:IsA("Highlight")
+		then
+			descendant:Destroy()
+
+		elseif descendant:IsA("Motor6D") then
+			-- Remove any pose inherited from a running/jumping animation.
+			descendant.Transform =
+				CFrame.identity
+
+		elseif descendant:IsA("BasePart") then
+			descendant.Anchored = true
+			descendant.CanCollide = false
+			descendant.CanTouch = false
+			descendant.CanQuery = false
+			descendant.AssemblyLinearVelocity =
+				Vector3.zero
+			descendant.AssemblyAngularVelocity =
+				Vector3.zero
+		end
+	end
+
+	local humanoid =
+		characterClone
+			:FindFirstChildOfClass(
+				"Humanoid"
+			)
+
+	if humanoid then
+		humanoid.AutoRotate = false
+		humanoid.PlatformStand = true
+		humanoid.WalkSpeed = 0
+		humanoid.JumpPower = 0
+		humanoid.NameDisplayDistance = 0
+		humanoid.HealthDisplayType =
+			Enum.HumanoidHealthDisplayType
+				.AlwaysOff
+		humanoid.DisplayDistanceType =
+			Enum.HumanoidDisplayDistanceType
+				.None
+	end
+end
+
+local function cloneCurrentCharacter(
+	character
+)
+	if not character
+		or not character.Parent
+	then
+		return nil
+	end
+
+	local previousArchivable =
+		character.Archivable
+
+	character.Archivable = true
+
+	local ok, clone =
+		pcall(
+			character.Clone,
+			character
+		)
+
+	character.Archivable =
+		previousArchivable
+
+	if not ok
+		or not clone
+	then
+		return nil
+	end
+
+	clone.Name =
+		"PortraitCharacter"
+
+	removeAnimationAndRuntimeObjects(
+		clone
+	)
+
+	return clone
+end
+
+local function framePortraitCamera(
+	characterClone,
+	camera
+)
+	local boxCFrame,
+		boxSize =
+			characterClone:GetBoundingBox()
+
+	local fov = 28
+
+	camera.FieldOfView = fov
+
+	local halfHeight =
+		math.max(
+			0.5,
+			boxSize.Y * 0.5
+		)
+
+	local verticalDistance =
+		halfHeight
+			/ math.tan(
+				math.rad(fov * 0.5)
+			)
+
+	local distance =
+		math.max(
+			4,
+			verticalDistance * 1.08,
+			boxSize.X * 1.8,
+			boxSize.Z * 2.2
+		)
+
+	local target =
+		boxCFrame.Position
+			+ Vector3.new(
+				0,
+				boxSize.Y * 0.035,
+				0
+			)
+
+	local cameraPosition =
+		target
+			+ Vector3.new(
+				0,
+				boxSize.Y * 0.015,
+				distance
+			)
+
+	camera.CFrame =
+		CFrame.lookAt(
+			cameraPosition,
+			target
+		)
+end
+
+local function createPortraitViewport(
+	host
+)
+	local old =
+		host:FindFirstChild(
+			"DungeonCharacterViewport"
+		)
+
+	if old then
+		old:Destroy()
+	end
+
+	local viewport =
+		Instance.new("ViewportFrame")
+
+	viewport.Name =
+		"DungeonCharacterViewport"
+	viewport.BackgroundTransparency = 1
+	viewport.BorderSizePixel = 0
+	viewport.Size =
+		UDim2.fromScale(1, 1)
+	viewport.Position =
+		UDim2.fromScale(0, 0)
+	viewport.AnchorPoint =
+		Vector2.zero
+	viewport.Active = false
+	viewport.ClipsDescendants = true
+
+	if host:IsA("GuiObject") then
+		viewport.ZIndex =
+			host.ZIndex
+	end
+
+	viewport.Ambient =
+		Color3.fromRGB(
+			175,
+			175,
+			175
+		)
+
+	viewport.LightColor =
+		Color3.fromRGB(
+			255,
+			245,
+			230
+		)
+
+	viewport.LightDirection =
+		Vector3.new(
+			-0.7,
+			-1,
+			-0.5
+		)
+
+	local corner =
+		host:FindFirstChildWhichIsA(
+			"UICorner"
+		)
+
+	if corner then
+		corner:Clone().Parent =
+			viewport
+	end
+
+	viewport.Parent = host
+
+	local worldModel =
+		Instance.new("WorldModel")
+	worldModel.Name =
+		"PortraitWorld"
+	worldModel.Parent =
+		viewport
+
+	local camera =
+		Instance.new("Camera")
+	camera.Name =
+		"PortraitCamera"
+	camera.Parent =
+		viewport
+
+	viewport.CurrentCamera =
+		camera
+
+	return viewport,
+		worldModel,
+		camera
+end
+
+local function buildStaticPortrait(
+	host,
+	character
+)
+	if not host
+		or not host.Parent
+		or not host:IsA("GuiObject")
+	then
+		setPortraitDiagnostics(
+			false,
+			"PortraitHostMissing"
+		)
+		return false
+	end
+
+	local clone =
+		cloneCurrentCharacter(
+			character
+		)
+
+	if not clone then
+		setPortraitDiagnostics(
+			false,
+			"CharacterCloneFailed"
+		)
+		return false
+	end
+
+	destroyPortraitViewport()
+
+	local viewport,
+		worldModel,
+		camera =
+			createPortraitViewport(
+				host
+			)
+
+	portraitState.Host = host
+	portraitState.Viewport =
+		viewport
+	portraitState.WorldModel =
+		worldModel
+	portraitState.Camera =
+		camera
+	portraitState.Character =
+		character
+	portraitState.BuildSerial += 1
+
+	clone.Parent =
+		worldModel
+
+	-- Move the clone to an isolated local coordinate space and FORCE a
+	-- deterministic front-facing orientation. The portrait no longer inherits
+	-- the direction the live Character happened to be facing in Workspace.
+	clone:PivotTo(
+		CFrame.new(0, 0, 0)
+	)
+
+	-- Roblox characters normally face their local -Z direction. The portrait
+	-- camera is placed on +Z looking toward the origin, so rotating the clone
+	-- 180 degrees around Y makes the avatar face the camera/screen.
+	clone:PivotTo(
+		CFrame.Angles(
+			0,
+			math.rad(180),
+			0
+		)
+	)
+
+	framePortraitCamera(
+		clone,
+		camera
+	)
+
+	-- The authored ImageLabel remains as the layout/mask holder.
+	if host:IsA("ImageLabel")
+		or host:IsA("ImageButton")
+	then
+		host.ImageTransparency = 1
+	end
+
+	player:SetAttribute(
+		"DungeonPortrait3DBuildSerial",
+		portraitState.BuildSerial
+	)
+
+	setPortraitDiagnostics(
+		true,
+		"CharacterCloned"
+	)
+
+	return true
+end
+
+local function portraitHostFromStatus(
+	status
+)
+	if not status then
+		return nil
+	end
+
+	-- Prefer the authored AvatarImage because it already has the exact
+	-- position/size chosen in Studio. Portrait itself is the fallback.
+	return status.AvatarImage
+		or status.Portrait
+end
+
+local function rebuildPortraitSoon()
+	if portraitState.PendingRebuild then
+		return
+	end
+
+	portraitState.PendingRebuild = true
+
+	task.delay(
+		0.12,
+		function()
+			portraitState.PendingRebuild =
+				false
+
+			local status =
+				refs.Status
+
+			local host =
+				portraitHostFromStatus(
+					status
+				)
+
+			local character =
+				player.Character
+
+			if host
+				and character
+				and character.Parent
+			then
+				buildStaticPortrait(
+					host,
+					character
+				)
+			end
+		end
+	)
+end
+
+local function bindPortraitCharacterSignals(
+	character
+)
+	disconnectPortraitConnections()
+
+	if not character then
+		return
+	end
+
+	local function relevantChild(
+		child
+	)
+		return child:IsA("Accessory")
+			or child:IsA("Tool")
+			or child:IsA("Shirt")
+			or child:IsA("Pants")
+			or child:IsA("ShirtGraphic")
+			or child:IsA("BodyColors")
+	end
+
+	table.insert(
+		portraitState.Connections,
+		character.ChildAdded:Connect(
+			function(child)
+				if relevantChild(child) then
+					rebuildPortraitSoon()
+				end
+			end
+		)
+	)
+
+	table.insert(
+		portraitState.Connections,
+		character.ChildRemoved:Connect(
+			function(child)
+				if relevantChild(child) then
+					rebuildPortraitSoon()
+				end
+			end
+		)
+	)
+end
+
+local function ensureStaticPortrait()
+	local status =
+		refs.Status
+
+	local host =
+		portraitHostFromStatus(
+			status
+		)
+
+	local character =
+		player.Character
+
+	if not host
+		or not character
+		or not character.Parent
+	then
+		return
+	end
+
+	if portraitState.Host ~= host
+		or portraitState.Character
+			~= character
+		or not portraitState.Viewport
+		or not portraitState.Viewport.Parent
+	then
+		bindPortraitCharacterSignals(
+			character
+		)
+
+		buildStaticPortrait(
+			host,
+			character
+		)
+	end
+end
+
+local bindSerial = 0
+local lastBindSignature = ""
+local dirty = true
+
+local function instancePath(object)
+	if not object then
+		return "nil"
+	end
+
+	local ok, fullName =
+		pcall(object.GetFullName, object)
+
+	return ok and fullName or object.Name
+end
+
+local function reportBinding()
+	local signature = table.concat({
+		instancePath(boundHud),
+		instancePath(refs.ObjectivePanel),
+		instancePath(refs.PlayerStatus),
+		instancePath(refs.MiniMap),
+		instancePath(refs.MissionsPanel),
+	}, " | ")
+
+	if signature == lastBindSignature then
+		return
+	end
+
+	lastBindSignature = signature
+
+	player:SetAttribute(
+		"DungeonArtHUDBindReport",
+		signature
+	)
+
+	print(
+		"[AuthoredHUD V15] Binding: "
+			.. signature
+	)
+end
+
+local function bindObjective(panel)
+	local result = {
+		Panel = panel,
+	}
+
+	if not panel then
+		return result
+	end
+
+	result.Title = text(
+		panel,
+		{
+			"Title", "ObjectiveTitle", "Titulo",
+		}
+	)
+
+	result.Description = text(
+		panel,
+		{
+			"Description",
+			"ObjectiveDescription",
+			"Descricao",
+			"Detail",
+		}
+	)
+
+	result.Counter = text(
+		panel,
+		{
+			"Counter", "ProgressText",
+			"ObjectiveCounter", "Count",
+		}
+	)
+
+	result.ProgressBackground = gui(
+		panel,
+		{
+			"ProgressBackground",
+			"BarBackground",
+			"Track",
+		}
+	)
+
+	result.ProgressFill = gui(
+		panel,
+		{
+			"ProgressFill",
+			"BarFill",
+			"Fill",
+		}
+	)
+
+	result.CompletedIcon = gui(
+		panel,
+		{
+			"CompletedIcon",
+			"CompleteIcon",
+			"CheckIcon",
+			"Completed",
+		}
+	)
+
+	if result.ProgressFill then
+		if result.ProgressBackground
+			and result.ProgressFill.Parent
+				== result.ProgressBackground
+		then
+			result.FullX = UDim.new(1, 0)
+		elseif result.ProgressBackground
+			and result.ProgressFill.Parent
+				== result.ProgressBackground.Parent
+		then
+			result.FullX =
+				result.ProgressBackground.Size.X
+		else
+			result.FullX =
+				result.ProgressFill.Size.X
+		end
+	end
+
+	return result
+end
+
+local function bindStatus(panel)
+	local result = {
+		Panel = panel,
+	}
+
+	if not panel then
+		return result
+	end
+
+	result.PlayerName = text(
+		panel,
+		{
+			"PlayerName", "DisplayName",
+			"NameLabel", "Username",
+		}
+	)
+
+	local portrait = gui(
+		panel,
+		{
+			"Portrait", "PlayerPortrait",
+			"AvatarHolder", "AvatarContainer",
+		}
+	) or panel
+
+	result.Portrait = portrait
+
+	result.AvatarImage = image(
+		portrait,
+		{
+			"AvatarImage", "Avatar",
+			"Headshot", "PlayerImage",
+		}
+	)
+
+	result.LevelText = text(
+		portrait,
+		{
+			"LevelText", "Level",
+			"Lvl", "PlayerLevel",
+		}
+	) or text(
+		panel,
+		{
+			"LevelText", "Level",
+			"Lvl", "PlayerLevel",
+		}
+	)
+
+	result.HealthBar = resolveBar(
+		panel,
+		{
+			"HealthBar", "HPBar",
+			"Health", "Vida",
+		}
+	)
+
+	result.StaminaBar = resolveBar(
+		panel,
+		{
+			"StaminaBar", "EnergyBar",
+			"Stamina", "Energia",
+		}
+	)
+
+	result.XPBar = resolveBar(
+		panel,
+		{
+			"XPBar", "ExperienceBar",
+			"ExpBar", "XP", "Experience",
+		}
+	)
+
+	return result
+end
+
+local function bindMinimap(panel)
+	local result = {
+		Panel = panel,
+	}
+
+	if not panel then
+		return result
+	end
+
+	result.MapArea = gui(
+		panel,
+		{
+			"MapArea", "MapContent",
+			"ContentArea", "RadarArea",
+		}
+	) or panel
+
+	result.IslandContainer = gui(
+		result.MapArea,
+		{
+			"IslandContainer",
+			"IslandsContainer",
+			"Islands",
+			"IslandLayer",
+		}
+	)
+
+	result.MarkerContainer = gui(
+		result.MapArea,
+		{
+			"MarkerContainer",
+			"MarkersContainer",
+			"Markers",
+			"MarkerLayer",
+		}
+	)
+
+	result.PlayerArrow = gui(
+		result.MapArea,
+		{
+			"PlayerArrow", "PlayerMarker",
+			"PlayerIcon", "Arrow",
+		}
+	)
+
+	result.NorthLabel = gui(
+		result.MapArea,
+		{
+			"NorthLabel", "North",
+			"NorthIndicator",
+		}
+	)
+
+	if result.IslandContainer then
+		result.SmallIslandTemplate = gui(
+			result.IslandContainer,
+			{
+				"SmallIslandTemplate",
+				"SmallIsland",
+				"IslandSmall",
+			}
+		)
+		result.MediumIslandTemplate = gui(
+			result.IslandContainer,
+			{
+				"MediumIslandTemplate",
+				"MediumIsland",
+				"IslandMedium",
+			}
+		)
+		result.LargeIslandTemplate = gui(
+			result.IslandContainer,
+			{
+				"LargeIslandTemplate",
+				"LargeIsland",
+				"IslandLarge",
+			}
+		)
+
+		for _, template in ipairs({
+			result.SmallIslandTemplate,
+			result.MediumIslandTemplate,
+			result.LargeIslandTemplate,
+		}) do
+			if template then
+				template.Visible = false
+			end
+		end
+	end
+
+	if result.MarkerContainer then
+		result.HostileMobTemplate = gui(
+			result.MarkerContainer,
+			{
+				"HostileMobMarker",
+				"HostileMarker",
+				"EnemyMarker",
+				"MobMarker",
+			}
+		)
+
+		result.ObjectiveMarkerTemplate = gui(
+			result.MarkerContainer,
+			{
+				"CurrentObjectiveMarker",
+				"ObjectiveMarker",
+				"CurrentObjective",
+				"TargetMarker",
+			}
+		)
+
+		for _, template in ipairs({
+			result.HostileMobTemplate,
+			result.ObjectiveMarkerTemplate,
+		}) do
+			if template then
+				template.Visible = false
+			end
+		end
+	end
+
+	return result
+end
+
+local bindingConnections = {}
+local visibilityGuard = false
+local recoverySerial = 0
+
+local function disconnectBindingConnections()
+	for _, connection in ipairs(bindingConnections) do
+		connection:Disconnect()
+	end
+	table.clear(bindingConnections)
+end
+
+local function recordRecovery(reason, target)
+	recoverySerial += 1
+
+	player:SetAttribute(
+		"DungeonArtHUDRecoverySerial",
+		recoverySerial
+	)
+	player:SetAttribute(
+		"DungeonArtHUDLastRecoveryReason",
+		tostring(reason or "Unknown")
+	)
+	player:SetAttribute(
+		"DungeonArtHUDLastRecoveryTarget",
+		target and instancePath(target) or "nil"
+	)
+	player:SetAttribute(
+		"DungeonArtHUDLastRecoveryAt",
+		workspace:GetServerTimeNow()
+	)
+end
+
+local function setVisibleGuarded(object, visible, reason)
+	if not object
+		or not object.Parent
+		or not object:IsA("GuiObject")
+	then
+		return
+	end
+
+	if object.Visible == visible then
+		return
+	end
+
+	visibilityGuard = true
+	object.Visible = visible
+	visibilityGuard = false
+
+	recordRecovery(reason, object)
+end
+
+local function setEnabledGuarded(screenGui, enabled, reason)
+	if not screenGui
+		or not screenGui.Parent
+		or not screenGui:IsA("ScreenGui")
+	then
+		return
+	end
+
+	if screenGui.Enabled == enabled then
+		return
+	end
+
+	visibilityGuard = true
+	screenGui.Enabled = enabled
+	visibilityGuard = false
+
+	recordRecovery(reason, screenGui)
+end
+
+local function enforceCoreVisibility(reason)
+	if boundHud and boundHud.Parent then
+		setEnabledGuarded(
+			boundHud,
+			true,
+			reason or "WatchdogScreenGuiEnabled"
+		)
+		boundHud.ResetOnSpawn = false
+	end
+
+	setVisibleGuarded(
+		refs.ObjectivePanel,
+		true,
+		reason or "WatchdogObjectiveVisible"
+	)
+	setVisibleGuarded(
+		refs.PlayerStatus,
+		true,
+		reason or "WatchdogPlayerStatusVisible"
+	)
+	setVisibleGuarded(
+		refs.MiniMap,
+		true,
+		reason or "WatchdogMiniMapVisible"
+	)
+
+	-- Missions remain intentionally hidden in the simplified MVP.
+	if refs.MissionsPanel
+		and refs.MissionsPanel.Parent
+		and refs.MissionsPanel.Visible
+	then
+		visibilityGuard = true
+		refs.MissionsPanel.Visible = false
+		visibilityGuard = false
+	end
+end
+
+local function watchVisibilityProperties()
+	disconnectBindingConnections()
+
+	if boundHud and boundHud.Parent then
+		table.insert(
+			bindingConnections,
+			boundHud:GetPropertyChangedSignal(
+				"Enabled"
+			):Connect(function()
+				if visibilityGuard then
+					return
+				end
+
+				if not boundHud.Enabled then
+					setEnabledGuarded(
+						boundHud,
+						true,
+						"ScreenGuiEnabledChanged"
+					)
+				end
+			end)
+		)
+
+		table.insert(
+			bindingConnections,
+			boundHud.AncestryChanged:Connect(function()
+				dirty = true
+			end)
+		)
+	end
+
+	for name, panel in pairs({
+		ObjectivePanel = refs.ObjectivePanel,
+		PlayerStatus = refs.PlayerStatus,
+		MiniMap = refs.MiniMap,
+	}) do
+		if panel and panel.Parent then
+			table.insert(
+				bindingConnections,
+				panel:GetPropertyChangedSignal(
+					"Visible"
+				):Connect(function()
+					if visibilityGuard then
+						return
+					end
+
+					if not panel.Visible then
+						setVisibleGuarded(
+							panel,
+							true,
+							name .. "VisibleChanged"
+						)
+					end
+				end)
+			)
+
+			table.insert(
+				bindingConnections,
+				panel.AncestryChanged:Connect(function()
+					dirty = true
+				end)
+			)
+		end
+	end
+end
+
+local function resolveAndBind()
+	local hud = ensureHud()
+
+	if not hud then
+		player:SetAttribute(
+			"DungeonArtHUDControllerReady",
+			false
+		)
+		player:SetAttribute(
+			"DungeonArtHUDWaitingForAuthoredHUD",
+			true
+		)
+		player:SetAttribute(
+			"DungeonArtHUDFailure",
+			"WaitingForStarterGuiDungeonHUD"
+		)
+		return false
+	end
+
+	local core = resolveCore(hud)
+
+	local changed =
+		hud ~= boundHud
+		or core.ObjectivePanel
+			~= refs.ObjectivePanel
+		or core.PlayerStatus
+			~= refs.PlayerStatus
+		or core.MiniMap
+			~= refs.MiniMap
+		or core.MissionsPanel
+			~= refs.MissionsPanel
+
+	if changed then
+		boundHud = hud
+		bindSerial += 1
+
+		refs.ObjectivePanel =
+			core.ObjectivePanel
+		refs.PlayerStatus =
+			core.PlayerStatus
+		refs.MiniMap =
+			core.MiniMap
+		refs.MissionsPanel =
+			core.MissionsPanel
+
+		refs.Objective =
+			bindObjective(
+				refs.ObjectivePanel
+			)
+		refs.Status =
+			bindStatus(
+				refs.PlayerStatus
+			)
+		refs.Map =
+			bindMinimap(
+				refs.MiniMap
+			)
+
+		if refs.MissionsPanel then
+			refs.MissionsPanel:SetAttribute(
+				"RuntimeDisabledReason",
+				"SimplifiedCombatMVP"
+			)
+		end
+
+		watchVisibilityProperties()
+		enforceCoreVisibility(
+			"NewBinding"
+		)
+
+		setText(
+			refs.Status.PlayerName,
+			player.DisplayName
+		)
+
+		ensureStaticPortrait()
+
+		reportBinding()
+	end
+
+	enforceCoreVisibility(
+		"ResolveAndBindWatchdog"
+	)
+
+	local coreCount = 0
+	if refs.ObjectivePanel then coreCount += 1 end
+	if refs.PlayerStatus then coreCount += 1 end
+	if refs.MiniMap then coreCount += 1 end
+
+	player:SetAttribute(
+		"DungeonArtHUDResolvedCoreCount",
+		coreCount
+	)
+	player:SetAttribute(
+		"DungeonArtHUDObjectiveResolved",
+		refs.ObjectivePanel ~= nil
+	)
+	player:SetAttribute(
+		"DungeonArtHUDPlayerStatusResolved",
+		refs.PlayerStatus ~= nil
+	)
+	player:SetAttribute(
+		"DungeonArtHUDMiniMapResolved",
+		refs.MiniMap ~= nil
+	)
+
+	-- The controller remains alive even when one panel is temporarily absent.
+	local ready = coreCount > 0
+
+	player:SetAttribute(
+		"DungeonArtHUDControllerReady",
+		ready
+	)
+	player:SetAttribute(
+		"DungeonUnifiedHUDReady",
+		ready
+	)
+	player:SetAttribute(
+		"DungeonArtHUDWaitingForAuthoredHUD",
+		not ready
+	)
+	player:SetAttribute(
+		"DungeonArtHUDFailure",
+		ready and nil
+			or "AuthoredCorePanelsNotResolvedYet"
+	)
+	player:SetAttribute(
+		"DungeonArtHUDBindingVersion",
+		VERSION
+	)
+	player:SetAttribute(
+		"DungeonArtHUDBindSerial",
+		bindSerial
+	)
+
+	if boundHud then
+		boundHud:SetAttribute(
+			"ControllerReady",
+			ready
+		)
+	end
+
+	return ready
+end
+
+---------------------------------------------------------------------
+-- Objective renderer
+---------------------------------------------------------------------
+
+local function syncObjective()
+	local objective = refs.Objective
+
+	if not objective or not objective.Panel then
+		return
+	end
+
+	local title =
+		workspace:GetAttribute(
+			"DungeonObjectiveTitle"
+		)
+		or "Objetivo"
+
+	local description =
+		workspace:GetAttribute(
+			"DungeonObjectiveDescription"
+		)
+		or ""
+
+	local progress = math.max(
+		0,
+		tonumber(
+			workspace:GetAttribute(
+				"DungeonObjectiveProgress"
+			)
+		) or 0
+	)
+
+	local target = math.max(
+		1,
+		tonumber(
+			workspace:GetAttribute(
+				"DungeonObjectiveTarget"
+			)
+		) or 1
+	)
+
+	local state = tostring(
+		workspace:GetAttribute(
+			"DungeonObjectiveState"
+		)
+		or "Inactive"
+	)
+
+	setText(objective.Title, title)
+	setText(
+		objective.Description,
+		description
+	)
+	setText(
+		objective.Counter,
+		string.format(
+			"%d / %d",
+			math.floor(progress),
+			math.floor(target)
+		)
+	)
+
+	local ratio = math.clamp(
+		progress / target,
+		0,
+		1
+	)
+
+	if objective.ProgressFill
+		and objective.FullX
+	then
+		local y =
+			objective.ProgressFill.Size.Y
+
+		tween(
+			objective.ProgressFill,
+			0.15,
+			{
+				Size = UDim2.new(
+					objective.FullX.Scale
+						* ratio,
+					math.floor(
+						objective.FullX.Offset
+							* ratio
+							+ 0.5
+					),
+					y.Scale,
+					y.Offset
+				),
+			}
+		)
+	end
+
+	if objective.CompletedIcon then
+		objective.CompletedIcon.Visible =
+			state == "Completed"
+			or ratio >= 1
+	end
+end
+
+---------------------------------------------------------------------
+-- Player status renderer
+---------------------------------------------------------------------
+
+local function syncStatus()
+	local status = refs.Status
+
+	if not status or not status.Panel then
+		return
+	end
+
+	ensureStaticPortrait()
+
+	setText(
+		status.PlayerName,
+		player.DisplayName
+	)
+
+	local level = math.max(
 		1,
 		math.floor(
 			tonumber(
@@ -991,1819 +1861,278 @@ local lastLevel =
 		)
 	)
 
-local function updateXP()
-	local level =
-		math.max(
-			1,
-			math.floor(
-				tonumber(
-					player:GetAttribute(
-						"PlayerLevel"
-					)
-				) or 1
-			)
+	local xp = math.max(
+		0,
+		math.floor(
+			tonumber(
+				player:GetAttribute(
+					"PlayerXP"
+				)
+			) or 0
 		)
+	)
 
-	local current =
-		math.max(
-			0,
-			math.floor(
-				tonumber(
-					player:GetAttribute(
-						"PlayerXP"
-					)
-				) or 0
-			)
+	local xpTarget = math.max(
+		0,
+		math.floor(
+			tonumber(
+				player:GetAttribute(
+					"PlayerXPToNextLevel"
+				)
+			) or 0
 		)
-
-	local required =
-		math.max(
-			0,
-			math.floor(
-				tonumber(
-					player:GetAttribute(
-						"PlayerXPToNextLevel"
-					)
-				) or 0
-			)
-		)
-
-	local ratio =
-		required > 0
-			and math.clamp(
-				current / required,
-				0,
-				1
-			)
-			or 1
+	)
 
 	setText(
-		levelText,
+		status.LevelText,
 		tostring(level)
 	)
 
 	setBar(
-		xpBar,
-		ratio,
-		required > 0
+		status.XPBar,
+		xpTarget > 0
+			and xp / xpTarget
+			or 1,
+		xpTarget > 0
 			and string.format(
 				"%d / %d XP",
-				current,
-				required
+				xp,
+				xpTarget
 			)
 			or "MAX"
 	)
 
-	if playerStatus then
-		playerStatus:SetAttribute(
-			"RuntimePlayerLevel",
-			level
+	local character = player.Character
+	local humanoid =
+		character
+		and character:FindFirstChildOfClass(
+			"Humanoid"
 		)
-		playerStatus:SetAttribute(
-			"RuntimePlayerXP",
-			current
+
+	if humanoid then
+		local health = math.max(
+			0,
+			humanoid.Health
 		)
-		playerStatus:SetAttribute(
-			"RuntimePlayerXPToNextLevel",
-			required
+		local maximum = math.max(
+			1,
+			humanoid.MaxHealth
 		)
-		playerStatus:SetAttribute(
-			"RuntimePlayerXPProgress",
-			ratio
-		)
-	end
 
-	lastLevel = level
-end
-
-local function bindCharacter(character)
-	clearCharacterConnections()
-
-	currentCharacter = character
-	currentHumanoid = character:WaitForChild("Humanoid", 10)
-
-	if currentHumanoid then
-		table.insert(characterConnections, currentHumanoid.HealthChanged:Connect(updateHealth))
-		table.insert(
-			characterConnections,
-			currentHumanoid:GetPropertyChangedSignal("MaxHealth"):Connect(updateHealth)
+		setBar(
+			status.HealthBar,
+			health / maximum,
+			string.format(
+				"%d / %d",
+				math.floor(health + 0.5),
+				math.floor(maximum + 0.5)
+			)
 		)
 	end
 
-	for _, attribute in ipairs({ "SprintStamina", "SprintStaminaMax", "Sprinting" }) do
-		table.insert(
-			characterConnections,
-			character:GetAttributeChangedSignal(attribute):Connect(updateStamina)
-		)
-	end
+	if character then
+		local stamina =
+			tonumber(
+				character:GetAttribute(
+					"SprintStamina"
+				)
+			)
 
-	updateHealth()
-	updateStamina()
-end
+		local staminaMax =
+			tonumber(
+				character:GetAttribute(
+					"SprintStaminaMax"
+				)
+			)
 
-player.CharacterAdded:Connect(bindCharacter)
-
-if player.Character then
-	task.spawn(bindCharacter, player.Character)
-end
-
-for _, attribute in ipairs({
-	"PlayerLevel",
-	"PlayerXP",
-	"PlayerXPToNextLevel",
-	"PlayerXPProgress",
-	"LastXPGain",
-}) do
-	player:GetAttributeChangedSignal(
-		attribute
-	):Connect(updateXP)
-end
-
-updateXP()
-
-if avatarImage then
-	task.spawn(function()
-		local ok, image = pcall(
-			Players.GetUserThumbnailAsync,
-			Players,
-			player.UserId,
-			Enum.ThumbnailType.HeadShot,
-			Enum.ThumbnailSize.Size150x150
-		)
-
-		if ok
-			and avatarImage.Parent
-			and (avatarImage:IsA("ImageLabel") or avatarImage:IsA("ImageButton"))
+		if stamina ~= nil
+			and staminaMax
+			and staminaMax > 0
 		then
-			avatarImage.Image = image
-		end
-	end)
-end
-
----------------------------------------------------------------------
--- MiniMap
---
--- Dynamic-size rules:
--- - every position is derived from the REAL AbsoluteSize/AbsolutePosition;
--- - player arrow is always at the geometric center;
--- - usable radius automatically respects the smallest map dimension;
--- - default world range scales with the minimap's actual pixel diameter;
--- - nearby markers are expanded radially for readability;
--- - overlapping markers are gently separated using their REAL icon size;
--- - map orientation is FIXED north-up;
--- - only the player's arrow rotates;
--- - islands are filtered by vertical distance BEFORE an icon is cloned;
--- - vertical visibility range also derives from the real minimap size.
---
--- Optional MiniMap Attributes:
--- MapRangeStuds                 -> explicit horizontal world radius in studs
--- MapStudsPerPixel              -> horizontal dynamic default = 1.20
--- MapMaxHeightDifferenceStuds   -> explicit vertical slice half-height
--- MapVerticalStudsPerPixel      -> vertical dynamic default = 0.45
--- MapEdgePaddingRatio           -> dynamic default = 0.075
--- MapMarkerGapRatio             -> dynamic default = 0.025
--- MapSpreadExponent             -> dynamic default = 0.62
--- MapIslandShrinkStartRatio     -> island shrinks after 0.75 of map range
--- MapIslandMinimumScale         -> island reaches 0.70 scale at edge
--- MapMobVisibleRangeRatio       -> mob icons only until 0.68 of map range
----------------------------------------------------------------------
-
-local mapArea
-local islandContainer
-local markerContainer
-local playerArrow
-local northLabel
-
-local smallIslandTemplate
-local mediumIslandTemplate
-local largeIslandTemplate
-
-local hostileMobTemplate
-local objectiveMarkerTemplate
-local roundGateTemplate
-
-if miniMap then
-	miniMap.Visible = true
-
-	mapArea = findAuthored(
-		miniMap,
-		{ "MapArea", "MapContent", "ContentArea", "RadarArea" },
-		isGui
-	) or miniMap
-
-	islandContainer = authored(
-		mapArea,
-		"MiniMap.IslandContainer",
-		{ "IslandContainer", "IslandsContainer", "Islands", "IslandLayer" },
-		isGui
-	)
-
-	markerContainer = authored(
-		mapArea,
-		"MiniMap.MarkerContainer",
-		{ "MarkerContainer", "MarkersContainer", "Markers", "MarkerLayer" },
-		isGui
-	)
-
-	playerArrow = authored(
-		mapArea,
-		"MiniMap.PlayerArrow",
-		{ "PlayerArrow", "PlayerMarker", "PlayerIcon", "Arrow" },
-		isGui
-	)
-
-	northLabel = findAuthored(
-		mapArea,
-		{ "NorthLabel", "North", "NorthIndicator" },
-		isGui
-	)
-
-	if playerArrow then
-		playerArrow.Visible = true
-		playerArrow.AnchorPoint = Vector2.new(0.5, 0.5)
-	end
-
-	if islandContainer then
-		smallIslandTemplate = authored(
-			islandContainer,
-			"MiniMap.SmallIslandTemplate",
-			{ "SmallIslandTemplate", "SmallIsland", "IslandSmall" },
-			isGui
-		)
-
-		mediumIslandTemplate = authored(
-			islandContainer,
-			"MiniMap.MediumIslandTemplate",
-			{ "MediumIslandTemplate", "MediumIsland", "IslandMedium" },
-			isGui
-		)
-
-		largeIslandTemplate = authored(
-			islandContainer,
-			"MiniMap.LargeIslandTemplate",
-			{ "LargeIslandTemplate", "LargeIsland", "IslandLarge" },
-			isGui
-		)
-
-		for _, template in ipairs({
-			smallIslandTemplate,
-			mediumIslandTemplate,
-			largeIslandTemplate,
-		}) do
-			if template then
-				template.Visible = false
-			end
-		end
-	end
-
-	if markerContainer then
-		hostileMobTemplate = authored(
-			markerContainer,
-			"MiniMap.HostileMobMarker",
-			{ "HostileMobMarker", "HostileMarker", "EnemyMarker", "MobMarker" },
-			isGui
-		)
-
-		objectiveMarkerTemplate = authored(
-			markerContainer,
-			"MiniMap.CurrentObjectiveMarker",
-			{ "CurrentObjectiveMarker", "ObjectiveMarker", "CurrentObjective", "TargetMarker" },
-			isGui
-		)
-
-		roundGateTemplate = authored(
-			markerContainer,
-			"MiniMap.RoundGateMarker",
-			{ "RoundGateMarker", "GateMarker", "RoundMarker", "RoundExitMarker" },
-			isGui
-		)
-
-		for _, template in ipairs({
-			hostileMobTemplate,
-			objectiveMarkerTemplate,
-			roundGateTemplate,
-		}) do
-			if template then
-				template.Visible = false
-			end
+			setBar(
+				status.StaminaBar,
+				stamina / staminaMax,
+				string.format(
+					"%.1f / %.1f",
+					math.max(
+						0,
+						stamina
+					),
+					staminaMax
+				)
+			)
 		end
 	end
 end
+
+---------------------------------------------------------------------
+-- Lightweight authored minimap
+---------------------------------------------------------------------
 
 local islandMarkers = {}
 local hostileMarkers = {}
-local gateMarkers = {}
-local objectiveMarkerClone
 
-local islandOccupied = {}
-local markerOccupied = {}
+local function markerWorldPosition(markerFolder)
+	if not markerFolder or not markerFolder.Parent then
+		return nil
+	end
 
--- Exact designer-authored Size for runtime clones.
--- Scaling is always recalculated from this base, never compounded.
-local runtimeBaseSizes = setmetatable({}, { __mode = "k" })
+	local island = markerFolder.Parent
 
-local function cloneAuthoredTemplate(template, name, parent)
-	if not template or not parent then
+	local floor =
+		island:FindFirstChild(
+			"IslandFloor",
+			true
+		)
+
+	if floor and floor:IsA("BasePart") then
+		return floor.Position, island
+	end
+
+	if island:IsA("Model") then
+		return island:GetPivot().Position,
+			island
+	end
+
+	return nil
+end
+
+local function chooseIslandTemplate(
+	mapRefs,
+	island
+)
+	if not mapRefs or not island then
+		return nil
+	end
+
+	local sizeName = tostring(
+		island:GetAttribute("SizeName")
+			or island:GetAttribute(
+				"IslandSize"
+			)
+			or ""
+	)
+
+	local normalized = normalize(sizeName)
+
+	if string.find(
+		normalized,
+		"large",
+		1,
+		true
+	) then
+		return mapRefs.LargeIslandTemplate
+	elseif string.find(
+		normalized,
+		"medium",
+		1,
+		true
+	) then
+		return mapRefs.MediumIslandTemplate
+	end
+
+	return mapRefs.SmallIslandTemplate
+		or mapRefs.MediumIslandTemplate
+		or mapRefs.LargeIslandTemplate
+end
+
+local function cloneTemplate(
+	template,
+	name,
+	parent
+)
+	if not template
+		or not parent
+	then
 		return nil
 	end
 
 	local clone = template:Clone()
 	clone.Name = name
 	clone.Visible = true
-	clone.AnchorPoint = Vector2.new(0.5, 0.5)
-	clone:SetAttribute("RuntimeCloneOfAuthoredTemplate", true)
+	clone.AnchorPoint =
+		Vector2.new(0.5, 0.5)
+	clone:SetAttribute(
+		"RuntimeCloneOfAuthoredTemplate",
+		true
+	)
 	clone.Parent = parent
-	runtimeBaseSizes[clone] = clone.Size
+
 	return clone
 end
 
-local function scaledUDim2(size, factor)
-	factor = math.max(0, tonumber(factor) or 1)
-
-	return UDim2.new(
-		size.X.Scale * factor,
-		math.floor(size.X.Offset * factor + 0.5),
-		size.Y.Scale * factor,
-		math.floor(size.Y.Offset * factor + 0.5)
-	)
-end
-
-local function setRuntimeScale(object, factor)
-	if not object or not object.Parent then
-		return
-	end
-
-	local baseSize = runtimeBaseSizes[object]
-	if not baseSize then
-		baseSize = object.Size
-		runtimeBaseSizes[object] = baseSize
-	end
-
-	factor = math.clamp(tonumber(factor) or 1, 0.1, 2)
-	object.Size = scaledUDim2(baseSize, factor)
-	object:SetAttribute("RuntimeDistanceScale", factor)
-end
-
-local function validAbsoluteSize(object)
-	if not object or not object:IsA("GuiObject") then
-		return nil
-	end
-
-	local size = object.AbsoluteSize
-	if size.X <= 1 or size.Y <= 1 then
-		return nil
-	end
-
-	return size
-end
-
-local function minimapMetrics()
-	if not miniMap or not mapArea then
-		return nil
-	end
-
-	local size = validAbsoluteSize(mapArea)
-		or validAbsoluteSize(miniMap)
-
-	if not size then
-		return nil
-	end
-
-	local area = validAbsoluteSize(mapArea) and mapArea or miniMap
-	local areaSize = area.AbsoluteSize
-	local areaPosition = area.AbsolutePosition
-
-	local minimumDimension = math.min(areaSize.X, areaSize.Y)
-	local centerAbsolute =
-		areaPosition
-		+ Vector2.new(areaSize.X * 0.5, areaSize.Y * 0.5)
-
-	local edgePaddingRatio = math.clamp(
-		tonumber(miniMap:GetAttribute("MapEdgePaddingRatio")) or 0.075,
-		0.02,
-		0.20
-	)
-
-	local edgePaddingPixels = math.max(
-		6,
-		minimumDimension * edgePaddingRatio
-	)
-
-	local radiusPixels = math.max(
-		16,
-		minimumDimension * 0.5 - edgePaddingPixels
-	)
-
-	local explicitRange = tonumber(
-		miniMap:GetAttribute("MapRangeStuds")
-	)
-
-	local studsPerPixel = math.clamp(
-		tonumber(miniMap:GetAttribute("MapStudsPerPixel")) or 1.20,
-		0.55,
-		3.0
-	)
-
-	-- Example:
-	-- 216px minimap -> ~259 studs of world radius by default.
-	local worldRange = explicitRange
-		or math.clamp(
-			minimumDimension * studsPerPixel,
-			150,
-			480
-		)
-
-	local explicitVerticalRange = tonumber(
-		miniMap:GetAttribute("MapMaxHeightDifferenceStuds")
-	)
-
-	local verticalStudsPerPixel = math.clamp(
-		tonumber(miniMap:GetAttribute("MapVerticalStudsPerPixel")) or 0.45,
-		0.20,
-		1.50
-	)
-
-	-- The minimap represents a horizontal "slice" around the player.
-	-- Example: 216px minimap -> ~97 studs above/below the player.
-	local maxHeightDifference = explicitVerticalRange
-		or math.clamp(
-			minimumDimension * verticalStudsPerPixel,
-			55,
-			180
-		)
-
-	local markerGapPixels = math.max(
-		3,
-		minimumDimension
-			* math.clamp(
-				tonumber(miniMap:GetAttribute("MapMarkerGapRatio")) or 0.025,
-				0.005,
-				0.08
-			)
-	)
-
-	local spreadExponent = math.clamp(
-		tonumber(miniMap:GetAttribute("MapSpreadExponent")) or 0.62,
-		0.45,
-		1.0
-	)
-
-	return {
-		Area = area,
-		Size = areaSize,
-		MinimumDimension = minimumDimension,
-		CenterAbsolute = centerAbsolute,
-		RadiusPixels = radiusPixels,
-		WorldRange = worldRange,
-		MaxHeightDifference = maxHeightDifference,
-		GapPixels = markerGapPixels,
-		SpreadExponent = spreadExponent,
-	}
-end
-
-local function approximateGuiSize(object, metrics)
-	if not object or not metrics then
-		return Vector2.new(12, 12)
-	end
-
-	local absolute = object.AbsoluteSize
-	if absolute.X > 1 and absolute.Y > 1 then
-		return absolute
-	end
-
-	local size = object.Size
-	return Vector2.new(
-		math.max(4, metrics.Size.X * size.X.Scale + size.X.Offset),
-		math.max(4, metrics.Size.Y * size.Y.Scale + size.Y.Offset)
-	)
-end
-
-local function centerObjectInMap(object, metrics)
-	if not object or not object.Parent or not metrics then
-		return
-	end
-
-	local parent = object.Parent
-	if not parent:IsA("GuiObject") then
-		return
-	end
-
-	object.AnchorPoint = Vector2.new(0.5, 0.5)
-
-	local localCenter =
-		metrics.CenterAbsolute
-		- parent.AbsolutePosition
-
-	object.Position = UDim2.fromOffset(
-		math.floor(localCenter.X + 0.5),
-		math.floor(localCenter.Y + 0.5)
-	)
-end
-
-local function clampPixelToMapCircle(pixel, markerRadius, metrics)
-	local delta = pixel - metrics.CenterAbsolute
-
-	local allowedRadius = math.max(
-		8,
-		metrics.RadiusPixels - markerRadius
-	)
-
-	if delta.Magnitude <= allowedRadius then
-		return pixel
-	end
-
-	if delta.Magnitude <= 0.001 then
-		return metrics.CenterAbsolute
-	end
-
-	return metrics.CenterAbsolute + delta.Unit * allowedRadius
-end
-
-local function reserveReadablePosition(
-	desiredPixel,
-	object,
-	metrics,
-	occupied
+local function mapPosition(
+	mapRefs,
+	worldPosition,
+	playerRoot
 )
-	if not desiredPixel or not object or not metrics then
-		return desiredPixel
-	end
-
-	local size = approximateGuiSize(object, metrics)
-	local objectRadius =
-		math.max(size.X, size.Y) * 0.5
-
-	local desired = clampPixelToMapCircle(
-		desiredPixel,
-		objectRadius,
-		metrics
-	)
-
-	local function free(candidate)
-		for _, record in ipairs(occupied) do
-			local required =
-				objectRadius
-				+ record.Radius
-				+ metrics.GapPixels
-
-			if (candidate - record.Position).Magnitude < required then
-				return false
-			end
-		end
-		return true
-	end
-
-	if free(desired) then
-		table.insert(occupied, {
-			Position = desired,
-			Radius = objectRadius,
-		})
-		return desired
-	end
-
-	-- Small spiral search around the true position.
-	-- Uses the actual icon dimensions, so large icons naturally get more room.
-	local step =
-		math.max(
-			metrics.GapPixels + objectRadius * 0.55,
-			5
-		)
-
-	for ring = 1, 5 do
-		local radius = step * ring
-		local samples = 8 + ring * 4
-
-		for sample = 1, samples do
-			local angle =
-				(sample - 1)
-				/ samples
-				* math.pi
-				* 2
-
-			local candidate =
-				desired
-				+ Vector2.new(
-					math.cos(angle),
-					math.sin(angle)
-				)
-				* radius
-
-			candidate = clampPixelToMapCircle(
-				candidate,
-				objectRadius,
-				metrics
-			)
-
-			if free(candidate) then
-				table.insert(occupied, {
-					Position = candidate,
-					Radius = objectRadius,
-				})
-				return candidate
-			end
-		end
-	end
-
-	-- If the map is extremely crowded, keep the best truthful position.
-	table.insert(occupied, {
-		Position = desired,
-		Radius = objectRadius,
-	})
-
-	return desired
-end
-
-local function pixelToParentPosition(
-	absolutePixel,
-	parent
-)
-	if not absolutePixel
-		or not parent
-		or not parent:IsA("GuiObject")
+	if not mapRefs
+		or not mapRefs.MapArea
+		or not worldPosition
+		or not playerRoot
 	then
 		return nil
 	end
 
-	local localPixel =
-		absolutePixel
-		- parent.AbsolutePosition
+	local area = mapRefs.MapArea
+	local size = area.AbsoluteSize
 
-	return UDim2.fromOffset(
-		math.floor(localPixel.X + 0.5),
-		math.floor(localPixel.Y + 0.5)
-	)
-end
-
-local function withinVerticalMapSlice(
-	worldPosition,
-	playerRoot,
-	metrics
-)
-	if not worldPosition or not playerRoot or not metrics then
-		return false
+	if size.X <= 2 or size.Y <= 2 then
+		return nil
 	end
 
-	return math.abs(
-		worldPosition.Y - playerRoot.Position.Y
-	) <= metrics.MaxHeightDifference
-end
+	local range = tonumber(
+		mapRefs.Panel:GetAttribute(
+			"MapRangeStuds"
+		)
+	) or 420
 
-local function planarMapDirection(
-	worldPosition,
-	playerRoot
-)
 	local delta =
 		worldPosition
 		- playerRoot.Position
 
-	-- FIXED NORTH-UP MAP:
-	-- Roblox world north is -Z.
-	-- The world never rotates with the player.
-	return Vector2.new(
-		delta.X,
-		-delta.Z
-	)
-end
-
-local function horizontalDistanceRatio(
-	worldPosition,
-	playerRoot,
-	metrics
-)
-	if not worldPosition or not playerRoot or not metrics then
-		return math.huge
-	end
-
-	return planarMapDirection(
-		worldPosition,
-		playerRoot
-	).Magnitude / math.max(1, metrics.WorldRange)
-end
-
-local function islandScaleForDistance(
-	worldPosition,
-	playerRoot,
-	metrics
-)
-	local ratio = horizontalDistanceRatio(
-		worldPosition,
-		playerRoot,
-		metrics
-	)
-
-	local shrinkStart = math.clamp(
-		tonumber(
-			miniMap:GetAttribute("MapIslandShrinkStartRatio")
-		) or 0.75,
-		0.40,
-		0.95
-	)
-
-	local minimumScale = math.clamp(
-		tonumber(
-			miniMap:GetAttribute("MapIslandMinimumScale")
-		) or 0.70,
-		0.40,
-		1.00
-	)
-
-	if ratio <= shrinkStart then
-		return 1
-	end
-
-	local progress = math.clamp(
-		(ratio - shrinkStart)
-			/ math.max(0.001, 1 - shrinkStart),
-		0,
-		1
-	)
-
-	return 1
-		+ (minimumScale - 1)
-			* progress
-end
-
-local function mapAbsolutePixel(
-	worldPosition,
-	playerRoot,
-	object,
-	occupied
-)
-	local metrics = minimapMetrics()
-	if not metrics or not playerRoot then
-		return nil
-	end
-
-	if not withinVerticalMapSlice(
-		worldPosition,
-		playerRoot,
-		metrics
-	) then
-		return nil
-	end
-
-	local planar = planarMapDirection(
-		worldPosition,
-		playerRoot
-	)
-
-	local worldDistance = planar.Magnitude
-
-	if worldDistance > metrics.WorldRange then
-		return nil
-	end
-
-	if worldDistance <= 0.001 then
-		return reserveReadablePosition(
-			metrics.CenterAbsolute,
-			object,
-			metrics,
-			occupied
-		)
-	end
-
-	local normalizedDistance = math.clamp(
-		worldDistance / metrics.WorldRange,
-		0,
-		1
-	)
-
-	-- Values below 1 spread close objects away from the center.
-	-- 0.62 is intentionally readable without becoming exaggerated.
-	local visualDistance =
-		normalizedDistance ^ metrics.SpreadExponent
-
-	local direction = planar.Unit
-
-	-- UI Y grows downward; local forward should appear upward.
-	local screenDirection =
+	local planar =
 		Vector2.new(
-			direction.X,
-			-direction.Y
+			delta.X,
+			-delta.Z
 		)
 
-	local desired =
-		metrics.CenterAbsolute
-		+ screenDirection
-			* metrics.RadiusPixels
-			* visualDistance
-
-	return reserveReadablePosition(
-		desired,
-		object,
-		metrics,
-		occupied
-	)
-end
-
-local function markerIslandCenter(markerFolder)
-	local island = markerFolder.Parent
-	if not island then
-		return nil, nil
-	end
-
-	local anchor = markerFolder:FindFirstChild(
-		"ObjectiveAnchor",
-		true
-	)
-
-	if anchor and anchor:IsA("BasePart") then
-		return anchor.Position, island
-	end
-
-	if island:IsA("Model") then
-		local floor =
-			island:FindFirstChild("IslandFloor")
-			or island.PrimaryPart
-
-		if floor and floor:IsA("BasePart") then
-			return floor.Position, island
-		end
-	end
-
-	return nil, island
-end
-
-local function templateForIsland(island)
-	if not island then
-		return mediumIslandTemplate
-	end
-
-	local declared = tostring(
-		island:GetAttribute("TerrainSize")
-			or island:GetAttribute("IslandSize")
-			or island:GetAttribute("SizeClass")
-			or ""
-	)
-
-	if declared == "Small" then
-		return smallIslandTemplate
-	elseif declared == "Large" then
-		return largeIslandTemplate
-	elseif declared == "Medium" then
-		return mediumIslandTemplate
-	end
-
-	if island:IsA("Model") then
-		local floor =
-			island:FindFirstChild("IslandFloor")
-			or island.PrimaryPart
-
-		if floor and floor:IsA("BasePart") then
-			local minimum =
-				math.min(
-					floor.Size.X,
-					floor.Size.Z
-				)
-
-			if minimum < 72 then
-				return smallIslandTemplate
-			elseif minimum >= 108 then
-				return largeIslandTemplate
-			end
-		end
-	end
-
-	return mediumIslandTemplate
-end
-
-local islandMarkerStateRefs =
-	setmetatable({}, { __mode = "k" })
-
-local function islandMarkerStateRefsFor(marker)
-	local cached =
-		islandMarkerStateRefs[marker]
-
-	if cached then
-		return cached
-	end
-
-	cached = {
-		LevelText =
-			findAuthored(
-				marker,
-				{
-					"LevelText",
-					"IslandLevelText",
-					"RecommendedLevelText",
-					"Level",
-				},
-				isText
-			),
-
-		CurrentIcon =
-			findAuthored(
-				marker,
-				{
-					"CurrentIslandIcon",
-					"CurrentIcon",
-					"PlayerIslandIcon",
-				},
-				isGui
-			),
-
-		UnclearedIcon =
-			findAuthored(
-				marker,
-				{
-					"UnclearedIcon",
-					"NotClearedIcon",
-					"IncompleteIcon",
-					"PendingIcon",
-				},
-				isGui
-			),
-
-		MobsIcon =
-			findAuthored(
-				marker,
-				{
-					"MobsIcon",
-					"MobAliveIcon",
-					"EnemiesIcon",
-					"EnemyIcon",
-				},
-				isGui
-			),
-
-		ClearedIcon =
-			findAuthored(
-				marker,
-				{
-					"ClearedIcon",
-					"CompleteIcon",
-					"CompletedIcon",
-				},
-				isGui
-			),
-
-		NextIslandIcon =
-			findAuthored(
-				marker,
-				{
-					"NextIslandIcon",
-					"NextIcon",
-					"AdvanceIcon",
-					"GoHereIcon",
-				},
-				isGui
-			),
-	}
-
-	islandMarkerStateRefs[marker] = cached
-
-	return cached
-end
-
-local function updateIslandMarkerState(
-	marker,
-	island
-)
-	if not marker
-		or not island
-	then
-		return
-	end
-
-	local index =
-		math.floor(
-			tonumber(
-				island:GetAttribute(
-					"GlobalIslandIndex"
-				)
-			) or 0
-		)
-
-	local islandLevel =
-		math.max(
-			1,
-			math.floor(
-				tonumber(
-					island:GetAttribute(
-						"IslandLevel"
-					)
-				) or 1
-			)
-		)
-
-	local recommendedLevel =
-		math.max(
-			1,
-			math.floor(
-				tonumber(
-					island:GetAttribute(
-						"RecommendedLevel"
-					)
-				) or islandLevel
-			)
-		)
-
-	local cleared =
-		island:GetAttribute(
-			"Cleared"
-		) == true
-			or island:GetAttribute(
-				"CombatState"
-			) == "Cleared"
-
-	local mobsAlive =
-		math.max(
-			0,
-			math.floor(
-				tonumber(
-					island:GetAttribute(
-						"MobAliveCount"
-					)
-				) or 0
-			)
-		)
-
-	local currentIndex =
-		math.floor(
-			tonumber(
-				player:GetAttribute(
-					"CurrentGlobalIslandIndex"
-				)
-			) or 0
-		)
-
-	local isCurrent =
-		index > 0
-			and index == currentIndex
-
-	local advanceIndex =
-		math.floor(
-			tonumber(
-				workspace:GetAttribute(
-					"DungeonIslandAdvanceToIsland"
-				)
-			) or 0
-		)
-
-	local isAdvanceTarget =
-		workspace:GetAttribute(
-			"DungeonIslandAdvanceActive"
-		) == true
-			and index > 0
-			and index == advanceIndex
-
-	marker:SetAttribute(
-		"RuntimeGlobalIslandIndex",
-		index > 0 and index or nil
-	)
-	marker:SetAttribute(
-		"RuntimeIslandLevel",
-		islandLevel
-	)
-	marker:SetAttribute(
-		"RuntimeRecommendedLevel",
-		recommendedLevel
-	)
-	marker:SetAttribute(
-		"RuntimeCleared",
-		cleared
-	)
-	marker:SetAttribute(
-		"RuntimeMobAliveCount",
-		mobsAlive
-	)
-	marker:SetAttribute(
-		"RuntimeCurrentIsland",
-		isCurrent
-	)
-	marker:SetAttribute(
-		"RuntimeAdvanceTarget",
-		isAdvanceTarget
-	)
-
-	local refs =
-		islandMarkerStateRefsFor(
-			marker
-		)
-
-	if refs.LevelText then
-		setText(
-			refs.LevelText,
-			tostring(
-				recommendedLevel
-			)
-		)
-	end
-
-	if refs.CurrentIcon then
-		refs.CurrentIcon.Visible =
-			isCurrent
-	end
-
-	if refs.UnclearedIcon then
-		refs.UnclearedIcon.Visible =
-			not cleared
-	end
-
-	if refs.MobsIcon then
-		refs.MobsIcon.Visible =
-			not cleared
-				and mobsAlive > 0
-	end
-
-	if refs.ClearedIcon then
-		refs.ClearedIcon.Visible =
-			cleared
-	end
-
-	if refs.NextIslandIcon then
-		refs.NextIslandIcon.Visible =
-			isAdvanceTarget
-	end
-end
-
-local function updateIslands(playerRoot)
-	if not islandContainer then
-		return
-	end
-
-	local metrics = minimapMetrics()
-	if not metrics then
-		return
-	end
-
-	local seen = {}
-
-	for _, folder in ipairs(
-		CollectionService:GetTagged("DungeonGameplayMarkers")
-	) do
-		if folder:IsA("Folder") and folder.Parent then
-			local worldPosition, island =
-				markerIslandCenter(folder)
-
-			if worldPosition and island then
-				-- Filter BEFORE cloning:
-				-- no UI object exists for islands outside the useful slice.
-				local inVerticalSlice =
-					withinVerticalMapSlice(
-						worldPosition,
-						playerRoot,
-						metrics
-					)
-
-				local planar =
-					planarMapDirection(
-						worldPosition,
-						playerRoot
-					)
-
-				local inHorizontalRange =
-					planar.Magnitude <= metrics.WorldRange
-
-				if inVerticalSlice and inHorizontalRange then
-					seen[folder] = true
-
-					local template =
-						templateForIsland(island)
-
-					if template then
-						local marker =
-							islandMarkers[folder]
-
-						if not marker
-							or not marker.Parent
-							or marker:GetAttribute(
-								"AuthoredTemplateName"
-							) ~= template.Name
-						then
-							if marker then
-								marker:Destroy()
-							end
-
-							marker =
-								cloneAuthoredTemplate(
-									template,
-									"Island_" .. island.Name,
-									islandContainer
-								)
-
-							if marker then
-								marker:SetAttribute(
-									"AuthoredTemplateName",
-									template.Name
-								)
-								islandMarkers[folder] =
-									marker
-							end
-						end
-
-						if marker then
-							updateIslandMarkerState(
-								marker,
-								island
-							)
-
-							-- 0-75%: exact authored size.
-							-- 75-100%: smoothly shrinks to 70% by default.
-							setRuntimeScale(
-								marker,
-								islandScaleForDistance(
-									worldPosition,
-									playerRoot,
-									metrics
-								)
-							)
-
-							local pixel =
-								mapAbsolutePixel(
-									worldPosition,
-									playerRoot,
-									marker,
-									islandOccupied
-								)
-
-							marker.Visible =
-								pixel ~= nil
-
-							if pixel then
-								local position =
-									pixelToParentPosition(
-										pixel,
-										islandContainer
-									)
-
-								if position then
-									marker.Position =
-										position
-								end
-							end
-						end
-					end
-				end
-			end
-		end
-	end
-
-	-- Outside the range = no icon object kept around.
-	for source, marker in pairs(islandMarkers) do
-		if not seen[source]
-			or not source.Parent
-		then
-			marker:Destroy()
-			islandMarkers[source] = nil
-		end
-	end
-end
-
-local function combatExitMarker(folder)
-	if not folder
-		or not folder.Parent
-	then
+	if planar.Magnitude > range then
 		return nil
 	end
 
-	local exits =
-		folder:FindFirstChild(
-			"Exits",
-			true
+	local radius =
+		math.min(
+			size.X,
+			size.Y
+		) * 0.43
+
+	local offset =
+		planar / range * radius
+
+	return UDim2.fromOffset(
+		math.floor(
+			size.X * 0.5
+				+ offset.X
+				+ 0.5
+		),
+		math.floor(
+			size.Y * 0.5
+				- offset.Y
+				+ 0.5
 		)
-
-	if exits then
-		for _, child in ipairs(
-			exits:GetChildren()
-		) do
-			if child:IsA("BasePart") then
-				if child:GetAttribute(
-					"ExitLocked"
-				) == true
-					or child:GetAttribute(
-						"ObjectiveLocked"
-					) == true
-				then
-					return child
-				end
-			end
-		end
-
-		for _, child in ipairs(
-			exits:GetChildren()
-		) do
-			if child:IsA("BasePart") then
-				return child
-			end
-		end
-	end
-
-	local direct =
-		folder:FindFirstChild(
-			"Exit",
-			true
-		)
-
-	if direct
-		and direct:IsA("BasePart")
-	then
-		return direct
-	end
-
-	return nil
-end
-
-local function updateGates(playerRoot)
-	if not markerContainer
-		or not roundGateTemplate
-	then
-		return
-	end
-
-	local seen = {}
-
-	for _, folder in ipairs(
-		CollectionService:GetTagged(
-			"DungeonGameplayMarkers"
-		)
-	) do
-		if folder:IsA("Folder")
-			and folder.Parent
-		then
-			local island = folder.Parent
-
-			local locked =
-				island:GetAttribute(
-					"CombatExitLocked"
-				) == true
-					or island:GetAttribute(
-						"ObjectiveExitLocked"
-					) == true
-
-			if locked then
-				local exitMarker =
-					combatExitMarker(folder)
-
-				if exitMarker then
-					seen[island] = true
-
-					local marker =
-						gateMarkers[island]
-
-					if not marker
-						or not marker.Parent
-					then
-						marker =
-							cloneAuthoredTemplate(
-								roundGateTemplate,
-								"CombatGate_"
-									.. island.Name,
-								markerContainer
-							)
-
-						gateMarkers[island] =
-							marker
-					end
-
-					if marker then
-						setRuntimeScale(
-							marker,
-							1
-						)
-
-						marker:SetAttribute(
-							"RuntimeCombatGate",
-							true
-						)
-
-						marker:SetAttribute(
-							"RuntimeGlobalIslandIndex",
-							island:GetAttribute(
-								"GlobalIslandIndex"
-							)
-						)
-					end
-
-					local pixel =
-						mapAbsolutePixel(
-							exitMarker.Position,
-							playerRoot,
-							marker,
-							markerOccupied
-						)
-
-					if marker then
-						marker.Visible =
-							pixel ~= nil
-
-						if pixel then
-							local position =
-								pixelToParentPosition(
-									pixel,
-									markerContainer
-								)
-
-							if position then
-								marker.Position =
-									position
-							end
-						end
-					end
-				end
-			end
-		end
-	end
-
-	for island, marker in pairs(
-		gateMarkers
-	) do
-		if not seen[island]
-			or not island.Parent
-		then
-			marker:Destroy()
-			gateMarkers[island] = nil
-		end
-	end
-end
-
-local function targetRoot(model)
-	local root =
-		model:FindFirstChild(
-			"HumanoidRootPart",
-			true
-		)
-
-	if root and root:IsA("BasePart") then
-		return root
-	end
-
-	return model.PrimaryPart
-		or model:FindFirstChildWhichIsA(
-			"BasePart",
-			true
-		)
-end
-
-local function updateHostiles(playerRoot)
-	if not markerContainer or not hostileMobTemplate then
-		return
-	end
-
-	local metrics = minimapMetrics()
-	if not metrics then
-		return
-	end
-
-	local visibleRatio = math.clamp(
-		tonumber(
-			miniMap:GetAttribute("MapMobVisibleRangeRatio")
-		) or 0.68,
-		0.25,
-		1.00
 	)
-
-	local maximumMobDistance =
-		metrics.WorldRange * visibleRatio
-
-	local seen = {}
-
-	for _, target in ipairs(
-		CollectionService:GetTagged("CombatTarget")
-	) do
-		if target:IsA("Model")
-			and target.Parent
-			and target:GetAttribute("Peaceful") ~= true
-			and target:GetAttribute(
-				"IslandCombatManaged"
-			) == true
-		then
-			local humanoid =
-				target:FindFirstChildWhichIsA(
-					"Humanoid",
-					true
-				)
-
-			local root = targetRoot(target)
-
-			if root
-				and (
-					not humanoid
-					or humanoid.Health > 0
-				)
-			then
-				local inVerticalSlice =
-					withinVerticalMapSlice(
-						root.Position,
-						playerRoot,
-						metrics
-					)
-
-				local horizontalDistance =
-					planarMapDirection(
-						root.Position,
-						playerRoot
-					).Magnitude
-
-				-- Distant mobs disappear completely instead of becoming tiny.
-				-- Filtering happens BEFORE cloning an icon.
-				local usefulDistance =
-					inVerticalSlice
-					and horizontalDistance
-						<= maximumMobDistance
-
-				if usefulDistance then
-					seen[target] = true
-
-					local marker =
-						hostileMarkers[target]
-
-					if not marker or not marker.Parent then
-						marker =
-							cloneAuthoredTemplate(
-								hostileMobTemplate,
-								"HostileMob",
-								markerContainer
-							)
-
-						hostileMarkers[target] =
-							marker
-					end
-
-					if marker then
-						setRuntimeScale(marker, 1)
-
-						local pixel =
-							mapAbsolutePixel(
-								root.Position,
-								playerRoot,
-								marker,
-								markerOccupied
-							)
-
-						marker.Visible =
-							pixel ~= nil
-
-						if pixel then
-							local position =
-								pixelToParentPosition(
-									pixel,
-									markerContainer
-								)
-
-							if position then
-								marker.Position =
-									position
-							end
-						end
-					end
-				end
-			end
-		end
-	end
-
-	for target, marker in pairs(hostileMarkers) do
-		if not seen[target]
-			or not target.Parent
-		then
-			marker:Destroy()
-			hostileMarkers[target] = nil
-		end
-	end
 end
 
-local function findObjectiveAnchor(snapshot)
-	local globalIndex =
-		snapshot
-			and tonumber(
-				snapshot.GlobalIslandIndex
-			)
+local function syncMinimap()
+	local mapRefs = refs.Map
 
-	if not globalIndex then
-		return nil
-	end
-
-	local completed =
-		tostring(
-			snapshot.State or ""
-		) == "Completed"
-
-	for _, folder in ipairs(
-		CollectionService:GetTagged(
-			"DungeonGameplayMarkers"
-		)
-	) do
-		if folder:IsA("Folder")
-			and folder.Parent
-		then
-			local island = folder.Parent
-
-			local index =
-				tonumber(
-					island:GetAttribute(
-						"GlobalIslandIndex"
-					)
-				)
-					or tonumber(
-						folder:GetAttribute(
-							"GlobalIslandIndex"
-						)
-					)
-
-			if index == globalIndex then
-				if completed then
-					return combatExitMarker(
-						folder
-					)
-				end
-
-				local anchor =
-					folder:FindFirstChild(
-						"ObjectiveAnchor",
-						true
-					)
-
-				if anchor
-					and anchor:IsA("BasePart")
-				then
-					return anchor
-				end
-
-				local center =
-					select(
-						1,
-						markerIslandCenter(
-							folder
-						)
-					)
-
-				if center then
-					return {
-						Position = center,
-						Parent = folder,
-					}
-				end
-			end
-		end
-	end
-
-	return nil
-end
-
-local function updateObjectiveMarker(playerRoot)
-	if not markerContainer
-		or not objectiveMarkerTemplate
+	if not mapRefs
+		or not mapRefs.Panel
+		or not mapRefs.MapArea
 	then
 		return
 	end
-
-	local anchor =
-		currentObjective
-		and findObjectiveAnchor(
-			currentObjective
-		)
-		or nil
-
-	if not anchor then
-		if objectiveMarkerClone then
-			objectiveMarkerClone.Visible = false
-		end
-		return
-	end
-
-	if not objectiveMarkerClone
-		or not objectiveMarkerClone.Parent
-	then
-		objectiveMarkerClone =
-			cloneAuthoredTemplate(
-				objectiveMarkerTemplate,
-				"CurrentObjectiveRuntime",
-				markerContainer
-			)
-	end
-
-	if objectiveMarkerClone then
-		-- After a clear, the authored CurrentObjectiveMarker becomes the
-		-- persistent "go this way" signal at the Exit.
-		setRuntimeScale(
-			objectiveMarkerClone,
-			advanceMarkerScale()
-		)
-
-		objectiveMarkerClone:SetAttribute(
-			"RuntimeAdvanceActive",
-			workspace:GetAttribute(
-				"DungeonIslandAdvanceActive"
-			) == true
-		)
-		objectiveMarkerClone:SetAttribute(
-			"RuntimeAdvanceToIsland",
-			workspace:GetAttribute(
-				"DungeonIslandAdvanceToIsland"
-			)
-		)
-
-		local pixel =
-			mapAbsolutePixel(
-				anchor.Position,
-				playerRoot,
-				objectiveMarkerClone,
-				markerOccupied
-			)
-
-		objectiveMarkerClone.Visible =
-			pixel ~= nil
-
-		if pixel then
-			local position =
-				pixelToParentPosition(
-					pixel,
-					markerContainer
-				)
-
-			if position then
-				objectiveMarkerClone.Position =
-					position
-			end
-		end
-	end
-end
-
-local function updateNorthLabel(_playerRoot, metrics)
-	if not northLabel
-		or not northLabel.Parent
-		or not metrics
-	then
-		return
-	end
-
-	-- North is always fixed at the top because the map itself never rotates.
-	local northSize =
-		approximateGuiSize(
-			northLabel,
-			metrics
-		)
-
-	local labelRadius =
-		math.max(
-			northSize.X,
-			northSize.Y
-		) * 0.5
-
-	local northPixel =
-		metrics.CenterAbsolute
-		+ Vector2.new(
-			0,
-			-math.max(
-				8,
-				metrics.RadiusPixels
-					- labelRadius
-					- 2
-			)
-		)
-
-	if northLabel.Parent:IsA("GuiObject") then
-		local position =
-			pixelToParentPosition(
-				northPixel,
-				northLabel.Parent
-			)
-
-		if position then
-			northLabel.AnchorPoint =
-				Vector2.new(0.5, 0.5)
-			northLabel.Position =
-				position
-			northLabel.Rotation = 0
-			northLabel.Visible = true
-		end
-	end
-end
-
-local function updatePlayerArrowRotation(playerRoot)
-	if not playerArrow or not playerRoot then
-		return
-	end
-
-	-- North (-Z) = 0°
-	-- East  (+X) = +90°
-	-- South (+Z) = 180°
-	-- West  (-X) = -90°
-	local look = playerRoot.CFrame.LookVector
-
-	playerArrow.Rotation =
-		math.deg(
-			math.atan2(
-				look.X,
-				-look.Z
-			)
-		)
-end
-
-local minimapElapsed = 0
-
-RunService.RenderStepped:Connect(function(dt)
-	if not miniMap then
-		return
-	end
-
-	minimapElapsed += dt
-
-	if minimapElapsed < MINIMAP_UPDATE_INTERVAL then
-		return
-	end
-
-	minimapElapsed = 0
 
 	local character = player.Character
 	local root =
@@ -2812,371 +2141,435 @@ RunService.RenderStepped:Connect(function(dt)
 			"HumanoidRootPart"
 		)
 
-	if not root or not root:IsA("BasePart") then
+	if not root then
 		return
 	end
 
-	local metrics = minimapMetrics()
-	if not metrics then
-		return
-	end
+	if mapRefs.PlayerArrow then
+		mapRefs.PlayerArrow.Visible = true
+		mapRefs.PlayerArrow.AnchorPoint =
+			Vector2.new(0.5, 0.5)
 
-	-- Fresh collision layout every visual update.
-	table.clear(islandOccupied)
-	table.clear(markerOccupied)
+		mapRefs.PlayerArrow.Position =
+			UDim2.fromScale(0.5, 0.5)
 
-	-- Reserve the real player icon area so other markers do not cover it.
-	if playerArrow then
-		centerObjectInMap(
-			playerArrow,
-			metrics
-		)
+		local look =
+			root.CFrame.LookVector
 
-		updatePlayerArrowRotation(root)
-
-		local arrowSize =
-			approximateGuiSize(
-				playerArrow,
-				metrics
+		mapRefs.PlayerArrow.Rotation =
+			math.deg(
+				math.atan2(
+					look.X,
+					-look.Z
+				)
 			)
-
-		table.insert(markerOccupied, {
-			Position = metrics.CenterAbsolute,
-			Radius =
-				math.max(
-					arrowSize.X,
-					arrowSize.Y
-				) * 0.5,
-		})
 	end
 
-	updateIslands(root)
-	updateGates(root)
-	updateHostiles(root)
-	updateObjectiveMarker(root)
-	updateNorthLabel(root, metrics)
+	local seenIslands = {}
 
-	-- Useful live diagnostics without adding any visual debug UI.
-	miniMap:SetAttribute(
-		"RuntimeMapPixelWidth",
-		math.floor(metrics.Size.X + 0.5)
-	)
-	miniMap:SetAttribute(
-		"RuntimeMapPixelHeight",
-		math.floor(metrics.Size.Y + 0.5)
-	)
-	miniMap:SetAttribute(
-		"RuntimeMapRadiusPixels",
-		math.floor(metrics.RadiusPixels + 0.5)
-	)
-	miniMap:SetAttribute(
-		"RuntimeMapRangeStuds",
-		math.floor(metrics.WorldRange + 0.5)
-	)
-	miniMap:SetAttribute(
-		"RuntimeMapMaxHeightDifferenceStuds",
-		math.floor(metrics.MaxHeightDifference + 0.5)
-	)
+	if mapRefs.IslandContainer then
+		for _, folder in ipairs(
+			CollectionService:GetTagged(
+				"DungeonGameplayMarkers"
+			)
+		) do
+			if folder:IsA("Folder")
+				and folder.Parent
+			then
+				local worldPosition,
+					island =
+						markerWorldPosition(
+							folder
+						)
 
-	local visibleIslandCount = 0
-	for _, marker in pairs(islandMarkers) do
-		if marker
-			and marker.Parent
-			and marker.Visible
-		then
-			visibleIslandCount += 1
+				if worldPosition
+					and island
+				then
+					local position =
+						mapPosition(
+							mapRefs,
+							worldPosition,
+							root
+						)
+
+					if position then
+						seenIslands[folder] =
+							true
+
+						local marker =
+							islandMarkers[folder]
+
+						local template =
+							chooseIslandTemplate(
+								mapRefs,
+								island
+							)
+
+						if template
+							and (
+								not marker
+								or not marker.Parent
+							)
+						then
+							marker =
+								cloneTemplate(
+									template,
+									"Island_"
+										.. island.Name,
+									mapRefs
+										.IslandContainer
+								)
+							islandMarkers[folder] =
+								marker
+						end
+
+						if marker then
+							marker.Position =
+								position
+							marker.Visible =
+								true
+
+							local levelText =
+								text(
+									marker,
+									{
+										"LevelText",
+										"Level",
+										"RecommendedLevel",
+									}
+								)
+
+							setText(
+								levelText,
+								tostring(
+									island:GetAttribute(
+										"RecommendedLevel"
+									)
+										or island:GetAttribute(
+											"IslandLevel"
+										)
+										or ""
+								)
+							)
+						end
+					end
+				end
+			end
 		end
 	end
-	miniMap:SetAttribute(
-		"RuntimeVisibleIslandCount",
-		visibleIslandCount
-	)
-	miniMap:SetAttribute(
-		"RuntimeIslandShrinkStartRatio",
-		math.clamp(
-			tonumber(
-				miniMap:GetAttribute("MapIslandShrinkStartRatio")
-			) or 0.75,
-			0.40,
-			0.95
-		)
-	)
-	miniMap:SetAttribute(
-		"RuntimeIslandMinimumScale",
-		math.clamp(
-			tonumber(
-				miniMap:GetAttribute("MapIslandMinimumScale")
-			) or 0.70,
-			0.40,
-			1.00
-		)
-	)
-	miniMap:SetAttribute(
-		"RuntimeMobVisibleRangeRatio",
-		math.clamp(
-			tonumber(
-				miniMap:GetAttribute("MapMobVisibleRangeRatio")
-			) or 0.68,
-			0.25,
-			1.00
-		)
-	)
-end)
+
+	for source, marker in pairs(
+		islandMarkers
+	) do
+		if not seenIslands[source]
+			or not source.Parent
+		then
+			if marker and marker.Parent then
+				marker:Destroy()
+			end
+			islandMarkers[source] = nil
+		end
+	end
+
+	local seenMobs = {}
+
+	if mapRefs.MarkerContainer
+		and mapRefs.HostileMobTemplate
+	then
+		for _, target in ipairs(
+			CollectionService:GetTagged(
+				"CombatTarget"
+			)
+		) do
+			if target:IsA("Model")
+				and target.Parent
+				and target:GetAttribute(
+					"Peaceful"
+				) ~= true
+			then
+				local targetRoot =
+					target:FindFirstChild(
+						"HumanoidRootPart",
+						true
+					)
+						or target.PrimaryPart
+
+				if targetRoot
+					and targetRoot:IsA(
+						"BasePart"
+					)
+				then
+					local position =
+						mapPosition(
+							mapRefs,
+							targetRoot.Position,
+							root
+						)
+
+					if position then
+						seenMobs[target] =
+							true
+
+						local marker =
+							hostileMarkers[target]
+
+						if not marker
+							or not marker.Parent
+						then
+							marker =
+								cloneTemplate(
+									mapRefs
+										.HostileMobTemplate,
+									"HostileMob",
+									mapRefs
+										.MarkerContainer
+								)
+
+							hostileMarkers[target] =
+								marker
+						end
+
+						if marker then
+							marker.Position =
+								position
+							marker.Visible =
+								true
+						end
+					end
+				end
+			end
+		end
+	end
+
+	for source, marker in pairs(
+		hostileMarkers
+	) do
+		if not seenMobs[source]
+			or not source.Parent
+		then
+			if marker and marker.Parent then
+				marker:Destroy()
+			end
+			hostileMarkers[source] = nil
+		end
+	end
+end
 
 ---------------------------------------------------------------------
--- Missions
--- MissionTemplate e todo seu visual devem existir no Studio.
+-- Persistent resolver / recovery loop
 ---------------------------------------------------------------------
 
-local missionList
-local missionTemplate
-local collapseButton
-local missionRows = {}
-local missionsCollapsed = false
+dirty = true
+local elapsed = 0
+local mapElapsed = 0
+local menuOpen = false
 
-if missionsPanel then
-	missionsPanel.Visible = true
+local function markDirty()
+	dirty = true
+end
 
-	missionList = authored(
-		missionsPanel,
-		"Missions.MissionList",
-		{ "MissionList", "MissionsList", "QuestList", "List", "Content" },
-		isGui
-	)
+local function forceRecover(reason)
+	dirty = true
 
-	if missionList then
-		missionTemplate = authored(
-			missionList,
-			"Missions.MissionTemplate",
-			{ "MissionTemplate", "QuestTemplate", "MissionItem", "QuestItem", "Template" },
-			isGui
+	task.defer(function()
+		resolveAndBind()
+		enforceCoreVisibility(
+			reason or "ForceRecover"
 		)
-
-		if missionTemplate then
-			missionTemplate.Visible = false
-		end
-	end
-
-	collapseButton = authored(
-		missionsPanel,
-		"Missions.CollapseButton",
-		{ "CollapseButton", "Collapse", "ToggleButton", "MinimizeButton", "ArrowButton" },
-		function(object)
-			return object:IsA("GuiButton")
-		end
-	)
-end
-
-local function clearMissionRows()
-	for _, row in ipairs(missionRows) do
-		if row.Parent then
-			row:Destroy()
-		end
-	end
-	table.clear(missionRows)
-end
-
-local function addMission(order, titleText, descriptionText, progressText)
-	if not missionTemplate or not missionList then
-		return
-	end
-
-	local row = missionTemplate:Clone()
-	row.Name = "RuntimeMission_" .. tostring(order)
-	row.LayoutOrder = order
-	row.Visible = true
-	row:SetAttribute("RuntimeCloneOfAuthoredTemplate", true)
-	row.Parent = missionList
-
-	local title = findAuthored(
-		row,
-		{ "MissionTitle", "QuestTitle", "Title", "Name" },
-		isText
-	)
-
-	local description = findAuthored(
-		row,
-		{ "Description", "MissionDescription", "QuestDescription", "Detail" },
-		isText
-	)
-
-	local progress = findAuthored(
-		row,
-		{ "Progress", "ProgressText", "Counter", "Count" },
-		isText
-	)
-
-	setText(title, titleText)
-	setText(description, descriptionText)
-	setText(progress, progressText or "")
-
-	if progress and isGui(progress) then
-		progress.Visible = progressText ~= nil and progressText ~= ""
-	end
-
-	table.insert(missionRows, row)
-end
-
-local function renderMissions(_snapshot)
-	if not missionsPanel then
-		return
-	end
-
-	-- MVP simplificado:
-	-- ObjectivePanel is the single objective surface.
-	-- The old Missions/Round list would duplicate information and reintroduce
-	-- obsolete Round language. Keep the designer-authored panel untouched but
-	-- hidden until a later mission system genuinely needs it.
-	clearMissionRows()
-	missionsPanel.Visible = false
-	missionsPanel:SetAttribute(
-		"RuntimeDisabledReason",
-		"SimplifiedCombatMVP"
-	)
-end
-
-if collapseButton and missionList then
-	collapseButton.Activated:Connect(function()
-		if missionsPanel
-			and missionsPanel.Visible
-		then
-			missionsCollapsed =
-				not missionsCollapsed
-			missionList.Visible =
-				not missionsCollapsed
-		end
+		syncObjective()
+		syncStatus()
 	end)
 end
 
----------------------------------------------------------------------
--- Dispatcher
----------------------------------------------------------------------
+playerGui.DescendantAdded:Connect(
+	markDirty
+)
+playerGui.DescendantRemoving:Connect(
+	markDirty
+)
+StarterGui.DescendantAdded:Connect(
+	markDirty
+)
+StarterGui.DescendantRemoving:Connect(
+	markDirty
+)
 
-local function dispatchObjective(snapshot)
-	renderObjective(snapshot)
-	renderMissions(snapshot)
-end
+player.CharacterAdded:Connect(function(character)
+	destroyPortraitViewport()
+	bindPortraitCharacterSignals(
+		character
+	)
 
+	forceRecover(
+		"CharacterAdded"
+	)
+
+	task.delay(
+		0.2,
+		rebuildPortraitSoon
+	)
+end)
+
+player.CharacterAppearanceLoaded:Connect(
+	function(character)
+		if character == player.Character then
+			rebuildPortraitSoon()
+		end
+	end
+)
+
+GuiService.MenuOpened:Connect(function()
+	menuOpen = true
+	player:SetAttribute(
+		"DungeonRobloxMenuOpen",
+		true
+	)
+end)
+
+GuiService.MenuClosed:Connect(function()
+	menuOpen = false
+	player:SetAttribute(
+		"DungeonRobloxMenuOpen",
+		false
+	)
+
+	-- The CoreGui menu/Settings overlay has just released the viewport.
+	-- Re-resolve and restore the authored HUD immediately and once again on
+	-- the next rendered frame to cover Roblox/Studio ordering races.
+	forceRecover(
+		"RobloxMenuClosed"
+	)
+
+	task.spawn(function()
+		RunService.RenderStepped:Wait()
+		forceRecover(
+			"RobloxMenuClosedNextFrame"
+		)
+	end)
+end)
+
+-- If another system adds a duplicate DungeonHUD after character load,
+-- preserve the currently bound one and remove only the duplicate.
+playerGui.ChildAdded:Connect(function(child)
+	if not child:IsA("ScreenGui")
+		or normalize(child.Name)
+			~= normalize("DungeonHUD")
+	then
+		return
+	end
+
+	task.defer(function()
+		local current = boundHud
+
+		if current
+			and current.Parent == playerGui
+			and child.Parent == playerGui
+			and child ~= current
+		then
+			child:Destroy()
+		end
+
+		dirty = true
+	end)
+end)
+
+RunService.Heartbeat:Connect(function(dt)
+	elapsed += dt
+
+	if dirty or elapsed >= 0.25 then
+		elapsed = 0
+		dirty = false
+
+		resolveAndBind()
+
+		-- Critical V15 behavior:
+		-- visibility is enforced every watchdog pass, not only when the
+		-- Instance references change.
+		enforceCoreVisibility(
+			menuOpen
+				and "WatchdogWhileRobloxMenuOpen"
+				or "Watchdog"
+		)
+
+		syncObjective()
+		syncStatus()
+	end
+end)
+
+RunService.RenderStepped:Connect(function(dt)
+	mapElapsed += dt
+
+	if mapElapsed < 0.10 then
+		return
+	end
+
+	mapElapsed = 0
+
+	-- If the bound objects were destroyed, recovery occurs on next Heartbeat.
+	if boundHud and not boundHud.Parent then
+		dirty = true
+		return
+	end
+
+	syncMinimap()
+end)
+
+-- Workspace objective changes also refresh immediately.
 for _, attribute in ipairs({
 	"DungeonObjectiveState",
-	"DungeonObjectiveId",
 	"DungeonObjectiveTitle",
 	"DungeonObjectiveDescription",
-	"DungeonObjectiveRoundIndex",
-	"DungeonObjectiveIslandIndex",
-	"DungeonObjectiveGlobalIslandIndex",
 	"DungeonObjectiveProgress",
 	"DungeonObjectiveTarget",
-	"DungeonObjectiveWaypointEscalated",
-	"DungeonObjectiveExitLocked",
-	"DungeonLinearRouteComplete",
+	"DungeonObjectiveGlobalIslandIndex",
 	"DungeonCurrentObjectiveIsland",
-	"DungeonHighestUnlockedCombatIsland",
-	"DungeonIslandAdvanceActive",
-	"DungeonIslandAdvanceToIsland",
-	"DungeonIslandClearFeedbackSerial",
 }) do
-	workspace:GetAttributeChangedSignal(attribute):Connect(function()
-		dispatchObjective(readObjective())
+	workspace:GetAttributeChangedSignal(
+		attribute
+	):Connect(function()
+		syncObjective()
 	end)
 end
 
-workspace:GetAttributeChangedSignal(
-	"DungeonIslandClearFeedbackSerial"
-):Connect(function()
-	updateIslandClearFeedbackSerial()
-end)
-
-task.spawn(function()
-	local shared = ReplicatedStorage:FindFirstChild("Shared")
-		or ReplicatedStorage:WaitForChild("Shared", 20)
-
-	if not shared then
-		return
-	end
-
-	local utilities = shared:FindFirstChild("Utilities")
-		or shared:WaitForChild("Utilities", 10)
-
-	if not utilities then
-		return
-	end
-
-	local registryModule = utilities:FindFirstChild("RemoteRegistry")
-	if not registryModule then
-		return
-	end
-
-	local okRegistry, registry = pcall(require, registryModule)
-	if not okRegistry or not registry then
-		return
-	end
-
-	local okRemote, remote = pcall(
-		registry.Get,
-		"Dungeon",
-		"ObjectiveState",
-		"RemoteEvent"
-	)
-
-	if not okRemote or not remote then
-		return
-	end
-
-	remote.OnClientEvent:Connect(function(payload)
-		if workspace:GetAttribute(
-			"DungeonRouteProgressionAuthority"
-		) == "CombatRouteProgressionService"
-		then
-			-- Task 09 publishes the authoritative simplified objective through
-			-- Workspace Attributes. Ignore legacy ObjectiveService snapshots.
-			return
-		end
-
-		if type(payload) == "table"
-			and payload.Action
-				== "ObjectiveSnapshot"
-		then
-			dispatchObjective(
-				payload.Objective
-			)
-		end
+-- Player progression changes refresh immediately.
+for _, attribute in ipairs({
+	"PlayerLevel",
+	"PlayerXP",
+	"PlayerXPToNextLevel",
+}) do
+	player:GetAttributeChangedSignal(
+		attribute
+	):Connect(function()
+		syncStatus()
 	end)
-end)
+end
 
-dispatchObjective(readObjective())
+workspace:SetAttribute(
+	"DungeonAuthoredHUDControllerVersion",
+	VERSION
+)
 
 player:SetAttribute(
-	"DungeonArtHUDBindingVersion",
-	"NewCoreV1"
+	"DungeonArtHUDMode",
+	"PersistentMenuSafeAuthoredOnly"
 )
 player:SetAttribute(
-	"DungeonArtHUDPlayerProgressionSource",
-	"PlayerLevelService"
+	"DungeonRobloxMenuOpen",
+	GuiService.MenuIsOpen
 )
 player:SetAttribute(
-	"DungeonArtHUDObjectiveSource",
-	"CombatRouteProgressionService"
-)
-player:SetAttribute(
-	"DungeonArtHUDMinimapMobPolicy",
-	"IslandCombatManagedOnly"
-)
-player:SetAttribute(
-	"DungeonIslandAdvanceFeedbackVersion",
-	IslandAdvanceFeedbackConfig.Version
-)
-player:SetAttribute(
-	"DungeonIslandAdvanceFeedbackCreatesVisuals",
+	"DungeonArtHUDCreatesVisuals",
 	false
 )
 
-player:SetAttribute("DungeonArtHUDControllerReady", true)
-player:SetAttribute("DungeonArtHUDMode", "AuthoredOnlyV12NewCore")
-player:SetAttribute("DungeonArtHUDCreatesVisuals", false)
+-- Initial attempt. Failure here is harmless: the loop continues forever.
+resolveAndBind()
+syncObjective()
+syncStatus()
+ensureStaticPortrait()
 
-if hud then
-	hud:SetAttribute("ControllerReady", true)
-end
-
-print("[AuthoredHUD] V12 NewCore ready. Studio desenha; controller apenas controla.")
+print(
+	"[AuthoredHUD V17] Menu-safe watchdog + retrato 3D frontal estatico ativo. "
+		.. "DungeonHUD exato; sem timeout fatal; "
+		.. "Enabled/Visible protegidos."
+)
