@@ -32,6 +32,10 @@ local CombatRouteSpacingConfig = require(
 	ReplicatedStorage.Shared.Configs.CombatRouteSpacingConfig
 )
 
+local IslandProgressionConfig = require(
+	ReplicatedStorage.Shared.Configs.IslandProgressionConfig
+)
+
 local DungeonRoutePlanner = {}
 
 local MAXIMUM_SEED = 2147483647
@@ -380,6 +384,31 @@ local function createCombatSpec(
 		globalIndex
 	spec.ProtectionGlobalIslandIndex =
 		globalIndex
+	spec.IsInitialIsland =
+		globalIndex == 1
+	spec.NumberedIslandIndex =
+		math.max(0, globalIndex - 1)
+	spec.IslandDisplayLabel =
+		globalIndex == 1
+			and "Inicial"
+			or string.format(
+				"Ilha %d",
+				globalIndex - 1
+			)
+
+	local progressionSnapshot =
+		IslandProgressionConfig.GetSnapshot(
+			globalIndex
+		)
+
+	spec.CycleIndex =
+		progressionSnapshot.CycleIndex
+	spec.IslandIndexInCycle =
+		progressionSnapshot.IslandIndexInCycle
+	spec.LevelInCycle =
+		progressionSnapshot.LevelInCycle
+	spec.XPRewardMultiplier =
+		progressionSnapshot.XPRewardMultiplier
 
 	spec.IsMandatoryRoute = true
 	spec.IsOptionalRoute = false
@@ -388,10 +417,10 @@ local function createCombatSpec(
 	spec.RoundExitIndex = nil
 	spec.IsBossSanctuary = false
 
-	spec.IsStart = globalIndex == 1
+	spec.IsStart = spec.IsInitialIsland
 	spec.IsSanctuary = false
 	spec.Role =
-		globalIndex == 1
+		spec.IsInitialIsland
 			and "CombatEntry"
 			or "CombatIsland"
 
@@ -617,7 +646,7 @@ function DungeonRoutePlanner.Build(options)
 	end
 
 	return {
-		Version = 8,
+		Version = 9,
 		MarkerContractVersion = 2,
 
 		CompactSpacingVersion =
@@ -684,6 +713,12 @@ function DungeonRoutePlanner.Build(options)
 
 		TotalIslandCount =
 			totalIslandCount,
+
+		MobCycleLevels =
+			IslandProgressionConfig.LevelsPerCycle,
+
+		MobCycleIslandCount =
+			IslandProgressionConfig.IslandsPerCycle,
 
 		ObjectiveIslandCount =
 			totalIslandCount,

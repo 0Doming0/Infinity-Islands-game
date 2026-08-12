@@ -1,6 +1,6 @@
 --[[
-	Infinity Islands - Task 05
-	MonsterSpawner - IslandLevel authority
+	Infinity Islands - Task 05 + Task 07 + Task 08
+	MonsterSpawner - LevelInCycle + CycleIndex authority
 
 	REPLACES the old RoundIndex/DifficultyTier normal-island spawning model.
 
@@ -14,9 +14,9 @@
 		- GlobalIslandIndex
 		- IslandLevel
 		- RecommendedLevel
-		- MobLevel = IslandLevel
+		- MobLevel = LevelInCycle
 		- IslandCombatManaged = true
-	6. HP / damage are based on MobLevel, then party scaling is applied.
+	6. HP / damage are based on MobLevel + CycleIndex, then party scaling.
 	7. PlayerLevel is never read.
 
 	Task 06:
@@ -25,6 +25,19 @@
 	- guaranteed introduction of newly-unlocked mechanics;
 	- mobile-safe ranged/special caps;
 	- Golden excluded from regular Combat Islands.
+
+	Task 07:
+	- CycleIndex is read only from the island/global progression index;
+	- LevelInCycle repeats the 1-12 stat and mob-count curve;
+	- the advanced roster remains globally unlocked and never returns to Green;
+	- HP and damage compound by 3x per completed cycle;
+	- movement speed compounds by 2x per completed cycle;
+	- PlayerLevel remains excluded from enemy scaling.
+
+	Task 08:
+	- XP compounds by 3x per completed cycle;
+	- cycle XP is applied once to XPReward before the risk bonus;
+	- the physical collectible service consumes the same XPReward attribute.
 
 	Legacy objective API is kept temporarily so the migration does not break:
 	SpawnObjectiveMonster / DespawnObjectiveMonsters / etc.
@@ -94,6 +107,10 @@ local ContentResolver = require(
 
 local PartyScalingService = require(
 	script.Parent.Parent.DungeonRuntime.PartyScalingService
+)
+
+local TutorialIslandTemplateService = require(
+	script.Parent.Parent.DungeonRuntime.TutorialIslandTemplateService
 )
 
 local ObjectiveSignalBridge = require(
@@ -198,6 +215,21 @@ local function globalIslandIndex(island)
 	)
 end
 
+local function isInitialIsland(island, resolvedGlobalIndex)
+	if not island then
+		return resolvedGlobalIndex == 1
+	end
+
+	if island:GetAttribute("IsInitialIsland") == true
+		or island:GetAttribute("NumberedIslandIndex") == 0
+		or island:GetAttribute("IslandRole") == "CombatEntry"
+	then
+		return true
+	end
+
+	return resolvedGlobalIndex == 1
+end
+
 local function islandLevel(island)
 	local explicit =
 		tonumber(
@@ -232,6 +264,42 @@ local function recommendedLevel(island)
 	end
 
 	return islandLevel(island)
+end
+
+local function islandCycleIndex(island, globalIndex)
+	local explicit =
+		tonumber(
+			island
+				and island:GetAttribute(
+					"CycleIndex"
+				)
+		)
+
+	if explicit then
+		return math.max(1, math.floor(explicit))
+	end
+
+	return IslandProgressionConfig.GetCycleIndex(
+		globalIndex or globalIslandIndex(island) or 1
+	)
+end
+
+local function mobLevelInCycle(island, globalIndex)
+	local explicit =
+		tonumber(
+			island
+				and island:GetAttribute(
+					"LevelInCycle"
+				)
+		)
+
+	if explicit then
+		return math.max(1, math.floor(explicit))
+	end
+
+	return IslandProgressionConfig.GetLevelInCycle(
+		globalIndex or globalIslandIndex(island) or 1
+	)
 end
 
 local function getRoot(model)
@@ -901,6 +969,18 @@ local function awardManagedMobXP(
 			)
 		)
 
+	local riskRewardLevel =
+		math.max(
+			1,
+			math.floor(
+				tonumber(
+					model:GetAttribute(
+						"RecommendedLevel"
+					)
+				) or mobLevel
+			)
+		)
+
 	local baseReward =
 		math.max(
 			1,
@@ -915,7 +995,10 @@ local function awardManagedMobXP(
 							model:GetAttribute(
 								"SlimeVariant"
 							),
-							mobLevel
+							mobLevel,
+							model:GetAttribute(
+								"XPRewardMultiplier"
+							)
 						)
 			)
 		)
@@ -948,7 +1031,7 @@ local function awardManagedMobXP(
 				MobXPConfig
 					.GetAwardForPlayer(
 						baseReward,
-						mobLevel,
+						riskRewardLevel,
 						playerLevel
 					)
 
@@ -992,6 +1075,22 @@ local function awardManagedMobXP(
 			player:SetAttribute(
 				"LastMobXPLevel",
 				mobLevel
+			)
+			player:SetAttribute(
+				"LastMobXPRiskLevel",
+				riskRewardLevel
+			)
+			player:SetAttribute(
+				"LastMobXPCycleIndex",
+				model:GetAttribute(
+					"CycleIndex"
+				)
+			)
+			player:SetAttribute(
+				"LastMobXPRewardMultiplier",
+				model:GetAttribute(
+					"XPRewardMultiplier"
+				)
 			)
 			player:SetAttribute(
 				"LastMobXPIslandIndex",
@@ -1296,7 +1395,37 @@ local function spawnClone(
 			)
 			or monsterId
 
-	local mobLevel = islandLevel(island)
+	local globalIndex =
+		cleanIndex(
+			spawnOptions.GlobalIslandIndex
+				or globalIslandIndex(island)
+		)
+
+	local initialIsland =
+		spawnOptions.InitialIsland == true
+			or isInitialIsland(island, globalIndex)
+
+	local modelScaleMultiplier =
+		initialIsland
+			and EarlyGamePacingConfig
+				.InitialIslandModelScale
+			or 1
+
+	if modelScaleMultiplier ~= 1 then
+		clone:ScaleTo(
+			clone:GetScale()
+				* modelScaleMultiplier
+		)
+	end
+
+	local mobLevel =
+		mobLevelInCycle(island, globalIndex)
+	local cycleIndex =
+		islandCycleIndex(island, globalIndex)
+	local cycleMultipliers =
+		IslandMobScalingConfig.GetCycleMultipliers(
+			cycleIndex
+		)
 
 	local baseHealth =
 		math.max(
@@ -1318,11 +1447,13 @@ local function spawnClone(
 			)
 		)
 
-	if slimeDefinition then
+	if slimeDefinition and not initialIsland then
 		baseHealth *=
 			slimeDefinition.HealthMultiplier
 				or 1
+	end
 
+	if slimeDefinition then
 		baseDamage =
 			slimeDefinition.AttackDamage
 				or baseDamage
@@ -1359,6 +1490,7 @@ local function spawnClone(
 	local health =
 		baseHealth
 		* healthLevelMultiplier
+		* cycleMultipliers.Health
 		* roleHealth
 		* math.max(
 			0.1,
@@ -1370,6 +1502,7 @@ local function spawnClone(
 	local damage =
 		baseDamage
 		* damageLevelMultiplier
+		* cycleMultipliers.Damage
 		* roleDamage
 		* math.max(
 			0.1,
@@ -1379,7 +1512,8 @@ local function spawnClone(
 		)
 
 	local speedMultiplier =
-		roleSpeed
+		cycleMultipliers.Speed
+		* roleSpeed
 		* math.max(
 			0.25,
 			tonumber(
@@ -1439,13 +1573,7 @@ local function spawnClone(
 			)
 				* speedMultiplier,
 			4,
-			28
-		)
-
-	local globalIndex =
-		cleanIndex(
-			spawnOptions.GlobalIslandIndex
-				or globalIslandIndex(island)
+			28 * cycleMultipliers.Speed
 		)
 
 	local recommended =
@@ -1505,7 +1633,8 @@ local function spawnClone(
 
 	-- New difficulty contract.
 	clone:SetAttribute("MobLevel", mobLevel)
-	clone:SetAttribute("IslandLevel", mobLevel)
+	clone:SetAttribute("MobLevelInCycle", mobLevel)
+	clone:SetAttribute("IslandLevel", recommended)
 	clone:SetAttribute(
 		"RecommendedLevel",
 		recommended
@@ -1515,8 +1644,28 @@ local function spawnClone(
 		globalIndex
 	)
 	clone:SetAttribute(
+		"IsInitialIslandMob",
+		initialIsland
+	)
+	clone:SetAttribute(
+		"InitialIslandModelScale",
+		modelScaleMultiplier
+	)
+	clone:SetAttribute(
+		"InitialIslandSizeReductionPercent",
+		initialIsland and 40 or 0
+	)
+	clone:SetAttribute(
+		"InitialIslandHealthNormalizedToGreen",
+		initialIsland
+	)
+	clone:SetAttribute(
+		"CycleIndex",
+		cycleIndex
+	)
+	clone:SetAttribute(
 		"MobDifficultySource",
-		"IslandLevelV1"
+		"LevelInCycleAndCycleIndexV3"
 	)
 	clone:SetAttribute(
 		"HealthLevelMultiplier",
@@ -1525,6 +1674,18 @@ local function spawnClone(
 	clone:SetAttribute(
 		"DamageLevelMultiplier",
 		damageLevelMultiplier
+	)
+	clone:SetAttribute(
+		"MobCycleHealthMultiplier",
+		cycleMultipliers.Health
+	)
+	clone:SetAttribute(
+		"MobCycleDamageMultiplier",
+		cycleMultipliers.Damage
+	)
+	clone:SetAttribute(
+		"MobCycleSpeedMultiplier",
+		cycleMultipliers.Speed
 	)
 	clone:SetAttribute(
 		"BaseMaxHealth",
@@ -1599,10 +1760,12 @@ local function spawnClone(
 				)
 				or "Green"
 		)
+	local xpRewardVariant =
+		initialIsland and "Green" or slimeVariantName
 
 	local baseXPReward =
 		MobXPConfig.GetBaseXP(
-			slimeVariantName
+			xpRewardVariant
 		)
 
 	local xpLevelMultiplier =
@@ -1610,19 +1773,62 @@ local function spawnClone(
 			mobLevel
 		)
 
+	local xpCycleMultiplier =
+		IslandProgressionConfig.GetXPRewardMultiplier(
+			cycleIndex
+		)
+
+	local initialXPRewardMultiplier =
+		initialIsland
+			and EarlyGamePacingConfig
+				.InitialIslandXPRewardMultiplier
+			or 1
+
+	local effectiveXPRewardMultiplier =
+		xpCycleMultiplier
+			* initialXPRewardMultiplier
+
 	local xpReward =
 		MobXPConfig.GetMobXPReward(
-			slimeVariantName,
-			mobLevel
+			xpRewardVariant,
+			mobLevel,
+			xpCycleMultiplier
 		)
+
+	if initialIsland then
+		xpReward = math.max(
+			MobXPConfig.MinimumReward,
+			math.floor(
+				xpReward
+					* initialXPRewardMultiplier
+					+ 0.5
+			)
+		)
+	end
 
 	clone:SetAttribute(
 		"BaseXPReward",
 		baseXPReward
 	)
 	clone:SetAttribute(
+		"XPRewardVariant",
+		xpRewardVariant
+	)
+	clone:SetAttribute(
 		"XPLevelMultiplier",
 		xpLevelMultiplier
+	)
+	clone:SetAttribute(
+		"XPRewardMultiplier",
+		effectiveXPRewardMultiplier
+	)
+	clone:SetAttribute(
+		"XPCycleMultiplier",
+		xpCycleMultiplier
+	)
+	clone:SetAttribute(
+		"InitialIslandXPRewardMultiplier",
+		initialXPRewardMultiplier
 	)
 	clone:SetAttribute(
 		"XPReward",
@@ -1752,10 +1958,65 @@ local function spawnClone(
 		cellRecord.Cell.Z
 	)
 
+	local forcePeaceful =
+		spawnOptions.ForcePeaceful == true
+
+	local tutorialEnemyArea =
+		cellRecord.TutorialEnemyArea
+
+	if forcePeaceful then
+		clone:SetAttribute(
+			"TutorialPassive",
+			true
+		)
+		clone:SetAttribute(
+			"PermanentPeaceful",
+			true
+		)
+		clone:SetAttribute(
+			"CanDamagePlayers",
+			false
+		)
+		clone:SetAttribute(
+			"AttackDamage",
+			0
+		)
+		clone:SetAttribute(
+			"AggroUserId",
+			nil
+		)
+		clone:SetAttribute(
+			"TargetUserId",
+			nil
+		)
+
+		if tutorialEnemyArea
+			and tutorialEnemyArea:IsA(
+				"BasePart"
+			)
+		then
+			clone:SetAttribute(
+				"TutorialEnemyAreaCFrame",
+				tutorialEnemyArea.CFrame
+			)
+			clone:SetAttribute(
+				"TutorialEnemyAreaSize",
+				tutorialEnemyArea.Size
+			)
+			clone:SetAttribute(
+				"TutorialEnemyAreaName",
+				tutorialEnemyArea.Name
+			)
+		end
+	end
+
 	local forceHostile =
-		spawnOptions.ForceHostile == true
-			or encounterId ~= nil
-			or islandCombatManaged
+		not forcePeaceful
+		and (
+			spawnOptions.ForceHostile == true
+				or encounterId ~= nil
+				or islandCombatManaged
+		)
 
 	local initiallyPeaceful =
 		template:GetAttribute("Peaceful")
@@ -1769,8 +2030,9 @@ local function spawnClone(
 
 	clone:SetAttribute(
 		"Peaceful",
-		not forceHostile
-			and initiallyPeaceful
+		forcePeaceful
+			or not forceHostile
+				and initiallyPeaceful
 			or false
 	)
 
@@ -1913,6 +2175,8 @@ local function spawnClone(
 			baseXPReward,
 		XPReward =
 			xpReward,
+		XPRewardMultiplier =
+			effectiveXPRewardMultiplier,
 		MobLevel =
 			mobLevel,
 		PlanAliveCounted =
@@ -1921,9 +2185,12 @@ local function spawnClone(
 
 	if entry.SlimeDefinition then
 		entry.SlimeDefinition.AttackDamage =
-			damage
+			forcePeaceful and 0 or damage
 
-		if forceHostile then
+		if forcePeaceful then
+			entry.SlimeDefinition.InitiallyPeaceful =
+				true
+		elseif forceHostile then
 			entry.SlimeDefinition.InitiallyPeaceful =
 				false
 		end
@@ -2121,6 +2388,14 @@ local function planFolders(plan)
 		"MobLevel",
 		plan.MobLevel
 	)
+	pointsFolder:SetAttribute(
+		"MobLevelInCycle",
+		plan.MobLevel
+	)
+	pointsFolder:SetAttribute(
+		"CycleIndex",
+		plan.CycleIndex
+	)
 
 	local monsterFolder =
 		island:FindFirstChild(
@@ -2141,6 +2416,14 @@ local function planFolders(plan)
 	monsterFolder:SetAttribute(
 		"MobLevel",
 		plan.MobLevel
+	)
+	monsterFolder:SetAttribute(
+		"MobLevelInCycle",
+		plan.MobLevel
+	)
+	monsterFolder:SetAttribute(
+		"CycleIndex",
+		plan.CycleIndex
 	)
 
 	plan.PointsFolder = pointsFolder
@@ -2233,8 +2516,16 @@ attemptSpawnPlan = function(plan)
 			plan.MobLevel
 		)
 		marker:SetAttribute(
+			"MobLevelInCycle",
+			plan.MobLevel
+		)
+		marker:SetAttribute(
 			"GlobalIslandIndex",
 			plan.GlobalIslandIndex
+		)
+		marker:SetAttribute(
+			"CycleIndex",
+			plan.CycleIndex
 		)
 
 		local firstEngagement =
@@ -2302,7 +2593,12 @@ attemptSpawnPlan = function(plan)
 					GlobalIslandIndex =
 						plan.GlobalIslandIndex,
 					IslandCombatManaged = true,
-					ForceHostile = true,
+					ForceHostile =
+						not plan.InitialIsland,
+					ForcePeaceful =
+						plan.InitialIsland,
+					InitialIsland =
+						plan.InitialIsland,
 					Role = "Common",
 					SkyDrop = true,
 					SkyDropHeightStuds =
@@ -2423,6 +2719,38 @@ local function buildPlan(
 		return nil, "GlobalIslandIndexMissing"
 	end
 
+	local initialIsland =
+		isInitialIsland(island, globalIndex)
+
+	island:SetAttribute("IsInitialIsland", initialIsland)
+	island:SetAttribute(
+		"NumberedIslandIndex",
+		math.max(0, globalIndex - 1)
+	)
+	island:SetAttribute(
+		"IslandDisplayLabel",
+		initialIsland
+			and "Inicial"
+			or string.format(
+				"Ilha %d",
+				globalIndex - 1
+			)
+	)
+	island:SetAttribute(
+		"InitialIslandMobScale",
+		initialIsland
+			and EarlyGamePacingConfig
+				.InitialIslandModelScale
+			or nil
+	)
+	island:SetAttribute(
+		"InitialIslandMobXPRewardMultiplier",
+		initialIsland
+			and EarlyGamePacingConfig
+				.InitialIslandXPRewardMultiplier
+			or nil
+	)
+
 	local size =
 		tostring(
 			island:GetAttribute("TerrainSize")
@@ -2433,7 +2761,22 @@ local function buildPlan(
 		size = "Small"
 	end
 
-	local level = islandLevel(island)
+	local level =
+		mobLevelInCycle(island, globalIndex)
+
+	local mobCountCyclePosition =
+		initialIsland
+			and 0
+			or IslandProgressionConfig
+				.GetIslandIndexInCycle(globalIndex)
+
+	-- A Ilha Inicial tem roster proprio de demonstracao. A numeracao real do
+	-- roster comeca na Ilha 1, portanto o indice global precisa descontar a
+	-- posicao inicial nao numerada.
+	local rosterProgressionLevel =
+		initialIsland
+			and 0
+			or math.max(1, globalIndex - 1)
 
 	local defaultPlanned =
 		IslandMobScalingConfig
@@ -2457,6 +2800,51 @@ local function buildPlan(
 
 	local available =
 		validCells(freeCells)
+	local tutorialEnemyArea
+
+	if initialIsland then
+		local tutorialCells,
+			area =
+				TutorialIslandTemplateService
+					.GetEnemySpawnCells(
+						island,
+						planned,
+						context
+							and context.GridSize
+							or 5
+					)
+
+		if #tutorialCells > 0 then
+			available = tutorialCells
+			tutorialEnemyArea = area
+			island:SetAttribute(
+				"MobSpawnAreaSource",
+				"TutorialIslandTemplate.areaEnemy"
+			)
+			island:SetAttribute(
+				"TutorialEnemyAreaSpawnEnabled",
+				true
+			)
+		else
+			island:SetAttribute(
+				"MobSpawnAreaSource",
+				"ProceduralFreeCellsFallback"
+			)
+			island:SetAttribute(
+				"TutorialEnemyAreaSpawnEnabled",
+				false
+			)
+		end
+
+		island:SetAttribute(
+			"TutorialMobBehaviorPolicy",
+			"PassiveNoAggroBoundedToAreaEnemy"
+		)
+		island:SetAttribute(
+			"TutorialMobsCanDamagePlayers",
+			false
+		)
+	end
 
 	local target =
 		math.min(
@@ -2533,22 +2921,51 @@ local function buildPlan(
 		return nil, "MonsterTemplateMissing"
 	end
 
-	local rosterSnapshot =
-		IslandMobRosterConfig.BuildRoster(
-			target,
-			level,
-			seed + 17749
-		)
+	local rosterSnapshot
+	if initialIsland then
+		rosterSnapshot =
+			IslandMobRosterConfig.BuildDemonstrationRoster(
+				target,
+				seed + 17749
+			)
+	else
+		rosterSnapshot =
+			IslandMobRosterConfig.BuildRoster(
+				target,
+				rosterProgressionLevel,
+				seed + 17749
+			)
+	end
 
 	local plan = {
 		Island = island,
 		GlobalIslandIndex =
 			globalIndex,
+		CycleIndex =
+			islandCycleIndex(
+				island,
+				globalIndex
+			),
 
 		FirstCombatEngagement =
 			engagementInfo,
 
+		TutorialEnemyArea =
+			tutorialEnemyArea,
+
+		NavigationCells =
+			initialIsland
+				and available
+				or nil,
+
+		InitialIsland =
+			initialIsland,
+
 		MobLevel = level,
+		MobCountCyclePosition =
+			mobCountCyclePosition,
+		RosterProgressionLevel =
+			rosterProgressionLevel,
 		IslandSize = size,
 		Seed = seed,
 		Template = template,
@@ -2629,8 +3046,52 @@ local function buildPlan(
 		level
 	)
 	island:SetAttribute(
+		"MobLevelInCycle",
+		level
+	)
+	island:SetAttribute(
+		"MobCycleIndex",
+		plan.CycleIndex
+	)
+	local planCycleMultipliers =
+		IslandMobScalingConfig.GetCycleMultipliers(
+			plan.CycleIndex
+		)
+	island:SetAttribute(
+		"MobCycleHealthMultiplier",
+		planCycleMultipliers.Health
+	)
+	island:SetAttribute(
+		"MobCycleDamageMultiplier",
+		planCycleMultipliers.Damage
+	)
+	island:SetAttribute(
+		"MobCycleSpeedMultiplier",
+		planCycleMultipliers.Speed
+	)
+	island:SetAttribute(
 		"MobPlannedTargetCount",
 		target
+	)
+	island:SetAttribute(
+		"MobCountCyclePosition",
+		plan.MobCountCyclePosition
+	)
+	island:SetAttribute(
+		"MobCountProgressionPolicy",
+		"ThreePlusOnePerNumberedIsland"
+	)
+	island:SetAttribute(
+		"MobCountResetsEachCycle",
+		true
+	)
+	island:SetAttribute(
+		"MobCountBasePerCycle",
+		IslandMobScalingConfig.BaseMobsPerCycle
+	)
+	island:SetAttribute(
+		"MobCountIncreasePerIsland",
+		IslandMobScalingConfig.ExtraMobsPerIsland
 	)
 	island:SetAttribute("MobKillQuota", target)
 	island:SetAttribute("MobInfiniteRespawnEnabled", true)
@@ -2705,6 +3166,10 @@ local function buildPlan(
 		IslandMobRosterConfig.Version
 	)
 	island:SetAttribute(
+		"MobRosterProgressionLevel",
+		plan.RosterProgressionLevel
+	)
+	island:SetAttribute(
 		"MobThreatBudget",
 		rosterSnapshot.ThreatBudget
 	)
@@ -2715,6 +3180,14 @@ local function buildPlan(
 	island:SetAttribute(
 		"MobGreenCount",
 		rosterSnapshot.GreenCount
+	)
+	island:SetAttribute(
+		"MobAdvancedCount",
+		rosterSnapshot.AdvancedCount
+	)
+	island:SetAttribute(
+		"MobAdvancedOnly",
+		rosterSnapshot.AdvancedOnly == true
 	)
 	island:SetAttribute(
 		"MobRangedCount",
@@ -2745,7 +3218,7 @@ local function buildPlan(
 	)
 	island:SetAttribute(
 		"MobDifficultySource",
-		"IslandLevel"
+		"LevelInCycleAndCycleIndexV3"
 	)
 	island:SetAttribute(
 		"LegacyRoundDifficultyDisabled",
@@ -2917,11 +3390,11 @@ local function initialize()
 
 	workspace:SetAttribute(
 		"DungeonMonsterSpawnerVersion",
-		"IslandLevelV1"
+		IslandMobScalingConfig.Version
 	)
 	workspace:SetAttribute(
 		"DungeonMobDifficultyAuthority",
-		"IslandLevel"
+		"LevelInCycleAndCycleIndex"
 	)
 	workspace:SetAttribute(
 		"DungeonMobUsesPlayerLevel",
@@ -2937,7 +3410,7 @@ local function initialize()
 	)
 	workspace:SetAttribute(
 		"DungeonRegularMobRosterPolicy",
-		"ThreatBudgetV1"
+		"FirstIslandGreenThenAdvancedOnlyV3"
 	)
 	workspace:SetAttribute(
 		"DungeonMobRosterVersion",
@@ -2945,7 +3418,7 @@ local function initialize()
 	)
 	workspace:SetAttribute(
 		"DungeonMobRosterUnlocks",
-		"Green1,Blue3,Red5,Fire7,Ice9,Lightning11"
+		"Green1,Blue2,Red3,Fire4,Ice5,Lightning6"
 	)
 	workspace:SetAttribute(
 		"DungeonGoldenSlimeInRegularRoster",
@@ -2974,8 +3447,48 @@ local function initialize()
 			.DamagePerLevel
 	)
 	workspace:SetAttribute(
+		"DungeonMobHealthPerCycle",
+		IslandMobScalingConfig.HealthPerCycle
+	)
+	workspace:SetAttribute(
+		"DungeonMobDamagePerCycle",
+		IslandMobScalingConfig.DamagePerCycle
+	)
+	workspace:SetAttribute(
+		"DungeonMobSpeedPerCycle",
+		IslandMobScalingConfig.SpeedPerCycle
+	)
+	workspace:SetAttribute(
+		"DungeonMobCycleScalingPolicy",
+		"CompoundedFromCycleIndex"
+	)
+	workspace:SetAttribute(
+		"DungeonMobCountProgressionPolicy",
+		"NumberedCycle3To14ThenReset"
+	)
+	workspace:SetAttribute(
+		"DungeonMobCountBasePerCycle",
+		IslandMobScalingConfig.BaseMobsPerCycle
+	)
+	workspace:SetAttribute(
+		"DungeonMobCountIncreasePerIsland",
+		IslandMobScalingConfig.ExtraMobsPerIsland
+	)
+	workspace:SetAttribute(
+		"DungeonMobCountMaximumPerIsland",
+		IslandMobScalingConfig.MaximumMobsPerIsland
+	)
+	workspace:SetAttribute(
 		"DungeonMobXPVersion",
 		MobXPConfig.Version
+	)
+	workspace:SetAttribute(
+		"DungeonMobXPPerCycle",
+		IslandProgressionConfig.XPRewardPerCycle
+	)
+	workspace:SetAttribute(
+		"DungeonMobXPCyclePolicy",
+		"CompoundedFromCycleIndexBeforeRiskBonus"
 	)
 	workspace:SetAttribute(
 		"DungeonMobXPAwardPolicy",
@@ -3025,6 +3538,23 @@ local function initialize()
 	workspace:SetAttribute(
 		"DungeonMobProgressionPolicy",
 		"KillQuotaUnlocksNextIsland"
+	)
+	workspace:SetAttribute(
+		"DungeonInitialIslandIsNumbered",
+		false
+	)
+	workspace:SetAttribute(
+		"DungeonFirstNumberedGlobalIslandIndex",
+		2
+	)
+	workspace:SetAttribute(
+		"DungeonInitialIslandMobScale",
+		EarlyGamePacingConfig.InitialIslandModelScale
+	)
+	workspace:SetAttribute(
+		"DungeonInitialIslandMobXPRewardMultiplier",
+		EarlyGamePacingConfig
+			.InitialIslandXPRewardMultiplier
 	)
 	workspace:SetAttribute(
 		"DungeonEarlyGamePacingVersion",
@@ -3176,6 +3706,15 @@ function MonsterSpawner.PopulateIsland(
 		)
 
 		return 0
+	end
+
+	if plan.InitialIsland
+		and plan.NavigationCells
+	then
+		SlimeController.RegisterIsland(
+			island,
+			plan.NavigationCells
+		)
 	end
 
 	island:SetAttribute(
@@ -3636,7 +4175,20 @@ function MonsterSpawner.GetIslandPlan(
 			IslandMobScalingConfig.Version,
 		GlobalIslandIndex =
 			plan.GlobalIslandIndex,
+		InitialIsland =
+			plan.InitialIsland,
+		NumberedIslandIndex =
+			math.max(
+				0,
+				plan.GlobalIslandIndex - 1
+			),
+		CycleIndex =
+			plan.CycleIndex,
+		MobCountCyclePosition =
+			plan.MobCountCyclePosition,
 		MobLevel =
+			plan.MobLevel,
+		MobLevelInCycle =
 			plan.MobLevel,
 		IslandSize =
 			plan.IslandSize,

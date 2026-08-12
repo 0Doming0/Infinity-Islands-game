@@ -295,7 +295,12 @@ end
 local function targetAlive(target)
 	if not target
 		or not target.Parent
-		or target:GetAttribute("Peaceful") == true
+		or (
+			target:GetAttribute("Peaceful") == true
+				and target:GetAttribute(
+					"TutorialPassive"
+				) ~= true
+		)
 		or target:GetAttribute("IslandCombatManaged") ~= true
 	then
 		return false
@@ -428,7 +433,12 @@ end
 local function registerTarget(target, forcedIndex)
 	if not target
 		or not target:IsA("Model")
-		or target:GetAttribute("Peaceful") == true
+		or (
+			target:GetAttribute("Peaceful") == true
+				and target:GetAttribute(
+					"TutorialPassive"
+				) ~= true
+		)
 		or target:GetAttribute("IslandCombatManaged") ~= true
 	then
 		return false

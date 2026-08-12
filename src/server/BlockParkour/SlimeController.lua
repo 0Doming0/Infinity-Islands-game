@@ -55,6 +55,7 @@ local function getLivingCharacter(player)
 		or player.Parent ~= Players
 		or player:GetAttribute("IsDowned") == true
 		or player:GetAttribute("InvisibleToEnemies") == true
+		or player:GetAttribute("DungeonAssistedTransportActive") == true
 		or (tonumber(player:GetAttribute("DungeonEntryProtectionUntil")) or 0) > serverTime()
 	then
 		return nil
@@ -292,15 +293,162 @@ local function stopMoving(state, nextState)
 	end
 end
 
+local thinkWander
+
+local function constrainToTutorialArea(state)
+	local areaCFrame = state.TutorialAreaCFrame
+	local areaSize = state.TutorialAreaSize
+
+	if typeof(areaCFrame) ~= "CFrame"
+		or typeof(areaSize) ~= "Vector3"
+		or not state.Root.Parent
+	then
+		return false
+	end
+
+	local localPosition =
+		areaCFrame:PointToObjectSpace(
+			state.Root.Position
+		)
+	local rootRadius = math.max(
+		0.5,
+		math.max(
+			state.Root.Size.X,
+			state.Root.Size.Z
+		) * 0.5
+	)
+	local halfX = math.max(
+		0,
+		areaSize.X / 2 - rootRadius
+	)
+	local halfZ = math.max(
+		0,
+		areaSize.Z / 2 - rootRadius
+	)
+	local clampedX = math.clamp(
+		localPosition.X,
+		-halfX,
+		halfX
+	)
+	local clampedZ = math.clamp(
+		localPosition.Z,
+		-halfZ,
+		halfZ
+	)
+
+	if math.abs(clampedX - localPosition.X) < 0.01
+		and math.abs(clampedZ - localPosition.Z) < 0.01
+	then
+		return false
+	end
+
+	local correctedPosition =
+		areaCFrame:PointToWorldSpace(
+			Vector3.new(
+				clampedX,
+				localPosition.Y,
+				clampedZ
+			)
+		)
+	local displacement =
+		correctedPosition - state.Root.Position
+
+	state.Model:PivotTo(
+		state.Model:GetPivot()
+			+ displacement
+	)
+
+	local velocity =
+		state.Root.AssemblyLinearVelocity
+	state.Root.AssemblyLinearVelocity =
+		Vector3.new(0, velocity.Y, 0)
+	state.WanderDestination = nil
+	state.CombatDestination = nil
+	clearMovement(state)
+	state.Model:SetAttribute(
+		"TutorialBoundaryCorrectionCount",
+		(
+			tonumber(
+				state.Model:GetAttribute(
+					"TutorialBoundaryCorrectionCount"
+				)
+			) or 0
+		) + 1
+	)
+
+	return true
+end
+
+local function thinkTutorialPassive(state, now)
+	if state.AggroPlayer then
+		state.AggroPlayer = nil
+		state.AggroFromWorldEvent = false
+	end
+
+	state.Model:SetAttribute("Peaceful", true)
+	state.Model:SetAttribute("AggroUserId", nil)
+	state.Model:SetAttribute("TargetUserId", nil)
+	state.Model:SetAttribute(
+		"RangedAttackTelegraphActive",
+		false
+	)
+	state.Busy = false
+	state.CombatDestination = nil
+
+	thinkWander(state, now)
+end
+
 local function setMovementSpeed(state, multiplier)
 	if state.Model:GetAttribute("CombatStunned") == true then
 		return
 	end
-	local desired = math.clamp(state.BaseWalkSpeed * (multiplier or 1), 3, 26)
+	local now = serverTime()
+	local slowedUntil =
+		tonumber(state.Model:GetAttribute("OrbSlowedUntil")) or 0
+	local orbSlowMultiplier = 1
+	if now < slowedUntil then
+		orbSlowMultiplier = math.clamp(
+			tonumber(state.Model:GetAttribute("OrbSlowMultiplier")) or 0.45,
+			0.1,
+			1
+		)
+	else
+		state.Model:SetAttribute("OrbSlowedUntil", nil)
+		state.Model:SetAttribute("OrbSlowMultiplier", nil)
+		if state.Model:GetAttribute("OrbStatusEffect") == "SlowDisorient" then
+			state.Model:SetAttribute("OrbStatusEffect", nil)
+		end
+	end
+	local cycleSpeedMultiplier =
+		math.max(
+			1,
+			tonumber(
+				state.Model:GetAttribute(
+					"MobCycleSpeedMultiplier"
+				)
+			) or 1
+		)
+	local desired =
+		math.clamp(
+			state.BaseWalkSpeed
+				* (multiplier or 1)
+				* orbSlowMultiplier,
+			3,
+			26 * cycleSpeedMultiplier
+		)
 	if math.abs(state.Humanoid.WalkSpeed - desired) > 0.05 then
 		state.Humanoid.WalkSpeed = desired
 	end
 	state.Model:SetAttribute("MoveSpeedScale", multiplier or 1)
+	state.Model:SetAttribute("OrbAppliedSpeedScale", orbSlowMultiplier)
+end
+
+local function reactToKnockback(state)
+	-- Nao chama MoveTo para a posicao atual: esse comando faria o Humanoid
+	-- tentar voltar ao ponto do impacto enquanto a fisica o empurra.
+	state.Humanoid:Move(Vector3.zero)
+	clearMovement(state)
+	setAIState(state, "Knockback")
 end
 
 local function buildSafePath(state, destination)
@@ -409,7 +557,7 @@ local function randomPause(state)
 	return state.Random:NextNumber(minimum, maximum)
 end
 
-local function thinkWander(state, now)
+thinkWander = function(state, now)
 	-- Protecao defensiva para estados criados por versoes antigas do controlador.
 	-- O loop principal sempre envia o relogio atual, mas uma chamada externa nunca
 	-- deve conseguir interromper toda a IA por comparar nil com numero.
@@ -1351,6 +1499,16 @@ function SlimeController.Start(entry, definition, random, callbacks)
 		Callbacks = callbacks,
 		BaseWalkSpeed = math.max(4, entry.Humanoid.WalkSpeed),
 		BasePeaceful = entry.Model:GetAttribute("Peaceful") == true,
+		TutorialPassive = entry.Model:GetAttribute(
+			"TutorialPassive"
+		) == true,
+		TutorialAreaCFrame = entry.Model:GetAttribute(
+			"TutorialEnemyAreaCFrame"
+		),
+		TutorialAreaSize = entry.Model:GetAttribute(
+			"TutorialEnemyAreaSize"
+		),
+		BoundaryConnection = nil,
 		AggroPlayer = nil,
 		AggroFromWorldEvent = false,
 		LastTargetSeenAt = now,
@@ -1376,6 +1534,30 @@ function SlimeController.Start(entry, definition, random, callbacks)
 	state.Humanoid.AutoRotate = true
 	setAIState(state, "Idle")
 	entry.Model:SetAttribute("IsMoving", false)
+	if state.TutorialPassive then
+		entry.Model:SetAttribute(
+			"AIBehaviorPolicy",
+			"TutorialPassiveBounded"
+		)
+		entry.Model:SetAttribute(
+			"Peaceful",
+			true
+		)
+		entry.Model:SetAttribute(
+			"AggroUserId",
+			nil
+		)
+		entry.Model:SetAttribute(
+			"TargetUserId",
+			nil
+		)
+		state.BoundaryConnection =
+			RunService.Heartbeat:Connect(function()
+				if isAlive(state) then
+					constrainToTutorialArea(state)
+				end
+			end)
+	end
 	SlimeAnimator.Start(entry.Model, entry.Humanoid)
 
 	if definition.Behavior == "GoldenEscape" then
@@ -1387,11 +1569,39 @@ function SlimeController.Start(entry, definition, random, callbacks)
 		while isAlive(state) do
 			local waitInterval = THINK_INTERVAL
 			local currentTime = serverTime()
+			local frozenUntil =
+				tonumber(state.Model:GetAttribute("OrbFrozenUntil")) or 0
+			local disorientedUntil =
+				tonumber(state.Model:GetAttribute("OrbDisorientedUntil")) or 0
+			local knockbackUntil =
+				tonumber(state.Model:GetAttribute("CombatKnockbackUntil")) or 0
+			if currentTime >= frozenUntil
+				and state.Model:GetAttribute("OrbStatusEffect") == "Freeze"
+			then
+				state.Model:SetAttribute("OrbStatusEffect", nil)
+				state.Humanoid.AutoRotate = true
+				setMovementSpeed(state, 1)
+			end
+			constrainToTutorialArea(state)
 			if state.Model:GetAttribute("SimulationActive") == false then
 				stopMoving(state, "Dormant")
 				waitInterval = DORMANT_THINK_INTERVAL
+			elseif currentTime < knockbackUntil then
+				reactToKnockback(state)
 			elseif state.Model:GetAttribute("CombatStunned") == true then
 				setAIState(state, "Stunned")
+			elseif currentTime < frozenUntil then
+				stopMoving(state, "Frozen")
+				state.Humanoid.WalkSpeed = 0
+				state.Humanoid.AutoRotate = false
+			elseif currentTime < disorientedUntil then
+				setAIState(state, "Disoriented")
+				thinkWander(state, currentTime)
+			elseif state.TutorialPassive then
+				thinkTutorialPassive(
+					state,
+					currentTime
+				)
 			elseif definition.Behavior == "NeutralMelee" then
 				thinkGreen(state, currentTime)
 			elseif definition.Behavior == "NeutralRanged" or definition.Behavior == "IceRanged" then
@@ -1415,6 +1625,10 @@ function SlimeController.Stop(model)
 		return
 	end
 	active[model] = nil
+	if state.BoundaryConnection then
+		state.BoundaryConnection:Disconnect()
+		state.BoundaryConnection = nil
+	end
 	SlimeAnimator.Stop(model)
 	stopMoving(state)
 end

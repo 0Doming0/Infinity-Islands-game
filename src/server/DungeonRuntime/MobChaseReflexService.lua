@@ -78,6 +78,7 @@ local function livingRoot(player)
 
 	if player:GetAttribute("IsDowned") == true
 		or player:GetAttribute("InvisibleToEnemies") == true
+		or player:GetAttribute("DungeonAssistedTransportActive") == true
 	then
 		return nil
 	end
@@ -365,6 +366,9 @@ local function steer(model)
 	if model:GetAttribute(
 		"AIController"
 	) ~= "Slime"
+		or model:GetAttribute(
+			"TutorialPassive"
+		) == true
 	then
 		clearOverride(model)
 		return

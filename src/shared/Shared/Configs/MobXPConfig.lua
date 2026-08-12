@@ -1,18 +1,20 @@
 --[[
-	Infinity Islands - MobXPConfig V2
+	Infinity Islands - MobXPConfig V3
 
-	XP value calculation remains the same as V1.
+	Task 08 adds a server-authored cycle multiplier to the XP value.
 
 	New delivery policy:
 	- killing a managed combat mob does NOT immediately increase XP;
 	- only the last hitter receives the physical XP fragments;
 	- fragments scatter, then magnet toward that player;
 	- PlayerLevelService receives XP only as fragments are collected.
+	- risk bonus compares global RecommendedLevel against PlayerLevel;
+	- MobLevel/LevelInCycle remains responsible only for the base XP curve.
 ]]
 
 local MobXPConfig = {}
 
-MobXPConfig.Version = "MobXPV2Collectibles"
+MobXPConfig.Version = "MobXPV3CycleScaling"
 MobXPConfig.AwardPolicy = "LastHitPhysicalXPCollectiblesV1"
 
 MobXPConfig.LevelRewardPerLevel = 0.12
@@ -65,12 +67,17 @@ end
 
 function MobXPConfig.GetMobXPReward(
 	variant,
-	mobLevel
+	mobLevel,
+	rewardMultiplier
 )
 	local reward =
 		MobXPConfig.GetBaseXP(variant)
 			* MobXPConfig.GetLevelMultiplier(
 				mobLevel
+			)
+			* math.max(
+				1,
+				tonumber(rewardMultiplier) or 1
 			)
 
 	return math.clamp(
@@ -101,7 +108,7 @@ end
 
 function MobXPConfig.GetAwardForPlayer(
 	mobXPReward,
-	mobLevel,
+	riskLevel,
 	playerLevel
 )
 	local base =
@@ -116,7 +123,7 @@ function MobXPConfig.GetAwardForPlayer(
 
 	local riskBonus =
 		MobXPConfig.GetRiskBonus(
-			mobLevel,
+			riskLevel,
 			playerLevel
 		)
 
@@ -148,6 +155,15 @@ function MobXPConfig.Validate()
 			1
 		) == 16,
 		"Blue L1 precisa valer 16 XP"
+	)
+
+	assert(
+		MobXPConfig.GetMobXPReward(
+			"Green",
+			1,
+			3
+		) == 36,
+		"Green L1 no Cycle 2 precisa valer 36 XP"
 	)
 
 	assert(

@@ -384,9 +384,19 @@ local function markCleared(index, context)
 		index
 	)
 	workspace:SetAttribute(
+		"DungeonIslandClearFeedbackNumberedIsland",
+		math.max(0, index - 1)
+	)
+	workspace:SetAttribute(
 		"DungeonIslandClearFeedbackNextIsland",
 		index < totalIslandCount()
 			and index + 1
+			or nil
+	)
+	workspace:SetAttribute(
+		"DungeonIslandClearFeedbackNextNumberedIsland",
+		index < totalIslandCount()
+			and index
 			or nil
 	)
 

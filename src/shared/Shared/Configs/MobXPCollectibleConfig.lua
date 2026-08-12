@@ -8,8 +8,14 @@
 
 local Config = {}
 
-Config.Version = "MobXPCollectiblesV3TrueContact"
+Config.Version = "MobXPCollectiblesV4StaggeredSpawn"
 Config.AwardPolicy = "LastHitPhysicalXPCollectiblesV1"
+
+-- Complex collectible models are intentionally created a little at a time.
+-- Publishing an entire XP burst in one Heartbeat causes a noticeable cold-start
+-- frame spike on mobile devices when meshes, bones, trails and highlights are
+-- seen for the first time.
+Config.MaxPieceCreationsPerHeartbeat = 1
 
 Config.MinimumPieces = 5
 Config.MaximumPieces = 9

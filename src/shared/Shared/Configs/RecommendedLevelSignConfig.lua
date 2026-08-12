@@ -1,5 +1,5 @@
 --[[
-	Infinity Islands - Recommended Level Sign Config V3
+	Infinity Islands - Recommended Level Sign Config V4
 
 	LevelText recebe SOMENTE O NUMERO.
 
@@ -7,11 +7,16 @@
 	- usa GameplayMarkers.Entry como referencia;
 	- fica no canto DIREITO para quem vem da ilha inferior;
 	- olha para a ilha/rota inferior.
+
+	Familias do MVP:
+	- a Ilha Inicial nao recebe placa;
+	- todas as ilhas numeradas usam AdvancedSlimes;
+	- Skeletons, Ogres e Elementals foram removidos da progressao ativa.
 ]]
 
 local Config = {}
 
-Config.Version = "RecommendedLevelSignsV3"
+Config.Version = "RecommendedLevelSignsSlimeOnlyV4"
 
 Config.TemplateRoot = { "DungeonTemplates", "RecommendedSigns" }
 Config.SignName = "RecommendedLevelSign"
@@ -30,11 +35,8 @@ Config.HeightAboveFloorStuds = 0.15
 Config.YawOffsetDegrees = 0
 
 Config.Families = table.freeze({
-	{ Name = "Slimes", MinimumLevel = 1, MaximumLevel = 2 },
-	{ Name = "AdvancedSlimes", MinimumLevel = 3, MaximumLevel = 4 },
-	{ Name = "Skeletons", MinimumLevel = 5, MaximumLevel = 7 },
-	{ Name = "Ogres", MinimumLevel = 8, MaximumLevel = 10 },
-	{ Name = "Elementals", MinimumLevel = 11, MaximumLevel = math.huge },
+	{ Name = "Slimes", MinimumLevel = 1, MaximumLevel = 1 },
+	{ Name = "AdvancedSlimes", MinimumLevel = 2, MaximumLevel = math.huge },
 })
 
 function Config.ResolveFamily(level)
@@ -50,5 +52,25 @@ function Config.ResolveFamily(level)
 
 	return "Slimes"
 end
+
+function Config.Validate()
+	assert(
+		#Config.Families == 2,
+		"Somente Slimes e AdvancedSlimes podem permanecer ativos"
+	)
+	assert(
+		Config.ResolveFamily(1) == "Slimes",
+		"Level 1 precisa usar a placa Slimes"
+	)
+	assert(
+		Config.ResolveFamily(2) == "AdvancedSlimes"
+			and Config.ResolveFamily(999) == "AdvancedSlimes",
+		"Levels avancados precisam usar somente AdvancedSlimes"
+	)
+
+	return true
+end
+
+Config.Validate()
 
 return table.freeze(Config)

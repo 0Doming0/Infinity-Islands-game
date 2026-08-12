@@ -1,5 +1,5 @@
 --[[
-	Infinity Islands - IslandMobSpawnConfig V3
+	Infinity Islands - IslandMobSpawnConfig V4
 
 	Nova politica:
 	- uma leva nasce pelo SkyDrop;
@@ -10,9 +10,9 @@
 
 local IslandMobSpawnConfig = {}
 
-IslandMobSpawnConfig.Version = "FullWaveCooldownV3"
+IslandMobSpawnConfig.Version = "CycleGrowingAliveCountV4"
 
-IslandMobSpawnConfig.DefaultMaximumAlive = 7
+IslandMobSpawnConfig.DefaultMaximumAlive = 14
 IslandMobSpawnConfig.MinimumMaximumAlive = 1
 
 IslandMobSpawnConfig.SpawnStaggerSeconds = 0.25
@@ -42,7 +42,9 @@ end
 function IslandMobSpawnConfig.Validate()
 	assert(IslandMobSpawnConfig.GetMaximumAlive(3) == 3)
 	assert(IslandMobSpawnConfig.GetMaximumAlive(7) == 7)
-	assert(IslandMobSpawnConfig.GetMaximumAlive(12) == 7)
+	assert(IslandMobSpawnConfig.GetMaximumAlive(12) == 12)
+	assert(IslandMobSpawnConfig.GetMaximumAlive(14) == 14)
+	assert(IslandMobSpawnConfig.GetMaximumAlive(20) == 14)
 	assert(IslandMobSpawnConfig.SpawnStaggerSeconds >= 0.20)
 	assert(IslandMobSpawnConfig.WaveRespawnCooldownSeconds >= 1)
 	assert(IslandMobSpawnConfig.InfiniteRespawnEnabled == true)

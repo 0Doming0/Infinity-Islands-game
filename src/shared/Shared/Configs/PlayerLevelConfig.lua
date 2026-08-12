@@ -11,7 +11,7 @@
 	- +8% outgoing combat damage per level after Level 1.
 	- +4% maximum health per level after Level 1.
 
-	Task 08 will decide how much XP each mob awards.
+	MobXPConfig and IslandProgressionConfig own mob and cycle XP rewards.
 ]]
 
 local PlayerLevelConfig = {}

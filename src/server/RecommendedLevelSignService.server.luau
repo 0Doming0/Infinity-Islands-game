@@ -1,5 +1,5 @@
 --[[
-	Infinity Islands - Recommended Level Sign Service V3
+	Infinity Islands - Recommended Level Sign Service V4
 
 	Mudanca principal:
 	- a placa NAO usa mais um canto arbitrario;
@@ -7,6 +7,9 @@
 	- fica alguns studs para dentro da ilha;
 	- a frente da placa olha para fora da entrada, na direcao da ilha inferior;
 	- LevelText continua recebendo SOMENTE O NUMERO.
+	- a Ilha Inicial nao recebe placa;
+	- ilhas numeradas usam o template AdvancedSlimes;
+	- RecommendedSignFamily e somente saida, nunca uma entrada persistente.
 ]]
 
 local ServerStorage = game:GetService("ServerStorage")
@@ -84,11 +87,27 @@ end
 
 local function resolveFamily(island, level)
 	local explicit =
-		island:GetAttribute("MobFamily")
-			or island:GetAttribute("RecommendedSignFamily")
+		island:GetAttribute("RecommendedSignFamilyOverride")
 
-	if type(explicit) == "string" and explicit ~= "" then
+	if explicit == "Slimes"
+		or explicit == "AdvancedSlimes"
+	then
 		return explicit
+	end
+
+	if island:GetAttribute("MobAdvancedOnly") == true then
+		return "AdvancedSlimes"
+	end
+
+	local progressionIndex = cleanIndex(
+		island:GetAttribute("GlobalIslandIndex")
+			or island:GetAttribute("ProgressionIslandIndex")
+	)
+
+	if progressionIndex then
+		return progressionIndex == 1
+			and "Slimes"
+			or "AdvancedSlimes"
 	end
 
 	return Config.ResolveFamily(level)
@@ -158,6 +177,17 @@ local function existingSign(island)
 	end
 
 	return nil
+end
+
+local function isInitialIsland(island)
+	return island:GetAttribute("IsInitialIsland") == true
+		or tonumber(
+			island:GetAttribute("NumberedIslandIndex")
+		) == 0
+		or island:GetAttribute("IslandRole") == "CombatEntry"
+		or cleanIndex(
+			island:GetAttribute("GlobalIslandIndex")
+		) == 1
 end
 
 local function setModelRuntimeSafe(model)
@@ -365,6 +395,30 @@ local function applySign(island)
 		return false
 	end
 
+	if isInitialIsland(island) then
+		local old = existingSign(island)
+
+		if old then
+			old:Destroy()
+		end
+
+		island:SetAttribute("RecommendedSignReady", false)
+		island:SetAttribute("RecommendedSignFamily", nil)
+		island:SetAttribute("RecommendedSignPlacement", nil)
+		island:SetAttribute(
+			"RecommendedSignSuppressedReason",
+			"InitialIslandHasNoLevelSign"
+		)
+		island:SetAttribute(
+			"RecommendedSignVersion",
+			Config.Version
+		)
+
+		return false
+	end
+
+	island:SetAttribute("RecommendedSignSuppressedReason", nil)
+
 	if island:GetAttribute("IsSanctuary") == true
 		or island:GetAttribute("IsBossSanctuary") == true
 		or island:GetAttribute("IsRewardIsland") == true
@@ -513,8 +567,10 @@ local function trackIsland(island)
 		"IslandLevel",
 		"GlobalIslandIndex",
 		"ProgressionIslandIndex",
-		"MobFamily",
-		"RecommendedSignFamily",
+		"IsInitialIsland",
+		"NumberedIslandIndex",
+		"MobAdvancedOnly",
+		"RecommendedSignFamilyOverride",
 	}) do
 		table.insert(
 			connections,
@@ -599,5 +655,5 @@ workspace:SetAttribute("RecommendedLevelSignServiceReady", true)
 workspace:SetAttribute("RecommendedLevelSignServiceVersion", Config.Version)
 
 print(
-	"[RecommendedLevelSign] V2 ready - canto direito da entrada / ilha inferior."
+	"[RecommendedLevelSign] V4 ready - Slimes/AdvancedSlimes."
 )

@@ -6,10 +6,12 @@ local orbFolder = ReplicatedStorage:WaitForChild("OrbCombat")
 local OrbConfig = require(orbFolder:WaitForChild("OrbConfig"))
 
 local function removeDuplicateVisuals(character)
-	local equippedOrb = OrbConfig.NormalizeOrb(player:GetAttribute("EquippedOrb") or character:GetAttribute("EquippedOrb"))
-	local expectedName = equippedOrb .. "Orb"
+	local equippedOrb =
+		OrbConfig.NormalizeOrb(player:GetAttribute("EquippedOrb") or character:GetAttribute("EquippedOrb"))
+	local orbDefinition = OrbConfig.GetOrb(equippedOrb)
+	local expectedName = orbDefinition and (orbDefinition.AssetName or (equippedOrb .. "Orb")) or nil
 	for _, child in ipairs(character:GetChildren()) do
-		if child:GetAttribute("OrbVisual") == true and child.Name ~= expectedName then
+		if child:GetAttribute("OrbVisual") == true and (not expectedName or child.Name ~= expectedName) then
 			child:Destroy()
 		end
 	end

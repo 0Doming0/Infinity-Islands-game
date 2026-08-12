@@ -273,6 +273,39 @@ local function countActiveSimulations()
 	return count
 end
 
+local function cycleIndexForRecord(record)
+	if not record then
+		return 1
+	end
+
+	return math.max(
+		1,
+		math.floor(
+			tonumber(record.Spec.CycleIndex)
+				or tonumber(record.Model:GetAttribute("CycleIndex"))
+				or 1
+		)
+	)
+end
+
+local function getCycleStats()
+	local generated = {}
+	local active = {}
+	local highest = 1
+
+	for _, record in pairs(nodesByKey) do
+		local cycleIndex = cycleIndexForRecord(record)
+		generated[cycleIndex] = true
+		highest = math.max(highest, cycleIndex)
+
+		if record.SimulationActive then
+			active[cycleIndex] = true
+		end
+	end
+
+	return countRecords(generated), countRecords(active), highest
+end
+
 local function updateWorldAttributes(force)
 	if not worldModel then
 		return
@@ -282,6 +315,10 @@ local function updateWorldAttributes(force)
 		return
 	end
 	lastWorldAttributeUpdateAt = now
+	local generatedCycleCount,
+		activeCycleCount,
+		highestGeneratedCycleIndex =
+			getCycleStats()
 	worldModel:SetAttribute("BaseSeed", baseSeed)
 	worldModel:SetAttribute("GenerationUnit", "IslandRound")
 	worldModel:SetAttribute("GenerationMode", "IntentTriggeredIslandRounds")
@@ -307,6 +344,9 @@ local function updateWorldAttributes(force)
 	worldModel:SetAttribute("ConvergenceIslandCount", countConvergences())
 	worldModel:SetAttribute("SanctuaryCount", countSanctuaries())
 	worldModel:SetAttribute("ActiveSimulationIslandCount", countActiveSimulations())
+	worldModel:SetAttribute("GeneratedCycleCount", generatedCycleCount)
+	worldModel:SetAttribute("ActiveCycleCount", activeCycleCount)
+	worldModel:SetAttribute("HighestGeneratedCycleIndex", highestGeneratedCycleIndex)
 	worldModel:SetAttribute("HighestLogicalLevel", highestLogicalLevel)
 	worldModel:SetAttribute("HighestGeneratedY", highestGeneratedY)
 	worldModel:SetAttribute("LogicalHighestGeneratedY", highestGeneratedY + logicalAltitudeOffset)
@@ -487,6 +527,13 @@ local ROUTE_SPEC_ATTRIBUTES = {
 	"RoundIndex",
 	"IslandIndex",
 	"GlobalIslandIndex",
+	"IsInitialIsland",
+	"NumberedIslandIndex",
+	"IslandDisplayLabel",
+	"CycleIndex",
+	"IslandIndexInCycle",
+	"LevelInCycle",
+	"XPRewardMultiplier",
 	"IncomingDirectionId",
 	"NextDirectionId",
 	"IsMandatoryRoute",
@@ -716,6 +763,13 @@ local function routeRecordContext(record)
 		RoundIndex = record.Spec.RoundIndex,
 		IslandIndex = record.Spec.IslandIndex,
 		GlobalIslandIndex = record.Spec.GlobalIslandIndex,
+		IsInitialIsland = record.Spec.IsInitialIsland == true,
+		NumberedIslandIndex = record.Spec.NumberedIslandIndex,
+		IslandDisplayLabel = record.Spec.IslandDisplayLabel,
+		CycleIndex = record.Spec.CycleIndex,
+		IslandIndexInCycle = record.Spec.IslandIndexInCycle,
+		LevelInCycle = record.Spec.LevelInCycle,
+		XPRewardMultiplier = record.Spec.XPRewardMultiplier,
 		IsRewardIsland = record.Spec.IsRewardIsland == true,
 		IsBossSanctuary = record.Spec.IsBossSanctuary == true,
 		IsOptionalRoute = record.Spec.IsOptionalRoute == true,
@@ -1593,6 +1647,36 @@ local function visitNode(player, record)
 		player:SetAttribute("CurrentOptionalRouteBranch", nil)
 		player:SetAttribute("CurrentRouteIslandIndex", record.Spec.IslandIndex)
 		player:SetAttribute("CurrentGlobalIslandIndex", record.Spec.GlobalIslandIndex)
+		player:SetAttribute(
+			"CurrentIsInitialIsland",
+			record.Spec.IsInitialIsland == true
+		)
+		player:SetAttribute(
+			"CurrentNumberedIslandIndex",
+			record.Spec.NumberedIslandIndex
+		)
+		player:SetAttribute(
+			"CurrentIslandDisplayLabel",
+			record.Spec.IslandDisplayLabel
+		)
+		player:SetAttribute(
+			"CurrentCycleIndex",
+			record.Spec.CycleIndex
+				or record.Model:GetAttribute("CycleIndex")
+				or 1
+		)
+		player:SetAttribute(
+			"CurrentIslandIndexInCycle",
+			record.Spec.IslandIndexInCycle
+				or record.Model:GetAttribute("IslandIndexInCycle")
+				or 1
+		)
+		player:SetAttribute(
+			"CurrentLevelInCycle",
+			record.Spec.LevelInCycle
+				or record.Model:GetAttribute("LevelInCycle")
+				or 1
+		)
 		player:SetAttribute("CurrentIslandIsReward", record.Spec.IsRewardIsland == true)
 		player:SetAttribute("CurrentIslandIsRoundExit", record.Spec.IsRoundExit == true)
 		if fixedRouteState and record.Spec.IsMandatoryRoute == true then
@@ -2097,7 +2181,15 @@ function ChunkManager.GetPlayerWorldContext(position)
 		if vertical <= 32 and horizontal <= 48 and horizontal + vertical < bestDistance then
 			bestDistance = horizontal + vertical
 			best = {
-				CycleIndex = 0,
+				CycleIndex = tonumber(record.Spec.CycleIndex)
+					or tonumber(record.Model:GetAttribute("CycleIndex"))
+					or 1,
+				IslandIndexInCycle = tonumber(record.Spec.IslandIndexInCycle)
+					or tonumber(record.Model:GetAttribute("IslandIndexInCycle"))
+					or 1,
+				LevelInCycle = tonumber(record.Spec.LevelInCycle)
+					or tonumber(record.Model:GetAttribute("LevelInCycle"))
+					or 1,
 				LogicalLevel = record.Spec.Level,
 				RouteId = nil,
 				RouteProfile = nil,
@@ -2428,13 +2520,26 @@ function ChunkManager.GetRoundStatus(referenceY)
 	local upperDistance = math.abs(referenceY - (levelWorldY[upperLevel] or referenceY))
 	local currentLevel = upperDistance < lowerDistance and upperLevel or lowerLevel
 	local safeLevelCount = math.max(0, highestLogicalLevel - low + 1)
+	local currentRecord
+
+	for _, record in pairs(nodesByKey) do
+		if record.Spec.Level == currentLevel then
+			currentRecord = record
+			break
+		end
+	end
+
+	local generatedCycleCount,
+		activeCycleCount =
+			getCycleStats()
+
 	return {
 		CurrentRound = currentLevel,
-		CurrentCycle = 0,
+		CurrentCycle = cycleIndexForRecord(currentRecord),
 		GeneratedRounds = highestLogicalLevel,
-		GeneratedCycles = 0,
+		GeneratedCycles = generatedCycleCount,
 		ActiveRounds = activeNodeCount,
-		ActiveCycles = 0,
+		ActiveCycles = activeCycleCount,
 		SafeRoundsAhead = safeLevelCount,
 		HighestGeneratedY = highestGeneratedY,
 		GroupProgressY = latestCollectiveSnapshot.MeanY,

@@ -534,6 +534,121 @@ function IslandVariationService.Apply(context)
 	if not island or not island:IsA("Model") or not floor or not floor:IsA("BasePart") then
 		return false, "VariationIslandMissing"
 	end
+	if island:GetAttribute(
+		"ManualTutorialDecorationAttached"
+	) == true
+	then
+		if island:GetAttribute(
+			"StructuralVariationApplied"
+		) == true
+			and island:GetAttribute(
+				"StructuralVariationProfile"
+			) == "ManualTutorialDecoration"
+			and island:FindFirstChild(ROOT_NAME)
+		then
+			return true,
+				"ManualTutorialDecoration",
+				0
+		end
+
+		local old = island:FindFirstChild(ROOT_NAME)
+		if old then
+			old:Destroy()
+		end
+
+		local folder = Instance.new("Folder")
+		folder.Name = ROOT_NAME
+		folder:SetAttribute(
+			"StructuralVariationVersion",
+			VERSION
+		)
+		folder:SetAttribute(
+			"StructuralVariationProfile",
+			"ManualTutorialDecoration"
+		)
+		folder:SetAttribute("CreatedPartCount", 0)
+		folder:SetAttribute("CollidablePartCount", 0)
+		folder:SetAttribute("VisualAccentPartCount", 0)
+		folder:SetAttribute(
+			"VisualTheme",
+			"ManualTutorial"
+		)
+		folder.Parent = island
+
+		island:SetAttribute(
+			"StructuralVariationVersion",
+			VERSION
+		)
+		island:SetAttribute(
+			"StructuralVariationProfile",
+			"ManualTutorialDecoration"
+		)
+		island:SetAttribute(
+			"StructuralVariationPartCount",
+			0
+		)
+		island:SetAttribute(
+			"StructuralVariationCollidableCount",
+			0
+		)
+		island:SetAttribute(
+			"VisualThemeVersion",
+			VERSION
+		)
+		island:SetAttribute(
+			"VisualTheme",
+			"ManualTutorial"
+		)
+		island:SetAttribute(
+			"VisualThemeDisplayName",
+			"Ilha Tutorial Manual"
+		)
+		island:SetAttribute(
+			"VisualThemeAccentPartCount",
+			0
+		)
+		island:SetAttribute(
+			"StructuralVariationSafeZonesPreserved",
+			true
+		)
+		island:SetAttribute(
+			"StructuralVariationRouteClearanceStuds",
+			ROUTE_CLEARANCE
+		)
+		island:SetAttribute(
+			"StructuralVariationApplied",
+			true
+		)
+		workspace:SetAttribute(
+			"DungeonIslandVariationReady",
+			true
+		)
+		workspace:SetAttribute(
+			"DungeonIslandVariationVersion",
+			VERSION
+		)
+		workspace:SetAttribute(
+			"DungeonIslandVariationPolicy",
+			"ManualTutorialThenDeterministicV2"
+		)
+		workspace:SetAttribute(
+			"DungeonIslandVariationAppliedCount",
+			math.max(
+				0,
+				math.floor(
+					tonumber(
+						workspace:GetAttribute(
+							"DungeonIslandVariationAppliedCount"
+						)
+					) or 0
+				)
+			) + 1
+		)
+
+		return true,
+			"ManualTutorialDecoration",
+			0
+	end
 	if island:GetAttribute("StructuralVariationVersion") == VERSION
 		and island:GetAttribute("StructuralVariationApplied") == true
 	then

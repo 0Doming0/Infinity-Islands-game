@@ -58,7 +58,6 @@ local ACTION_BY_STATE = {
 	RangedAttack = "Shoot",
 	Mortar = "Mortar",
 	Teleport = "Teleport",
-	Stunned = "Hit",
 }
 
 local function findChildIgnoringCase(parent, wantedName)
@@ -300,6 +299,11 @@ function SlimeAnimator.Start(model, humanoid)
 	end))
 	table.insert(state.Connections, model:GetAttributeChangedSignal("IsMoving"):Connect(function()
 		applyAIState(state)
+	end))
+	table.insert(state.Connections, model:GetAttributeChangedSignal("CombatHitReactionSerial"):Connect(function()
+		if active[model] == state and humanoid.Health > 0 then
+			playAction(state, "Hit")
+		end
 	end))
 	table.insert(state.Connections, humanoid.Running:Connect(function()
 		if state.CurrentLoopSlot == "Move" then

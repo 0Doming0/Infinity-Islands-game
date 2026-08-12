@@ -23,6 +23,9 @@ local IslandTypeService = require(script.Parent.IslandTypeService)
 local ChestService = require(script.Parent.ChestService)
 local ContentResolver = require(script.Parent.Parent.DungeonRuntime.ContentResolver)
 local IslandMarkerService = require(script.Parent.Parent.DungeonRuntime.IslandMarkerService)
+local TutorialIslandTemplateService = require(
+	script.Parent.Parent.DungeonRuntime.TutorialIslandTemplateService
+)
 local Generator = {}
 local warnedMissingDecorationAssets = false
 local warnedMissingGrassAssets = false
@@ -1416,8 +1419,22 @@ function Generator.PopulateDeferredVisualContent(model, yieldCallback)
 					content.Name = "MVPContent"
 					content.Parent = islandModel
 				end
-				decorateIsland(islandModel, spec, content, model:GetAttribute("RoundIndex") or 1, yieldCallback)
-				populateIslandGrass(islandModel, spec, content, grassTemplates, yieldCallback)
+				if islandModel:GetAttribute(
+					"ManualTutorialDecorationAttached"
+				) == true
+				then
+					islandModel:SetAttribute(
+						"DecorationSpawnCount",
+						0
+					)
+					islandModel:SetAttribute(
+						"GrassSpawnCount",
+						0
+					)
+				else
+					decorateIsland(islandModel, spec, content, model:GetAttribute("RoundIndex") or 1, yieldCallback)
+					populateIslandGrass(islandModel, spec, content, grassTemplates, yieldCallback)
+				end
 				islandModel:SetAttribute("VisualContentDeferred", false)
 				islandModel:SetAttribute("VisualContentPopulated", true)
 			end
@@ -1857,6 +1874,9 @@ function Generator.CreateFrontierNode(parent, spec, options)
 		"RoundIndex",
 		"IslandIndex",
 		"GlobalIslandIndex",
+		"IsInitialIsland",
+		"NumberedIslandIndex",
+		"IslandDisplayLabel",
 		"IncomingDirectionId",
 		"NextDirectionId",
 		"IsMandatoryRoute",
@@ -1887,6 +1907,28 @@ function Generator.CreateFrontierNode(parent, spec, options)
 	end
 	local gameplayMarkers, markerError = IslandMarkerService.Build(islandModel, spec)
 	assert(gameplayMarkers, "[SkyDungeon] Marcadores procedurais invalidos: " .. tostring(markerError))
+	if spec.IsInitialIsland == true
+		or spec.GlobalIslandIndex == 1
+		or spec.IsStart == true
+	then
+		local attached,
+			attachReason =
+				TutorialIslandTemplateService.Attach(
+					islandModel,
+					islandModel.PrimaryPart,
+					spec
+				)
+
+		if not attached
+			and attachReason ~= "TemplateMissing"
+			and attachReason ~= "AlreadyAttached"
+		then
+			warn(
+				"[SkyDungeon] Falha ao colocar TutorialIslandTemplate: "
+					.. tostring(attachReason)
+			)
+		end
+	end
 	IslandTypeService.Classify(islandModel, {
 		ChunkIndex = options.NodeSerial or roundIndex,
 		RoundIndex = spec.RoundIndex or roundIndex,

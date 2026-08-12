@@ -60,6 +60,7 @@ local function livingTarget(player)
 		or player.Parent ~= Players
 		or player:GetAttribute("IsDowned") == true
 		or player:GetAttribute("InvisibleToEnemies") == true
+		or player:GetAttribute("DungeonAssistedTransportActive") == true
 	then
 		return nil
 	end

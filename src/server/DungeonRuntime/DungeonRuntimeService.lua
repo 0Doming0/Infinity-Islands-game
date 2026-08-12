@@ -12,7 +12,7 @@
 		-> no first-match guide
 		-> server creates/uses one shared run
 		-> player spawns at current Combat checkpoint
-		-> first server player starts at Island 1
+		-> first server player starts at the unnumbered Initial Island
 
 	This intentionally replaces the older reserved-session/lobby orchestration
 	with a much smaller runtime.
@@ -960,7 +960,7 @@ local function startWorld()
 
 	publishState(
 		"Active",
-		"Island1Ready"
+		"InitialIslandReady"
 	)
 
 	startRecovery()

@@ -814,6 +814,14 @@ end
 local function renderCamera(
 	deltaTime
 )
+	if player:GetAttribute(
+		"DungeonAssistedTransportActive"
+	) == true
+	then
+		releaseCamera()
+		return
+	end
+
 	if not active
 		or player:GetAttribute(
 			"DungeonMobileMode"

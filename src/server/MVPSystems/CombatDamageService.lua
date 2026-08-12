@@ -18,6 +18,7 @@
 local Debris = game:GetService("Debris")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 
 local GameplayAnalytics = require(
     script.Parent.Parent:WaitForChild("GameplayAnalyticsService")
@@ -37,9 +38,16 @@ local damageFeedbackEvent = RemoteRegistry.Get(
     "RemoteEvent"
 )
 
-local DEFAULT_STUN_REACTION_WINDOW = 1.1
-local MIN_STUN_REACTION_WINDOW = 0.35
-local MAX_STUN_REACTION_WINDOW = 3
+local NORMAL_HIT_REACTION_DURATION = 0.11
+local HEAVY_HIT_REACTION_DURATION = 0.17
+local NORMAL_KNOCKBACK_WINDOW = 0.16
+local HEAVY_KNOCKBACK_WINDOW = 0.22
+local NORMAL_MAX_HORIZONTAL_VELOCITY = 18
+local HEAVY_MAX_HORIZONTAL_VELOCITY = 30
+local NORMAL_MAX_UPWARD_VELOCITY = 2.5
+local HEAVY_MAX_UPWARD_VELOCITY = 5
+local KNOCKBACK_ATTACHMENT_NAME = "CombatKnockbackAttachment"
+local KNOCKBACK_VELOCITY_NAME = "CombatKnockbackVelocity"
 
 local function validAttacker(attacker)
     return attacker
@@ -254,8 +262,17 @@ local function applyCombatStun(model, humanoid, attack)
         or not humanoid
         or humanoid.Health <= 0
         or typeof(attack) ~= "table"
-        or model:GetAttribute("CanBeStunned") == false
     then
+        return
+    end
+
+    -- Feedback visual e interrupcao de gameplay sao contratos diferentes.
+    -- Mesmo um Guard imune a stun deve reagir visualmente ao golpe.
+    local reactionSerial =
+        (model:GetAttribute("CombatHitReactionSerial") or 0) + 1
+    model:SetAttribute("CombatHitReactionSerial", reactionSerial)
+
+    if model:GetAttribute("CanBeStunned") == false then
         return
     end
 
@@ -269,24 +286,10 @@ local function applyCombatStun(model, humanoid, attack)
     end
 
     local now = workspace:GetServerTimeNow()
-    local immunityUntil = tonumber(
-        model:GetAttribute("CombatStunImmunityUntil")
-    ) or 0
-    if now < immunityUntil then
-        return
-    end
-
-    local stunDuration = math.clamp(
-        (tonumber(attack.StunDuration) or 0.45) * (1 - resistance),
-        0.05,
-        1.25
-    )
-    local reactionWindow = math.clamp(
-        tonumber(model:GetAttribute("StunReactionWindow"))
-            or DEFAULT_STUN_REACTION_WINDOW,
-        MIN_STUN_REACTION_WINDOW,
-        MAX_STUN_REACTION_WINDOW
-    )
+    local baseDuration = attack.Heavy == true
+        and HEAVY_HIT_REACTION_DURATION
+        or NORMAL_HIT_REACTION_DURATION
+    local stunDuration = math.max(0.04, baseDuration * (1 - resistance))
 
     local token = (model:GetAttribute("CombatStunTokenId") or 0) + 1
     local interruptSerial =
@@ -296,27 +299,6 @@ local function applyCombatStun(model, humanoid, attack)
     model:SetAttribute("CombatInterruptSerial", interruptSerial)
     model:SetAttribute("CombatStunned", true)
     model:SetAttribute("CombatStunnedUntil", now + stunDuration)
-    model:SetAttribute(
-        "CombatStunImmunityUntil",
-        now + stunDuration + reactionWindow
-    )
-
-    if model:GetAttribute("CombatOriginalWalkSpeed") == nil then
-        model:SetAttribute(
-            "CombatOriginalWalkSpeed",
-            humanoid.WalkSpeed
-        )
-    end
-    if model:GetAttribute("CombatOriginalAutoRotate") == nil then
-        model:SetAttribute(
-            "CombatOriginalAutoRotate",
-            humanoid.AutoRotate
-        )
-    end
-
-    humanoid.WalkSpeed = 0
-    humanoid.AutoRotate = false
-    humanoid:Move(Vector3.zero)
 
     task.delay(stunDuration, function()
         if not model.Parent
@@ -329,31 +311,18 @@ local function applyCombatStun(model, humanoid, attack)
         model:SetAttribute("CombatStunned", nil)
         model:SetAttribute("CombatStunTokenId", nil)
         model:SetAttribute("CombatStunnedUntil", nil)
-
-        if humanoid.Health > 0 then
-            local speed = model:GetAttribute("CombatOriginalWalkSpeed")
-            local autoRotate =
-                model:GetAttribute("CombatOriginalAutoRotate")
-
-            if typeof(speed) == "number" then
-                humanoid.WalkSpeed = speed
-            end
-            if typeof(autoRotate) == "boolean" then
-                humanoid.AutoRotate = autoRotate
-            end
-        end
-
-        model:SetAttribute("CombatOriginalWalkSpeed", nil)
-        model:SetAttribute("CombatOriginalAutoRotate", nil)
     end)
 end
 
-local function applyKnockback(attacker, attackerRoot, model, root, attack)
+local function applyKnockback(attackerRoot, model, humanoid, root, attack)
     if not model
         or not model.Parent
         or not root
         or not root:IsA("BasePart")
         or not root.Parent
+        or not humanoid
+        or not humanoid:IsA("Humanoid")
+        or humanoid.Health <= 0
         or not attackerRoot
         or not attackerRoot:IsA("BasePart")
         or not attackerRoot.Parent
@@ -382,8 +351,6 @@ local function applyKnockback(attacker, attackerRoot, model, root, attack)
     model:SetAttribute("CombatLastHitAt", now)
     model:SetAttribute("CombatHitCount", hitCount)
 
-    local comboScale =
-        1 + math.min(2, hitCount - 1) * 0.18
     local resistanceScale =
         1 - math.clamp(
             tonumber(model:GetAttribute("KnockbackResistance")) or 0,
@@ -391,28 +358,21 @@ local function applyKnockback(attacker, attackerRoot, model, root, attack)
             1
         )
 
-    local runKnockbackMultiplier = 1
-    if validAttacker(attacker) then
-        runKnockbackMultiplier = math.clamp(
-            tonumber(attacker:GetAttribute("RunKnockbackMultiplier")) or 1,
-            0.25,
-            5
-        )
-    end
+    local heavy = attack.Heavy == true
+    local horizontalVelocity = math.clamp(
+        math.max(0, tonumber(attack.Knockback) or 12) * resistanceScale,
+        0,
+        heavy and HEAVY_MAX_HORIZONTAL_VELOCITY
+            or NORMAL_MAX_HORIZONTAL_VELOCITY
+    )
+    local upwardVelocity = math.clamp(
+        math.max(0, tonumber(attack.UpwardKnockback) or 2) * resistanceScale,
+        0,
+        heavy and HEAVY_MAX_UPWARD_VELOCITY
+            or NORMAL_MAX_UPWARD_VELOCITY
+    )
 
-    local horizontalForce =
-        math.max(0, tonumber(attack.Knockback) or 12)
-        * runKnockbackMultiplier
-        * 1.8
-        * comboScale
-        * resistanceScale
-
-    local upwardForce =
-        math.max(0, tonumber(attack.UpwardKnockback) or 2)
-        * comboScale
-        * resistanceScale
-
-    if resistanceScale <= 0 or horizontalForce <= 0 then
+    if resistanceScale <= 0 or horizontalVelocity <= 0 then
         return
     end
 
@@ -435,7 +395,7 @@ local function applyKnockback(attacker, attackerRoot, model, root, attack)
 
     if model:GetAttribute("KinematicMovement") == true then
         local displacement =
-            math.clamp(horizontalForce * 0.065, 0.9, 2.4)
+            math.clamp(horizontalVelocity * 0.065, 0.75, 2.2)
         model:SetAttribute(
             "KinematicKnockbackRequest",
             direction * displacement
@@ -447,22 +407,14 @@ local function applyKnockback(attacker, attackerRoot, model, root, attack)
         return
     end
 
-    local velocity =
-        direction * horizontalForce
-        + Vector3.new(0, upwardForce, 0)
+    local knockbackWindow = heavy
+        and HEAVY_KNOCKBACK_WINDOW
+        or NORMAL_KNOCKBACK_WINDOW
 
     model:SetAttribute(
         "CombatKnockbackUntil",
-        workspace:GetServerTimeNow() + 0.22
+        workspace:GetServerTimeNow() + knockbackWindow
     )
-
-    for _, child in ipairs(root:GetChildren()) do
-        if child.Name == "SwordKnockback"
-            or child.Name == "SwordKnockbackAttachment"
-        then
-            child:Destroy()
-        end
-    end
 
     for _, descendant in ipairs(model:GetDescendants()) do
         if descendant:IsA("BasePart")
@@ -476,26 +428,95 @@ local function applyKnockback(attacker, attackerRoot, model, root, attack)
         root:SetNetworkOwner(nil)
     end)
 
-    root.AssemblyLinearVelocity = velocity
+    -- Cancela imediatamente a ordem de caminhada anterior sem alterar
+    -- WalkSpeed ou AutoRotate. A IA retomara uma nova rota ao fim da janela.
+    humanoid:Move(Vector3.zero)
 
-    local attachment = Instance.new("Attachment")
-    attachment.Name = "SwordKnockbackAttachment"
-    attachment.Parent = root
+    -- ApplyImpulse sozinho perdia quase toda a velocidade no primeiro contato
+    -- com o chao/Humanoid. Um LinearVelocity somente horizontal sustenta o
+    -- deslocamento por poucos frames e desacelera suavemente. Cada novo hit
+    -- substitui o anterior, portanto o combo nao acumula movers nem energia.
+    local token =
+        (model:GetAttribute("CombatKnockbackTokenId") or 0) + 1
+    model:SetAttribute("CombatKnockbackTokenId", token)
 
-    local linearVelocity = Instance.new("LinearVelocity")
-    linearVelocity.Name = "SwordKnockback"
-    linearVelocity.Attachment0 = attachment
-    linearVelocity.RelativeTo = Enum.ActuatorRelativeTo.World
-    linearVelocity.VectorVelocity = velocity
-    linearVelocity.MaxForce = math.clamp(
-        root.AssemblyMass * 10000,
-        20000,
-        300000
+    local oldVelocity = root:FindFirstChild(KNOCKBACK_VELOCITY_NAME)
+    if oldVelocity then
+        oldVelocity:Destroy()
+    end
+
+    local attachment = root:FindFirstChild(KNOCKBACK_ATTACHMENT_NAME)
+    if attachment and not attachment:IsA("Attachment") then
+        attachment:Destroy()
+        attachment = nil
+    end
+    if not attachment then
+        attachment = Instance.new("Attachment")
+        attachment.Name = KNOCKBACK_ATTACHMENT_NAME
+        attachment.Parent = root
+    end
+
+    local velocity = Instance.new("LinearVelocity")
+    velocity.Name = KNOCKBACK_VELOCITY_NAME
+    velocity.Attachment0 = attachment
+    velocity.RelativeTo = Enum.ActuatorRelativeTo.World
+    velocity.VelocityConstraintMode = Enum.VelocityConstraintMode.Plane
+    velocity.PrimaryTangentAxis = Vector3.xAxis
+    velocity.SecondaryTangentAxis = Vector3.zAxis
+    velocity.PlaneVelocity = Vector2.new(
+        direction.X * horizontalVelocity,
+        direction.Z * horizontalVelocity
     )
-    linearVelocity.Parent = root
+    velocity.ForceLimitsEnabled = true
+    velocity.ForceLimitMode = Enum.ForceLimitMode.Magnitude
+    velocity.MaxForce = math.max(10000, root.AssemblyMass * 900)
+    velocity.Parent = root
+    Debris:AddItem(velocity, knockbackWindow + 0.1)
 
-    Debris:AddItem(linearVelocity, 0.17)
-    Debris:AddItem(attachment, 0.19)
+    -- O eixo vertical permanece livre para gravidade. O pequeno levantamento
+    -- do golpe e aplicado uma unica vez e nunca reduz uma queda ja existente.
+    local currentVertical = root.AssemblyLinearVelocity.Y
+    if upwardVelocity > currentVertical then
+        safeCall(function()
+            root:ApplyImpulse(
+                Vector3.new(
+                    0,
+                    (upwardVelocity - currentVertical) * root.AssemblyMass,
+                    0
+                )
+            )
+        end)
+    end
+
+    task.spawn(function()
+        local startedAt = workspace:GetServerTimeNow()
+        while velocity.Parent
+            and root.Parent
+            and model.Parent
+            and humanoid.Health > 0
+            and model:GetAttribute("CombatKnockbackTokenId") == token
+        do
+            local elapsed = workspace:GetServerTimeNow() - startedAt
+            local alpha = math.clamp(elapsed / knockbackWindow, 0, 1)
+            local remaining = (1 - alpha) * (1 - alpha)
+
+            velocity.PlaneVelocity = Vector2.new(
+                direction.X * horizontalVelocity * remaining,
+                direction.Z * horizontalVelocity * remaining
+            )
+
+            if alpha >= 1 then
+                break
+            end
+            RunService.Heartbeat:Wait()
+        end
+
+        if velocity.Parent
+            and model:GetAttribute("CombatKnockbackTokenId") == token
+        then
+            velocity:Destroy()
+        end
+    end)
 end
 
 function DamageService.IsFriendly(attacker, targetModel, friendlyFire)
@@ -585,9 +606,9 @@ function DamageService.ApplySwordHit(attacker, attackerRoot, target, attack)
         )
         safeCall(
             applyKnockback,
-            attacker,
             attackerRoot,
             model,
+            humanoid,
             root,
             attack
         )
@@ -800,11 +821,11 @@ end
 
 workspace:SetAttribute(
     "CombatDamageServiceVersion",
-    "RebuildMinimalV1"
+    "FluidHitReactionV2"
 )
 workspace:SetAttribute(
     "CombatDamageServiceKnockbackPolicy",
-    "ExplicitAttackerFailSafeV1"
+    "SingleImpulseAIWindowV2"
 )
 
 return table.freeze(DamageService)

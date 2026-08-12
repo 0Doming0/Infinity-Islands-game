@@ -1,5 +1,5 @@
 --[[
-	Infinity Islands - MobXPCollectibleService V4 - Shared Physical Reward API
+	Infinity Islands - MobXPCollectibleService V5 - Cycle-scaled physical XP
 
 	Compatibility strategy:
 	1. MonsterSpawner still calculates the authoritative mob XP value.
@@ -7,6 +7,7 @@
 	   intercepted and acknowledged WITHOUT increasing XP.
 	3. This service listens to managed CombatTarget deaths.
 	4. It calculates the final reward for the LAST HITTER.
+	   XPReward already contains the server-authored cycle multiplier.
 	5. It spawns physical fragments whose XP values sum exactly to that reward.
 	6. XP is granted only when each fragment reaches the target player.
 
@@ -44,6 +45,9 @@ local originalAwardXP
 local active = {}
 local boundMobs =
 	setmetatable({}, { __mode = "k" })
+local spawnQueue = {}
+local spawnQueueHead = 1
+local queuedPieceCount = 0
 
 local deathSerial = 0
 local collectSerial = 0
@@ -905,7 +909,6 @@ local function createPiece(
 
 	visual.Parent = runtime
 	runtime.PrimaryPart = root
-	runtime.Parent = runtimeFolder()
 
 	-- Restore the thin near-black outline from the old collectible system.
 	AnimeOutline.Apply(
@@ -976,8 +979,14 @@ local function createPiece(
 			metadata.MonsterId,
 		MobLevel =
 			metadata.MobLevel,
+		RecommendedLevel =
+			metadata.RecommendedLevel,
 		GlobalIslandIndex =
 			metadata.GlobalIslandIndex,
+		CycleIndex =
+			metadata.CycleIndex,
+		XPRewardMultiplier =
+			metadata.XPRewardMultiplier,
 	}
 
 	for _, instance in ipairs({
@@ -1013,14 +1022,206 @@ local function createPiece(
 			metadata.MobLevel
 		)
 		instance:SetAttribute(
+			"RecommendedLevel",
+			metadata.RecommendedLevel
+		)
+		instance:SetAttribute(
 			"GlobalIslandIndex",
 			metadata.GlobalIslandIndex
 		)
+		instance:SetAttribute(
+			"CycleIndex",
+			metadata.CycleIndex
+		)
+		instance:SetAttribute(
+			"XPRewardMultiplier",
+			metadata.XPRewardMultiplier
+		)
 	end
 
+	-- Publish only the fully assembled model. Parenting earlier makes the
+	-- server replicate the visual, outline, trail and attributes as separate
+	-- updates, which amplifies the first collectible burst frame spike.
+	runtime.Parent = runtimeFolder()
 	active[runtime] = entry
 
 	return entry
+end
+
+local function updateQueueDiagnostics()
+	if workspace:GetAttribute(
+		"DungeonXPCollectibleQueuedPieces"
+	) ~= queuedPieceCount
+	then
+		workspace:SetAttribute(
+			"DungeonXPCollectibleQueuedPieces",
+			queuedPieceCount
+		)
+	end
+end
+
+local function queueRewardPieces(
+	player,
+	position,
+	values,
+	random,
+	metadata
+)
+	table.insert(
+		spawnQueue,
+		{
+			TargetPlayer = player,
+			Position = position,
+			Values = values,
+			Random = random,
+			Metadata = metadata,
+			NextIndex = 1,
+		}
+	)
+
+	queuedPieceCount += #values
+	updateQueueDiagnostics()
+end
+
+local function grantFailedQueuedPiece(
+	job,
+	xpValue,
+	errorMessage
+)
+	local player = job.TargetPlayer
+
+	-- A visual creation failure must never make the player lose earned XP.
+	-- This path is exceptional; normal rewards remain physical collectibles.
+	if validTargetPlayer(player)
+		and originalAwardXP
+	then
+		originalAwardXP(
+			player,
+			xpValue,
+			"XPCollectibleSpawnFallback:"
+				.. tostring(
+					job.Metadata.MonsterId
+				)
+		)
+	end
+
+	changePending(player, -1)
+
+	warn(
+		"[MobXPCollectibleService] falha ao criar fragmento; "
+			.. "XP entregue diretamente: "
+			.. tostring(errorMessage)
+	)
+end
+
+local function compactSpawnQueue()
+	if spawnQueueHead > #spawnQueue then
+		table.clear(spawnQueue)
+		spawnQueueHead = 1
+		return
+	end
+
+	if spawnQueueHead <= 64 then
+		return
+	end
+
+	local compacted =
+		table.create(
+			#spawnQueue
+				- spawnQueueHead
+				+ 1
+		)
+
+	for index = spawnQueueHead, #spawnQueue do
+		table.insert(
+			compacted,
+			spawnQueue[index]
+		)
+	end
+
+	spawnQueue = compacted
+	spawnQueueHead = 1
+end
+
+local function processSpawnQueue()
+	if spawnQueueHead > #spawnQueue then
+		return
+	end
+
+	local budget =
+		math.max(
+			1,
+			math.floor(
+				tonumber(
+					CollectibleConfig
+						.MaxPieceCreationsPerHeartbeat
+				) or 1
+			)
+		)
+
+	while budget > 0
+		and spawnQueueHead <= #spawnQueue
+	do
+		local job =
+			spawnQueue[spawnQueueHead]
+
+		if not validTargetPlayer(
+			job.TargetPlayer
+		) then
+			local remaining =
+				#job.Values
+					- job.NextIndex
+					+ 1
+
+			queuedPieceCount =
+				math.max(
+					0,
+					queuedPieceCount
+						- remaining
+				)
+
+			spawnQueueHead += 1
+			continue
+		end
+
+		local index = job.NextIndex
+		local xpValue = job.Values[index]
+
+		local created, errorMessage =
+			pcall(
+				createPiece,
+				job.TargetPlayer,
+				job.Position,
+				xpValue,
+				index,
+				job.Random,
+				job.Metadata
+			)
+
+		if not created then
+			grantFailedQueuedPiece(
+				job,
+				xpValue,
+				errorMessage
+			)
+		end
+
+		job.NextIndex += 1
+		queuedPieceCount =
+			math.max(
+				0,
+				queuedPieceCount - 1
+			)
+
+		if job.NextIndex > #job.Values then
+			spawnQueueHead += 1
+		end
+
+		budget -= 1
+	end
+
+	compactSpawnQueue()
+	updateQueueDiagnostics()
 end
 
 local function spawnRewardBurst(
@@ -1059,20 +1260,17 @@ local function spawnRewardBurst(
 				or rawSeed
 		)
 
-	for index, xpValue in ipairs(values) do
-		createPiece(
-			player,
-			position,
-			xpValue,
-			index,
-			random,
-			metadata
-		)
-	end
-
 	changePending(
 		player,
 		#values
+	)
+
+	queueRewardPieces(
+		player,
+		position,
+		values,
+		random,
+		metadata
 	)
 
 	player:SetAttribute(
@@ -1086,6 +1284,18 @@ local function spawnRewardBurst(
 	player:SetAttribute(
 		"LastMobXPCollectibleSpawnAt",
 		workspace:GetServerTimeNow()
+	)
+	player:SetAttribute(
+		"LastMobXPCycleIndex",
+		metadata.CycleIndex
+	)
+	player:SetAttribute(
+		"LastMobXPRewardMultiplier",
+		metadata.XPRewardMultiplier
+	)
+	player:SetAttribute(
+		"LastMobXPRiskLevel",
+		metadata.RecommendedLevel
 	)
 
 	workspace:SetAttribute(
@@ -1105,6 +1315,11 @@ local function spawnRewardBurst(
 end
 
 local function heartbeat(dt)
+	-- Keep expensive template cloning and replication off the death frame.
+	-- The queue preserves every piece and all XP, but publishes only a small
+	-- number of fully assembled collectible models per Heartbeat.
+	processSpawnQueue()
+
 	local now =
 		workspace:GetServerTimeNow()
 
@@ -1431,6 +1646,18 @@ local function onManagedMobDied(
 			)
 		)
 
+	local riskRewardLevel =
+		math.max(
+			1,
+			math.floor(
+				tonumber(
+					model:GetAttribute(
+						"RecommendedLevel"
+					)
+				) or mobLevel
+			)
+		)
+
 	local baseReward =
 		math.max(
 			1,
@@ -1445,7 +1672,10 @@ local function onManagedMobDied(
 							model:GetAttribute(
 								"SlimeVariant"
 							),
-							mobLevel
+							mobLevel,
+							model:GetAttribute(
+								"XPRewardMultiplier"
+							)
 						)
 			)
 		)
@@ -1466,7 +1696,7 @@ local function onManagedMobDied(
 		MobXPConfig
 			.GetAwardForPlayer(
 				baseReward,
-				mobLevel,
+				riskRewardLevel,
 				playerLevel
 			)
 
@@ -1479,9 +1709,21 @@ local function onManagedMobDied(
 
 		MobLevel = mobLevel,
 
+		RecommendedLevel = riskRewardLevel,
+
 		GlobalIslandIndex =
 			model:GetAttribute(
 				"GlobalIslandIndex"
+			),
+
+		CycleIndex =
+			model:GetAttribute(
+				"CycleIndex"
+			),
+
+		XPRewardMultiplier =
+			model:GetAttribute(
+				"XPRewardMultiplier"
 			),
 
 		RiskBonus = riskBonus,
@@ -1673,6 +1915,11 @@ function Service.Start()
 		"DungeonXPCollectibleVisualScale",
 		CollectibleConfig.VisualScale
 	)
+	workspace:SetAttribute(
+		"DungeonXPCollectibleSpawnBudgetPerHeartbeat",
+		CollectibleConfig.MaxPieceCreationsPerHeartbeat
+	)
+	updateQueueDiagnostics()
 
 	print(
 		"[MobXPCollectibleService] ativo: "

@@ -219,6 +219,10 @@ local function bossOwnsCameraSoon()
 end
 
 local function navigationWindow()
+	if player:GetAttribute("DungeonAssistedTransportActive") == true then
+		return false, "AssistedTransportOwnsCamera"
+	end
+
 	if player:GetAttribute("DungeonMobileMode") ~= true then
 		return false, "NotMobile"
 	end

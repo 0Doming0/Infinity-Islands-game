@@ -1,6 +1,6 @@
 --[[
 	Infinity Islands - Task 17
-	EarlyGamePacingConfig V1
+	EarlyGamePacingConfig V4
 
 	First 60-90 second retention calibration.
 
@@ -8,51 +8,59 @@
 	overrides layered on top of the normal IslandLevel systems.
 
 	Why:
-	- Island 1: 5 Green L1 * 12 XP = 60 XP -> exact Level 2 on clear.
-	- Island 2: 6 Green L1 * 12 XP = 72 / 85 XP toward Level 3.
-	- Island 3 is IslandLevel 2. First Green L2 = 13 XP.
-	  72 + 13 = 85 -> Level 3 on the first kill of Island 3.
+		- Initial Island: demonstracao pacifica de todas as variantes;
+		- todas as variantes iniciais usam vida e XP do Green L1;
+		- Numbered Island 1: 3 Green L1;
+		- Numbered Islands 2-6 apresentam cada variante avancada separadamente;
+		- Numbered Island 7 inicia as combinacoes de slimes.
 
 	This produces:
 	first kill -> visible XP
-	Island 1 clear -> first level-up
-	Island 2 -> short "I am stronger" confirmation
-	Island 3 first kill -> second level-up
+	Initial Island -> demonstracao segura com recompensa reduzida
+	Numbered Island 1 -> primeiro combate real somente com Green
+	Numbered Island 2 -> primeiro inimigo avancado, somente Blue
+	Numbered Island 7 -> primeira arena com os tipos avancados juntos
 ]]
 
 local Config = {}
 
-Config.Version = "EarlyGamePacingV1"
-Config.Policy = "FirstThreeIslandsFastProgress"
+Config.Version = "InitialAllSlimesThenGreenIslandOneV4"
+Config.Policy = "InitialTutorialThenGrowingNumberedCycle"
 
 Config.CalibrationWindowSeconds = 90
 
+-- A ilha inicial e um tutorial fora da numeracao normal.
+Config.InitialIslandXPRewardMultiplier = 0.50
+Config.InitialIslandModelScale = 0.60
+
 Config.IslandOverrides = table.freeze({
 	[1] = table.freeze({
-		TargetCount = 5,
-		MaximumAlive = 3,
+		TargetCount = 7,
+		MaximumAlive = 7,
 		SpawnStaggerSeconds = 0.40,
-		ExpectedVariant = "Green",
+		ExpectedRoster = "AllSlimeVariantsPassiveGreenStats",
 		ExpectedMobLevel = 1,
-		ExpectedTotalXP = 60,
-		ExpectedOutcome = "PlayerLevel2OnClear",
+		ExpectedXPPerMob = 6,
+		ExpectedTotalXP = 42,
+		ExpectedModelScale = 0.60,
+		ExpectedOutcome = "TutorialPracticeNoGuaranteedLevelUp",
 	}),
 	[2] = table.freeze({
-		TargetCount = 6,
-		MaximumAlive = 4,
+		MaximumAlive = 3,
 		SpawnStaggerSeconds = 0.30,
 		ExpectedVariant = "Green",
 		ExpectedMobLevel = 1,
-		ExpectedTotalXP = 72,
-		ExpectedOutcome = "PlayerLevel2With72Of85XP",
+		ExpectedTargetCount = 3,
+		ExpectedTotalBaseXP = 36,
+		ExpectedOutcome = "FirstNumberedIslandStartsCycleAtThreeMobs",
 	}),
 	[3] = table.freeze({
-		MaximumAlive = 5,
+		MaximumAlive = 4,
 		SpawnStaggerSeconds = 0.25,
-		ExpectedVariant = "Green",
+		ExpectedRoster = "BlueOnlyNoGreen",
 		ExpectedMobLevel = 2,
-		ExpectedFirstKillXP = 13,
-		ExpectedOutcome = "PlayerLevel3OnFirstKill",
+		ExpectedTargetCount = 4,
+		ExpectedOutcome = "FirstAdvancedSlimeMechanicIntroduced",
 	}),
 })
 
@@ -155,27 +163,37 @@ end
 
 function Config.Validate()
 	assert(
-		Config.GetTargetCount(1, 3) == 5,
-		"Island 1 precisa de 5 mobs"
+		Config.InitialIslandXPRewardMultiplier == 0.50,
+		"Ilha inicial precisa entregar 50% do XP normal"
 	)
 
 	assert(
-		Config.GetTargetCount(2, 3) == 6,
-		"Island 2 precisa de 6 mobs"
+		Config.InitialIslandModelScale == 0.60,
+		"Mobs iniciais precisam ser 40% menores"
+	)
+
+	assert(
+		Config.GetTargetCount(1, 3) == 7,
+		"Ilha Inicial precisa demonstrar as 7 variantes"
+	)
+
+	assert(
+		Config.GetTargetCount(2, 3) == 3,
+		"Ilha numerada 1 precisa preservar os 3 mobs da curva"
 	)
 
 	assert(
 		Config.GetTargetCount(3, 3) == 3,
-		"Island 3 nao deve sobrescrever o TargetCount normal"
+		"Ilha numerada 2 nao deve sobrescrever a curva normal"
 	)
 
 	assert(
 		Config.GetMaximumAlive(
 			1,
 			7,
-			5
-		) == 3,
-		"Island 1 MaxAlive precisa ser 3"
+			7
+		) == 7,
+		"Ilha Inicial precisa manter as 7 variantes visiveis"
 	)
 
 	assert(
@@ -185,7 +203,7 @@ function Config.Validate()
 				0.25
 			) - 0.40
 		) < 0.0001,
-		"Island 1 stagger precisa ser 0.40"
+		"Ilha Inicial precisa usar stagger 0.40"
 	)
 
 	return true

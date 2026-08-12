@@ -1,30 +1,32 @@
 --[[
-	Infinity Islands - IslandMobRosterConfig V2
+	Infinity Islands - IslandMobRosterConfig V5
 	Advanced Slime Variety
 
 	Goals:
-	- Levels 1-2 remain simple Green-slime onboarding.
-	- From IslandLevel 3 onward, advanced-slime islands strongly favor
-	  unlocked non-Green variants.
+	- a Ilha Inicial demonstra todas as variantes de slime de forma pacifica;
+	- a Ilha 1 numerada usa somente Green Slime;
+	- Ilhas 2-6 apresentam Blue, Red, Fire, Ice e Lightning separadamente;
+	- a partir da Ilha 7, todas as variantes avancadas podem aparecer juntas;
 	- Keep deterministic composition by seed.
-	- Keep threat-budget limits.
+	- o budget avancado precisa comportar o elenco sem fallback verde;
 	- Golden never enters the regular roster.
 	- Newest unlocked variant remains guaranteed when possible.
 
 	Advanced policy:
-	- minimum Green ratio: 25%;
-	- maximum ranged ratio: 65%;
-	- maximum special ratio: 55%;
-	- Green weight falls sharply;
-	- advanced variants receive much higher selection weights.
+	- minimum Green ratio: 0%;
+	- Blue aparece sozinho na ilha 2;
+	- Red, Fire, Ice e Lightning aparecem sozinhos nas ilhas 3-6;
+	- a Ilha 7 garante todos os cinco tipos avancados antes do preenchimento aleatorio.
 ]]
 
 local IslandMobRosterConfig = {}
 
 IslandMobRosterConfig.Version =
-	"IslandMobRosterV2AdvancedVariety"
+	"IslandMobRosterV5SoloIntroductionsThenMixed"
 
-IslandMobRosterConfig.AdvancedSlimeStartLevel = 3
+IslandMobRosterConfig.AdvancedSlimeStartLevel = 2
+IslandMobRosterConfig.SoloIntroductionEndLevel = 6
+IslandMobRosterConfig.MixedSlimeStartLevel = 7
 
 -- Initial islands: simple/readable.
 IslandMobRosterConfig.EarlyMinimumGreenRatio = 0.40
@@ -32,17 +34,17 @@ IslandMobRosterConfig.EarlyMaximumRangedRatio = 0.40
 IslandMobRosterConfig.EarlyMaximumSpecialRatio = 0.35
 
 -- Advanced slime islands: visibly more varied.
-IslandMobRosterConfig.AdvancedMinimumGreenRatio = 0.25
-IslandMobRosterConfig.AdvancedMaximumRangedRatio = 0.65
-IslandMobRosterConfig.AdvancedMaximumSpecialRatio = 0.55
+IslandMobRosterConfig.AdvancedMinimumGreenRatio = 0
+IslandMobRosterConfig.AdvancedMaximumRangedRatio = 1
+IslandMobRosterConfig.AdvancedMaximumSpecialRatio = 1
 
 -- Compatibility aliases for diagnostics/older consumers.
 IslandMobRosterConfig.MinimumGreenRatio =
-	IslandMobRosterConfig.EarlyMinimumGreenRatio
+	IslandMobRosterConfig.AdvancedMinimumGreenRatio
 IslandMobRosterConfig.MaximumRangedRatio =
-	IslandMobRosterConfig.EarlyMaximumRangedRatio
+	IslandMobRosterConfig.AdvancedMaximumRangedRatio
 IslandMobRosterConfig.MaximumSpecialRatio =
-	IslandMobRosterConfig.EarlyMaximumSpecialRatio
+	IslandMobRosterConfig.AdvancedMaximumSpecialRatio
 
 local ORDER = {
 	"Green",
@@ -51,6 +53,16 @@ local ORDER = {
 	"Fire",
 	"Ice",
 	"Lightning",
+}
+
+local DEMONSTRATION_ORDER = {
+	"Green",
+	"Blue",
+	"Red",
+	"Fire",
+	"Ice",
+	"Lightning",
+	"Golden",
 }
 
 local DEFINITIONS = {
@@ -65,7 +77,7 @@ local DEFINITIONS = {
 	}),
 	Blue = table.freeze({
 		Variant = "Blue",
-		UnlockLevel = 3,
+		UnlockLevel = 2,
 		ThreatCost = 2,
 		EarlyWeight = 55,
 		AdvancedWeight = 95,
@@ -74,7 +86,7 @@ local DEFINITIONS = {
 	}),
 	Red = table.freeze({
 		Variant = "Red",
-		UnlockLevel = 5,
+		UnlockLevel = 3,
 		ThreatCost = 2,
 		EarlyWeight = 40,
 		AdvancedWeight = 85,
@@ -83,7 +95,7 @@ local DEFINITIONS = {
 	}),
 	Fire = table.freeze({
 		Variant = "Fire",
-		UnlockLevel = 7,
+		UnlockLevel = 4,
 		ThreatCost = 3,
 		EarlyWeight = 30,
 		AdvancedWeight = 76,
@@ -92,7 +104,7 @@ local DEFINITIONS = {
 	}),
 	Ice = table.freeze({
 		Variant = "Ice",
-		UnlockLevel = 9,
+		UnlockLevel = 5,
 		ThreatCost = 3,
 		EarlyWeight = 26,
 		AdvancedWeight = 72,
@@ -101,12 +113,22 @@ local DEFINITIONS = {
 	}),
 	Lightning = table.freeze({
 		Variant = "Lightning",
-		UnlockLevel = 11,
+		UnlockLevel = 6,
 		ThreatCost = 3,
 		EarlyWeight = 22,
 		AdvancedWeight = 68,
 		Ranged = false,
 		Special = true,
+	}),
+	Golden = table.freeze({
+		Variant = "Golden",
+		UnlockLevel = 999999,
+		ThreatCost = 1,
+		EarlyWeight = 0,
+		AdvancedWeight = 0,
+		Ranged = false,
+		Special = true,
+		DemoOnly = true,
 	}),
 }
 
@@ -243,6 +265,25 @@ function IslandMobRosterConfig.GetThreatBudget(
 	local count = cleanCount(targetCount)
 	local level = cleanLevel(islandLevel)
 
+	if isAdvancedLevel(level) then
+		local maximumUnlockedThreat = 1
+
+		for _, variantName in ipairs(ORDER) do
+			local definition = DEFINITIONS[variantName]
+
+			if variantName ~= "Green"
+				and definition.UnlockLevel <= level
+			then
+				maximumUnlockedThreat = math.max(
+					maximumUnlockedThreat,
+					definition.ThreatCost
+				)
+			end
+		end
+
+		return count * maximumUnlockedThreat
+	end
+
 	local extraPerMob =
 		math.clamp(
 			(level - 1) * 0.055,
@@ -265,7 +306,7 @@ local function capCount(
 	ratio
 )
 	if total <= 1 then
-		return 0
+		return ratio >= 1 and total or 0
 	end
 
 	return math.max(
@@ -458,6 +499,13 @@ function IslandMobRosterConfig.BuildRoster(
 		IslandMobRosterConfig
 			.GetUnlockedVariants(level)
 
+	local nonGreenUnlocked =
+		advancedCandidates(unlocked)
+
+	local advancedOnly =
+		policy.Advanced
+			and #nonGreenUnlocked > 0
+
 	local newest =
 		IslandMobRosterConfig
 			.GetNewestUnlockedVariant(level)
@@ -469,16 +517,20 @@ function IslandMobRosterConfig.BuildRoster(
 				level
 			)
 
-	local minimumGreen =
-		math.clamp(
-			math.ceil(
+	local minimumGreen = 0
+
+	if not advancedOnly then
+		minimumGreen =
+			math.clamp(
+				math.ceil(
+					count
+						* policy
+							.MinimumGreenRatio
+				),
+				1,
 				count
-					* policy
-						.MinimumGreenRatio
-			),
-			1,
-			count
-		)
+			)
+	end
 
 	local maximumRanged =
 		capCount(
@@ -503,7 +555,38 @@ function IslandMobRosterConfig.BuildRoster(
 		CountByVariant = {},
 	}
 
-	-- Preserve a small Green baseline for visual readability.
+	-- Cada mecanica avancada recebe uma ilha propria antes das combinacoes.
+	-- Isso torna a leitura do ataque clara para o jogador no primeiro contato.
+	if policy.Advanced
+		and level <= IslandMobRosterConfig.SoloIntroductionEndLevel
+	then
+		for _ = 1, count do
+			addVariant(roster, newest, state)
+		end
+
+		return {
+			Version = IslandMobRosterConfig.Version,
+			Roster = roster,
+			ThreatBudget = threatBudget,
+			ThreatUsed = state.ThreatUsed,
+			GreenCount = state.GreenCount,
+			AdvancedCount = state.AdvancedCount,
+			RangedCount = state.RangedCount,
+			SpecialCount = state.SpecialCount,
+			CountByVariant = state.CountByVariant,
+			NewestUnlockedVariant = newest,
+			NewestVariantGuaranteed = true,
+			AdvancedSlimePolicy = true,
+			AdvancedOnly = true,
+			MinimumGreenRatio = 0,
+			MaximumRangedRatio = 1,
+			MaximumSpecialRatio = 1,
+			SoloIntroduction = true,
+		}
+	end
+
+	-- Green existe somente no onboarding. Ilhas avancadas comecam vazias
+	-- para nunca consumirem uma vaga com a variante basica.
 	for _ = 1, minimumGreen do
 		addVariant(
 			roster,
@@ -538,53 +621,44 @@ function IslandMobRosterConfig.BuildRoster(
 		end
 	end
 
-	-- Advanced islands should not accidentally become mostly Green.
-	-- If at least one advanced type is unlocked and there is room, try to
-	-- guarantee a second non-Green slot before random filling.
+	-- Na primeira ilha mista e nas seguintes, cada variante desbloqueada recebe
+	-- ao menos uma vaga antes do preenchimento aleatorio.
 	if policy.Advanced
 		and #roster < count
 	then
-		local nonGreen =
-			advancedCandidates(unlocked)
-
-		local valid = {}
-
-		for _, variantName in ipairs(nonGreen) do
+		for _, variantName in ipairs(nonGreenUnlocked) do
+			if #roster >= count then
+				break
+			end
 			local definition =
 				DEFINITIONS[variantName]
 
-			if canAdd(
+			if not state.CountByVariant[variantName]
+				and canAdd(
 				definition,
 				state,
 				maximumRanged,
 				maximumSpecial,
 				threatBudget
 			) then
-				table.insert(
-					valid,
-					variantName
+				addVariant(
+					roster,
+					variantName,
+					state
 				)
 			end
-		end
-
-		if #valid > 0 then
-			addVariant(
-				roster,
-				weightedChoice(
-					random,
-					valid,
-					true
-				),
-				state
-			)
 		end
 	end
 
 	while #roster < count do
 		local candidates = {}
+		local sourceCandidates =
+			advancedOnly
+				and nonGreenUnlocked
+				or unlocked
 
 		for _, variantName in ipairs(
-			unlocked
+			sourceCandidates
 		) do
 			local definition =
 				DEFINITIONS[variantName]
@@ -606,7 +680,9 @@ function IslandMobRosterConfig.BuildRoster(
 		if #candidates == 0 then
 			addVariant(
 				roster,
-				"Green",
+				advancedOnly
+					and nonGreenUnlocked[1]
+					or "Green",
 				state
 			)
 		else
@@ -664,6 +740,9 @@ function IslandMobRosterConfig.BuildRoster(
 		AdvancedSlimePolicy =
 			policy.Advanced,
 
+		AdvancedOnly =
+			advancedOnly,
+
 		MinimumGreenRatio =
 			policy.MinimumGreenRatio,
 
@@ -675,11 +754,70 @@ function IslandMobRosterConfig.BuildRoster(
 	}
 end
 
+function IslandMobRosterConfig.BuildDemonstrationRoster(
+	targetCount,
+	seed
+)
+	local count = cleanCount(targetCount)
+	local random = Random.new(normalizedSeed(seed))
+	local roster = {}
+	local state = {
+		ThreatUsed = 0,
+		GreenCount = 0,
+		AdvancedCount = 0,
+		RangedCount = 0,
+		SpecialCount = 0,
+		CountByVariant = {},
+	}
+
+	for index = 1, count do
+		local variantName = DEMONSTRATION_ORDER[
+			((index - 1) % #DEMONSTRATION_ORDER) + 1
+		]
+		addVariant(roster, variantName, state)
+	end
+
+	roster = shuffle(random, roster)
+
+	return {
+		Version = IslandMobRosterConfig.Version,
+		Roster = roster,
+		ThreatBudget = state.ThreatUsed,
+		ThreatUsed = state.ThreatUsed,
+		GreenCount = state.GreenCount,
+		AdvancedCount = state.AdvancedCount,
+		RangedCount = state.RangedCount,
+		SpecialCount = state.SpecialCount,
+		CountByVariant = state.CountByVariant,
+		NewestUnlockedVariant = "Golden",
+		NewestVariantGuaranteed = count >= #DEMONSTRATION_ORDER,
+		AdvancedSlimePolicy = false,
+		AdvancedOnly = false,
+		MinimumGreenRatio = 0,
+		MaximumRangedRatio = 1,
+		MaximumSpecialRatio = 1,
+		Demonstration = true,
+	}
+end
+
 function IslandMobRosterConfig.Validate()
 	assert(
-		DEFINITIONS.Golden == nil,
-		"Golden nao pode entrar no roster normal"
+		DEFINITIONS.Golden.DemoOnly == true,
+		"Golden precisa permanecer exclusivo da demonstracao"
 	)
+
+	local demonstration =
+		IslandMobRosterConfig.BuildDemonstrationRoster(
+			#DEMONSTRATION_ORDER,
+			777
+		)
+
+	for _, variantName in ipairs(DEMONSTRATION_ORDER) do
+		assert(
+			(demonstration.CountByVariant[variantName] or 0) == 1,
+			"Demonstracao inicial precisa incluir " .. variantName
+		)
+	end
 
 	local levelOne =
 		IslandMobRosterConfig
@@ -698,34 +836,52 @@ function IslandMobRosterConfig.Validate()
 		)
 	end
 
-	local levelThree =
+	local levelTwo =
 		IslandMobRosterConfig
 			.BuildRoster(
 				6,
-				3,
+				2,
 				12345
 			)
 
 	assert(
-		levelThree.AdvancedSlimePolicy == true,
-		"Level 3 precisa ativar politica de Advanced Slimes"
+		levelTwo.AdvancedSlimePolicy == true
+			and levelTwo.AdvancedOnly == true,
+		"Level 2 precisa ativar a politica somente avancada"
 	)
 
-	assert(
-		(levelThree.CountByVariant.Blue or 0) >= 1,
-		"Level 3 precisa incluir Blue"
-	)
+	for _, variantName in ipairs(levelTwo.Roster) do
+		assert(
+			variantName == "Blue",
+			"Level 2 precisa ser uma ilha somente de Blue Slimes"
+		)
+	end
 
-	assert(
-		levelThree.AdvancedCount >= 2,
-		"Advanced Slime island precisa tentar incluir pelo menos 2 nao-Green"
-	)
+	for level, expectedVariant in pairs({
+		[3] = "Red",
+		[4] = "Fire",
+		[5] = "Ice",
+		[6] = "Lightning",
+	}) do
+		local introduction =
+			IslandMobRosterConfig.BuildRoster(8, level, 1000 + level)
+		for _, variantName in ipairs(introduction.Roster) do
+			assert(
+				variantName == expectedVariant,
+				string.format(
+					"Level %d precisa apresentar somente %s",
+					level,
+					expectedVariant
+				)
+			)
+		end
+	end
 
 	local sample =
 		IslandMobRosterConfig
 			.BuildRoster(
 				10,
-				11,
+				7,
 				98765
 			)
 
@@ -735,14 +891,21 @@ function IslandMobRosterConfig.Validate()
 	)
 
 	assert(
-		sample.GreenCount
-			>= math.ceil(
-				10
-					* IslandMobRosterConfig
-						.AdvancedMinimumGreenRatio
-			),
-		"Roster avancado precisa preservar minimo Green"
+		sample.GreenCount == 0,
+		"Roster avancado nao pode incluir Green"
 	)
+
+	assert(
+		(sample.CountByVariant.Lightning or 0) >= 1,
+		"Ilha mista precisa manter Lightning"
+	)
+
+	for _, variantName in ipairs({ "Blue", "Red", "Fire", "Ice", "Lightning" }) do
+		assert(
+			(sample.CountByVariant[variantName] or 0) >= 1,
+			"Ilha mista precisa incluir " .. variantName
+		)
+	end
 
 	assert(
 		sample.RangedCount
@@ -768,8 +931,9 @@ function IslandMobRosterConfig.Validate()
 		sample.Roster
 	) do
 		assert(
-			variantName ~= "Golden",
-			"Golden nao pode aparecer em Combat Island normal"
+			variantName ~= "Green"
+				and variantName ~= "Golden",
+			"Roster avancado aceita somente variantes nao verdes regulares"
 		)
 	end
 
@@ -784,6 +948,11 @@ IslandMobRosterConfig.Definitions =
 IslandMobRosterConfig.Order =
 	table.freeze(
 		table.clone(ORDER)
+	)
+
+IslandMobRosterConfig.DemonstrationOrder =
+	table.freeze(
+		table.clone(DEMONSTRATION_ORDER)
 	)
 
 return table.freeze(

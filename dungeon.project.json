@@ -15,6 +15,24 @@
         "DungeonArtHUDController": {
           "$path": "src/client/DungeonArtHUDController.client.luau"
         },
+        "DungeonHUDBootstrap": {
+          "$path": "src/client/DungeonHUDBootstrap.client.luau"
+        },
+        "LevelUpPanelAnimation": {
+          "$path": "src/client/LevelUpPanelAnimation.client.luau"
+        },
+        "LevelUpStatValues": {
+          "$path": "src/client/LevelUpStatValues.client.luau"
+        },
+        "XPCollectSound": {
+          "$path": "src/client/XPCollectSound.client.luau"
+        },
+        "OrbCombatClient": {
+          "$path": "src/client/OrbCombatClient.client.luau"
+        },
+        "OrbVisualClient": {
+          "$path": "src/client/OrbVisualClient.client.luau"
+        },
         "InputProfileController": {
           "$path": "src/client/InputProfileController.client.luau"
         },

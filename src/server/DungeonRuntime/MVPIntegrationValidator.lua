@@ -411,8 +411,22 @@ local function validateIsland(
 			) or 0
 		)
 
+	local infiniteRespawnEnabled =
+		island:GetAttribute(
+			"InfiniteMobRespawnEnabled"
+		) == true
+			or island:GetAttribute(
+				"MobInfiniteRespawnEnabled"
+			) == true
+
 	if targetCount > 0 then
-		if spawnedCount > targetCount then
+		-- TargetCount is the kill quota used to unlock the route. In infinite
+		-- respawn arenas, SpawnedCount is a lifetime counter and is expected to
+		-- exceed that quota as defeated mobs are replaced. Keep this invariant
+		-- only for finite spawn plans, where exceeding the target is an error.
+		if not infiniteRespawnEnabled
+			and spawnedCount > targetCount
+		then
 			addIssue(
 				errors,
 				"SpawnedAboveTarget",

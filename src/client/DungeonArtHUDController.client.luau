@@ -1,6 +1,6 @@
 --[[
-	Infinity Islands - DungeonArtHUDController V16
-	Menu-Safe Persistent Authored HUD Watchdog
+	Infinity Islands - DungeonArtHUDController V18
+	Menu-Safe Authored HUD + Contextual Objective Notice
 
 	Goal:
 	- NEVER fail permanently because the HUD loaded late.
@@ -27,7 +27,13 @@ local TweenService = game:GetService("TweenService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local VERSION = "AuthoredHUDV17StaticFrontPortrait"
+local VERSION = "AuthoredHUDV19DirectionalObjectiveFade"
+
+local OBJECTIVE_NOTICE_SECONDS = 6
+local OBJECTIVE_COMPLETION_SECONDS = 2.75
+local OBJECTIVE_TRANSITION_SECONDS = 0.25
+local OBJECTIVE_ENTER_OFFSET_X = -48
+local OBJECTIVE_EXIT_OFFSET_X = 48
 
 local CORE_ALIASES = {
 	ObjectivePanel = {
@@ -1417,6 +1423,297 @@ end
 local bindingConnections = {}
 local visibilityGuard = false
 local recoverySerial = 0
+local objectivePresentation = {
+	Panel = nil,
+	RestingPosition = nil,
+	WantsVisible = false,
+	Serial = 0,
+	Tweens = {},
+	TransparencyBaselines = {},
+	LastIdentity = nil,
+	LastState = nil,
+	LastCompleted = false,
+}
+
+local function cancelObjectiveTweens()
+	for _, activeTween in ipairs(
+		objectivePresentation.Tweens
+	) do
+		pcall(function()
+			activeTween:Cancel()
+		end)
+	end
+
+	table.clear(objectivePresentation.Tweens)
+end
+
+local function objectiveOffsetPosition(restingPosition, offsetX)
+	return UDim2.new(
+		restingPosition.X.Scale,
+		restingPosition.X.Offset + offsetX,
+		restingPosition.Y.Scale,
+		restingPosition.Y.Offset
+	)
+end
+
+local function objectiveTransparencyProperties(instance)
+	local properties = {}
+
+	if instance:IsA("GuiObject") then
+		table.insert(properties, "BackgroundTransparency")
+	end
+
+	if instance:IsA("ImageLabel")
+		or instance:IsA("ImageButton")
+	then
+		table.insert(properties, "ImageTransparency")
+	end
+
+	if instance:IsA("TextLabel")
+		or instance:IsA("TextButton")
+		or instance:IsA("TextBox")
+	then
+		table.insert(properties, "TextTransparency")
+		table.insert(properties, "TextStrokeTransparency")
+	end
+
+	if instance:IsA("UIStroke") then
+		table.insert(properties, "Transparency")
+	end
+
+	return properties
+end
+
+local function ensureObjectiveTransparencyBaselines(panel)
+	local instances = { panel }
+
+	for _, descendant in ipairs(panel:GetDescendants()) do
+		table.insert(instances, descendant)
+	end
+
+	for _, instance in ipairs(instances) do
+		local baselines =
+			objectivePresentation.TransparencyBaselines[instance]
+
+		if not baselines then
+			baselines = {}
+			objectivePresentation.TransparencyBaselines[instance] =
+				baselines
+		end
+
+		for _, property in ipairs(
+			objectiveTransparencyProperties(instance)
+		) do
+			if baselines[property] == nil then
+				baselines[property] = instance[property]
+			end
+		end
+	end
+end
+
+local function objectiveFadeGoals(panel, hidden)
+	ensureObjectiveTransparencyBaselines(panel)
+
+	local goalsByInstance = {}
+
+	for instance, baselines in pairs(
+		objectivePresentation.TransparencyBaselines
+	) do
+		if instance == panel or instance:IsDescendantOf(panel) then
+			local goals = {}
+
+			for property, baseline in pairs(baselines) do
+				goals[property] = hidden and 1 or baseline
+			end
+
+			if next(goals) then
+				goalsByInstance[instance] = goals
+			end
+		end
+	end
+
+	return goalsByInstance
+end
+
+local function setObjectiveFade(panel, hidden)
+	for instance, goals in pairs(
+		objectiveFadeGoals(panel, hidden)
+	) do
+		for property, value in pairs(goals) do
+			instance[property] = value
+		end
+	end
+end
+
+local function tweenObjectiveFade(panel, tweenInfo, hidden)
+	for instance, goals in pairs(
+		objectiveFadeGoals(panel, hidden)
+	) do
+		local fadeTween = TweenService:Create(
+			instance,
+			tweenInfo,
+			goals
+		)
+		table.insert(
+			objectivePresentation.Tweens,
+			fadeTween
+		)
+		fadeTween:Play()
+	end
+end
+
+local function setObjectiveVisible(panel, visible)
+	if not panel
+		or not panel.Parent
+		or not panel:IsA("GuiObject")
+	then
+		return
+	end
+
+	if panel.Visible == visible then
+		return
+	end
+
+	visibilityGuard = true
+	panel.Visible = visible
+	visibilityGuard = false
+end
+
+local function resetObjectivePresentation(panel)
+	objectivePresentation.Serial += 1
+	cancelObjectiveTweens()
+
+	objectivePresentation.Panel = panel
+	objectivePresentation.RestingPosition =
+		panel and panel.Position or nil
+	objectivePresentation.TransparencyBaselines = {}
+	objectivePresentation.WantsVisible = false
+	objectivePresentation.LastIdentity = nil
+	objectivePresentation.LastState = nil
+	objectivePresentation.LastCompleted = false
+
+	if panel and panel.Parent then
+		ensureObjectiveTransparencyBaselines(panel)
+		setObjectiveVisible(panel, false)
+	end
+end
+
+local function hideObjectiveNotice(immediate)
+	local panel = objectivePresentation.Panel
+	local restingPosition =
+		objectivePresentation.RestingPosition
+
+	objectivePresentation.Serial += 1
+	local serial = objectivePresentation.Serial
+	cancelObjectiveTweens()
+
+	if not panel or not panel.Parent or not restingPosition then
+		objectivePresentation.WantsVisible = false
+		return
+	end
+
+	if immediate or not panel.Visible then
+		objectivePresentation.WantsVisible = false
+		setObjectiveVisible(panel, false)
+		panel.Position = restingPosition
+		setObjectiveFade(panel, false)
+		return
+	end
+
+	-- Keep the watchdog from hiding the panel before the exit animation ends.
+	objectivePresentation.WantsVisible = true
+
+	local hideTweenInfo = TweenInfo.new(
+		OBJECTIVE_TRANSITION_SECONDS,
+		Enum.EasingStyle.Quad,
+		Enum.EasingDirection.In
+	)
+	local hideTween = TweenService:Create(
+		panel,
+		hideTweenInfo,
+		{
+			Position = objectiveOffsetPosition(
+				restingPosition,
+				OBJECTIVE_EXIT_OFFSET_X
+			),
+		}
+	)
+	table.insert(objectivePresentation.Tweens, hideTween)
+	tweenObjectiveFade(panel, hideTweenInfo, true)
+
+	hideTween.Completed:Once(function()
+		if objectivePresentation.Serial ~= serial
+			or objectivePresentation.Panel ~= panel
+		then
+			return
+		end
+
+		table.clear(objectivePresentation.Tweens)
+		objectivePresentation.WantsVisible = false
+		setObjectiveVisible(panel, false)
+		panel.Position = restingPosition
+		setObjectiveFade(panel, false)
+	end)
+
+	hideTween:Play()
+end
+
+local function showObjectiveNotice(duration)
+	local panel = objectivePresentation.Panel
+	local restingPosition =
+		objectivePresentation.RestingPosition
+
+	if not panel or not panel.Parent or not restingPosition then
+		return
+	end
+
+	objectivePresentation.Serial += 1
+	local serial = objectivePresentation.Serial
+	objectivePresentation.WantsVisible = true
+	cancelObjectiveTweens()
+
+	panel.Position = objectiveOffsetPosition(
+		restingPosition,
+		OBJECTIVE_ENTER_OFFSET_X
+	)
+	setObjectiveFade(panel, true)
+	setObjectiveVisible(panel, true)
+
+	local showTweenInfo = TweenInfo.new(
+		OBJECTIVE_TRANSITION_SECONDS,
+		Enum.EasingStyle.Quad,
+		Enum.EasingDirection.Out
+	)
+	local showTween = TweenService:Create(
+		panel,
+		showTweenInfo,
+		{
+			Position = restingPosition,
+		}
+	)
+	table.insert(objectivePresentation.Tweens, showTween)
+	tweenObjectiveFade(panel, showTweenInfo, false)
+
+	showTween.Completed:Once(function()
+		if objectivePresentation.Serial == serial
+			and objectivePresentation.Panel == panel
+		then
+			table.clear(objectivePresentation.Tweens)
+		end
+	end)
+
+	showTween:Play()
+
+	task.delay(duration, function()
+		if objectivePresentation.Serial ~= serial
+			or objectivePresentation.Panel ~= panel
+		then
+			return
+		end
+
+		hideObjectiveNotice(false)
+	end)
+end
 
 local function disconnectBindingConnections()
 	for _, connection in ipairs(bindingConnections) do
@@ -1496,8 +1793,8 @@ local function enforceCoreVisibility(reason)
 
 	setVisibleGuarded(
 		refs.ObjectivePanel,
-		true,
-		reason or "WatchdogObjectiveVisible"
+		objectivePresentation.WantsVisible,
+		reason or "WatchdogObjectiveVisibility"
 	)
 	setVisibleGuarded(
 		refs.PlayerStatus,
@@ -1553,7 +1850,6 @@ local function watchVisibilityProperties()
 	end
 
 	for name, panel in pairs({
-		ObjectivePanel = refs.ObjectivePanel,
 		PlayerStatus = refs.PlayerStatus,
 		MiniMap = refs.MiniMap,
 	}) do
@@ -1585,6 +1881,37 @@ local function watchVisibilityProperties()
 			)
 		end
 	end
+
+	local objectivePanel = refs.ObjectivePanel
+	if objectivePanel and objectivePanel.Parent then
+		table.insert(
+			bindingConnections,
+			objectivePanel:GetPropertyChangedSignal(
+				"Visible"
+			):Connect(function()
+				if visibilityGuard then
+					return
+				end
+
+				local expected =
+					objectivePresentation.WantsVisible
+				if objectivePanel.Visible ~= expected then
+					setVisibleGuarded(
+						objectivePanel,
+						expected,
+						"ObjectivePanelVisibilityChanged"
+					)
+				end
+			end)
+		)
+
+		table.insert(
+			bindingConnections,
+			objectivePanel.AncestryChanged:Connect(function()
+				dirty = true
+			end)
+		)
+	end
 end
 
 local function resolveAndBind()
@@ -1607,11 +1934,12 @@ local function resolveAndBind()
 	end
 
 	local core = resolveCore(hud)
+	local objectivePanelChanged =
+		core.ObjectivePanel ~= refs.ObjectivePanel
 
 	local changed =
 		hud ~= boundHud
-		or core.ObjectivePanel
-			~= refs.ObjectivePanel
+		or objectivePanelChanged
 		or core.PlayerStatus
 			~= refs.PlayerStatus
 		or core.MiniMap
@@ -1631,6 +1959,12 @@ local function resolveAndBind()
 			core.MiniMap
 		refs.MissionsPanel =
 			core.MissionsPanel
+
+		if objectivePanelChanged then
+			resetObjectivePresentation(
+				refs.ObjectivePanel
+			)
+		end
 
 		refs.Objective =
 			bindObjective(
@@ -1780,6 +2114,25 @@ local function syncObjective()
 		or "Inactive"
 	)
 
+	local objectiveIdentity = table.concat({
+		tostring(
+			workspace:GetAttribute(
+				"DungeonObjectiveId"
+			)
+			or ""
+		),
+		tostring(
+			workspace:GetAttribute(
+				"DungeonObjectiveGlobalIslandIndex"
+			)
+			or workspace:GetAttribute(
+				"DungeonCurrentObjectiveIsland"
+			)
+			or ""
+		),
+		tostring(math.floor(target)),
+	}, "|")
+
 	setText(objective.Title, title)
 	setText(
 		objective.Description,
@@ -1830,6 +2183,38 @@ local function syncObjective()
 			state == "Completed"
 			or ratio >= 1
 	end
+
+	local inactive = state == "Inactive"
+	local completed =
+		state == "Completed" or ratio >= 1
+	local identityChanged =
+		objectivePresentation.LastIdentity
+			~= objectiveIdentity
+	local becameActive =
+		objectivePresentation.LastState == "Inactive"
+		and not inactive
+	local becameCompleted =
+		completed
+		and not objectivePresentation.LastCompleted
+
+	if inactive then
+		if objectivePresentation.WantsVisible then
+			hideObjectiveNotice(true)
+		end
+	elseif becameCompleted then
+		showObjectiveNotice(
+			OBJECTIVE_COMPLETION_SECONDS
+		)
+	elseif identityChanged or becameActive then
+		showObjectiveNotice(
+			OBJECTIVE_NOTICE_SECONDS
+		)
+	end
+
+	objectivePresentation.LastIdentity =
+		objectiveIdentity
+	objectivePresentation.LastState = state
+	objectivePresentation.LastCompleted = completed
 end
 
 ---------------------------------------------------------------------
@@ -2516,6 +2901,7 @@ end)
 
 -- Workspace objective changes also refresh immediately.
 for _, attribute in ipairs({
+	"DungeonObjectiveId",
 	"DungeonObjectiveState",
 	"DungeonObjectiveTitle",
 	"DungeonObjectiveDescription",
@@ -2551,7 +2937,7 @@ workspace:SetAttribute(
 
 player:SetAttribute(
 	"DungeonArtHUDMode",
-	"PersistentMenuSafeAuthoredOnly"
+	"ContextualObjectiveMenuSafeAuthoredOnly"
 )
 player:SetAttribute(
 	"DungeonRobloxMenuOpen",
@@ -2569,7 +2955,7 @@ syncStatus()
 ensureStaticPortrait()
 
 print(
-	"[AuthoredHUD V17] Menu-safe watchdog + retrato 3D frontal estatico ativo. "
+	"[AuthoredHUD V18] HUD contextual + retrato 3D frontal estatico ativo. "
 		.. "DungeonHUD exato; sem timeout fatal; "
-		.. "Enabled/Visible protegidos."
+		.. "ObjectivePanel temporario e protegido."
 )

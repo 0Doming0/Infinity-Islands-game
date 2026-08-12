@@ -11,11 +11,13 @@ local playerGui = player:WaitForChild("PlayerGui")
 local RemoteRegistry = require(ReplicatedStorage.Shared.Utilities.RemoteRegistry)
 local feedbackEvent = RemoteRegistry.Get("Combat", "EnemyDamageFeedback", "RemoteEvent")
 
-local VERSION = "EnemyPresentationV2"
+local VERSION = "EnemyPresentationReplicationSafeV3"
 local MAX_DISTANCE = 82
 local DAMAGE_LIFETIME = 0.62
 local HIT_CONFIRM_LIFETIME = 0.18
 local KILL_CONFIRM_LIFETIME = 0.82
+local BIND_RETRY_SECONDS = 8
+local BIND_RETRY_INTERVAL = 0.05
 
 local COLORS = {
 	Text = Color3.fromRGB(245, 250, 255),
@@ -32,6 +34,7 @@ local COLORS = {
 }
 
 local watched = setmetatable({}, { __mode = "k" })
+local binding = setmetatable({}, { __mode = "k" })
 local hitSerial = 0
 local hitConfirmSerial = 0
 local killConfirmSerial = 0
@@ -145,12 +148,15 @@ local function hideLegacyDisplay(model, humanoid)
 end
 
 local function bindEnemy(model)
-	if watched[model] or not model:IsA("Model") then return end
-	if Players:GetPlayerFromCharacter(model) then return end
+	if watched[model] then return true end
+	if not model or not model:IsA("Model") or not model:IsDescendantOf(workspace) then
+		return false
+	end
+	if Players:GetPlayerFromCharacter(model) then return false end
 
 	local humanoid = getHumanoid(model)
 	local root = getRoot(model)
-	if not humanoid or not root then return end
+	if not humanoid or not root then return false end
 
 	watched[model] = true
 	hideLegacyDisplay(model, humanoid)
@@ -253,8 +259,33 @@ local function bindEnemy(model)
 	model:GetAttributeChangedSignal("ObjectiveWaypointEscalated"):Connect(update)
 	model.Destroying:Connect(function()
 		watched[model] = nil
+		binding[model] = nil
 	end)
 	update()
+	return true
+end
+
+local function queueBindEnemy(instance)
+	if typeof(instance) ~= "Instance"
+		or not instance:IsA("Model")
+		or watched[instance]
+		or binding[instance]
+	then
+		return
+	end
+
+	binding[instance] = true
+	task.spawn(function()
+		local deadline = os.clock() + BIND_RETRY_SECONDS
+		repeat
+			if bindEnemy(instance) then
+				break
+			end
+			task.wait(BIND_RETRY_INTERVAL)
+		until not instance.Parent or os.clock() >= deadline
+
+		binding[instance] = nil
+	end)
 end
 
 local function damageColor(source, heavy)
@@ -451,18 +482,27 @@ local function playDamageNumber(payload)
 end
 
 for _, model in ipairs(CollectionService:GetTagged("CombatTarget")) do
-	task.defer(bindEnemy, model)
+	queueBindEnemy(model)
 end
 
 CollectionService:GetInstanceAddedSignal("CombatTarget"):Connect(function(instance)
-	task.defer(bindEnemy, instance)
+	queueBindEnemy(instance)
 end)
 
 CollectionService:GetInstanceRemovedSignal("CombatTarget"):Connect(function(instance)
 	watched[instance] = nil
+	binding[instance] = nil
 end)
 
 feedbackEvent.OnClientEvent:Connect(function(payload)
+	if type(payload) == "table"
+		and typeof(payload.Target) == "Instance"
+		and payload.Target:IsA("Model")
+	then
+		-- Recuperacao defensiva: se a tag chegou antes dos descendentes do clone,
+		-- o primeiro golpe garante uma nova tentativa de criar o indicador.
+		queueBindEnemy(payload.Target)
+	end
 	playHitConfirm(payload)
 	playKillConfirm(payload)
 	playDamageNumber(payload)

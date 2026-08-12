@@ -1,6 +1,6 @@
 --[[
 	Infinity Islands - Task 19
-	StandaloneDungeonConfig V1
+	StandaloneDungeonConfig V2
 
 	The Dungeon is now the experience entry point for the MVP.
 
@@ -13,8 +13,8 @@
 
 local Config = {}
 
-Config.Version = "StandaloneDungeonV1"
-Config.EntryPolicy = "DirectToIsland1"
+Config.Version = "StandaloneDungeonInitialIslandV2"
+Config.EntryPolicy = "DirectToInitialIsland"
 Config.LobbyEnabled = false
 Config.TeleportDataRequired = false
 Config.GuideEnabled = false

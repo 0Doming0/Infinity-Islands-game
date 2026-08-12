@@ -9,6 +9,9 @@ local FLASH_DURATION = 0.18
 
 local DAMAGE_COLOR = Color3.fromRGB(255, 65, 65)
 
+-- Nao redimensione o Model aqui. Este modulo roda no servidor e qualquer
+-- ScaleTo durante o knockback recalcula a montagem fisica e replica jitter.
+
 local activeFlashes: {[Model]: number} = {}
 
 local function getHighlight(mob: Model): Highlight

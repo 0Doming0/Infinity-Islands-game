@@ -25,7 +25,7 @@
 	The service applies the level multiplier directly to the character Humanoid.
 	Base health is captured once per character and never compounded.
 
-	Task 08 will call:
+	The mob XP pipeline calls:
 		PlayerLevelService.AwardXP(player, amount, reason)
 
 	This service intentionally does NOT award XP by itself.

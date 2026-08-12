@@ -590,6 +590,14 @@ function PlayerDamageService.IsProtected(
 			"InvisibleToEnemies"
 	end
 
+	if player:GetAttribute(
+		"DungeonAssistedTransportActive"
+	) == true
+	then
+		return true,
+			"AssistedIslandTransport"
+	end
+
 	if (
 		tonumber(
 			player:GetAttribute(

@@ -393,34 +393,24 @@ local function executeHit(player, tool, comboIndex, token)
 		Config.DamageLimits.Min,
 		Config.DamageLimits.Max
 	) * combo.DamageMultiplier
-		* math.clamp(tonumber(player:GetAttribute("RunDamageDealtMultiplier")) or 1, 0.05, 1)
+	-- RunDamageDealtMultiplier e aplicado uma unica vez por
+	-- CombatDamageService, depois que reliquias e critico fecham o ataque.
+	-- O multiplicador da rodada entra aqui uma unica vez. CombatDamageService
+	-- recebe a forca final e nao deve reaplica-lo.
 	local knockbackMultiplier = Config.GetClampedNumber(tool, "KnockbackMultiplier", 1, 0, 3)
 		* math.clamp(tonumber(player:GetAttribute("RunKnockbackMultiplier")) or 1, 1, 5)
 	local scoreMultiplier = Config.GetClampedNumber(tool, "ScoreMultiplier", 1, 1, 100)
-	local attackSpeed = Config.GetAttackSpeed(tool)
-		* math.clamp(tonumber(player:GetAttribute("RunAttackSpeedMultiplier")) or 1, 1, 2)
 	local criticalChance = math.clamp(
 		Config.GetClampedNumber(tool, "CriticalChance", 0, 0, 0.75)
 			+ math.max(0, tonumber(player:GetAttribute("RunCriticalBonus")) or 0),
 		0,
 		0.85
 	)
-	local nextCombo = Config.Combo[comboIndex % Config.ComboCount + 1]
-	-- Mantem o alvo interrompido ate a primeira janela real do proximo golpe.
-	-- A duracao acompanha AttackSpeed, portanto espadas lentas nao deixam um
-	-- pequeno intervalo no meio do combo em que o mob consegue atacar.
-	local stunDuration
-	if comboIndex < Config.ComboCount then
-		stunDuration = (combo.Recovery + nextCombo.Windup) / attackSpeed + 0.08
-	else
-		stunDuration = math.max(0.42, combo.Recovery / attackSpeed + 0.08)
-	end
 	local attack = {
 		Damage = math.clamp(damage, Config.DamageLimits.Min, Config.DamageLimits.Max),
 		Knockback = combo.Knockback * knockbackMultiplier,
 		UpwardKnockback = combo.UpwardKnockback * knockbackMultiplier,
 		ScoreMultiplier = scoreMultiplier,
-		StunDuration = stunDuration,
 		Heavy = combo.Heavy,
 	}
 

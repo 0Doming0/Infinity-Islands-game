@@ -1,12 +1,13 @@
 --[[
 	Infinity Islands - IslandProgressionService
 
-	TAREFA 01:
-	Publica IslandLevel e RecommendedLevel nas ilhas atuais sem alterar:
+	TAREFA 01 + TAREFA 06 + TAREFA 08:
+	Publica IslandLevel, CycleIndex e o multiplicador de XP nas ilhas
+	atuais sem alterar:
 	- geracao;
 	- spawn de mobs;
 	- dano;
-	- XP;
+	- entrega direta de XP;
 	- objective flow;
 	- gates.
 
@@ -82,12 +83,41 @@ local function applyAttributes(instance, snapshot, source)
 		snapshot.ProgressionIslandIndex
 	)
 	instance:SetAttribute(
+		"NumberedIslandIndex",
+		snapshot.NumberedIslandIndex
+	)
+	instance:SetAttribute(
+		"IsInitialIsland",
+		snapshot.NumberedIslandIndex == 0
+	)
+	instance:SetAttribute(
+		"IslandDisplayLabel",
+		snapshot.NumberedIslandIndex == 0
+			and "Inicial"
+			or string.format(
+				"Ilha %d",
+				snapshot.NumberedIslandIndex
+			)
+	)
+	instance:SetAttribute(
 		"IslandLevel",
 		snapshot.IslandLevel
 	)
 	instance:SetAttribute(
 		"RecommendedLevel",
 		snapshot.RecommendedLevel
+	)
+	instance:SetAttribute(
+		"CycleIndex",
+		snapshot.CycleIndex
+	)
+	instance:SetAttribute(
+		"IslandIndexInCycle",
+		snapshot.IslandIndexInCycle
+	)
+	instance:SetAttribute(
+		"LevelInCycle",
+		snapshot.LevelInCycle
 	)
 	instance:SetAttribute(
 		"XPRewardMultiplier",
@@ -186,8 +216,32 @@ local function publishDiagnostics()
 		IslandProgressionConfig.IslandsPerLevel
 	)
 	workspace:SetAttribute(
+		"DungeonMobCycleLevels",
+		IslandProgressionConfig.LevelsPerCycle
+	)
+	workspace:SetAttribute(
+		"DungeonMobCycleIslandCount",
+		IslandProgressionConfig.IslandsPerCycle
+	)
+	workspace:SetAttribute(
+		"DungeonMobCycleIndexPolicy",
+		"ServerAuthoritativeByProgressionIslandIndex"
+	)
+	workspace:SetAttribute(
+		"DungeonMobXPPerCycle",
+		IslandProgressionConfig.XPRewardPerCycle
+	)
+	workspace:SetAttribute(
+		"DungeonMobXPCyclePolicy",
+		"CompoundedFromCycleIndex"
+	)
+	workspace:SetAttribute(
 		"DungeonIslandProgressionPolicy",
-		"DifficultyBelongsToIsland"
+		"GrowingLevelGapsByIsland"
+	)
+	workspace:SetAttribute(
+		"DungeonIslandLevelGapPattern",
+		"+2,+2,+3,+3,+4,+4..."
 	)
 end
 
@@ -264,6 +318,9 @@ function IslandProgressionService.GetDiagnostics()
 		AppliedCount = appliedCount,
 		Version = IslandProgressionConfig.Version,
 		IslandsPerLevel = IslandProgressionConfig.IslandsPerLevel,
+		LevelsPerCycle = IslandProgressionConfig.LevelsPerCycle,
+		IslandsPerCycle = IslandProgressionConfig.IslandsPerCycle,
+		XPRewardPerCycle = IslandProgressionConfig.XPRewardPerCycle,
 	}
 end
 
