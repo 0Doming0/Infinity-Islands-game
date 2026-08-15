@@ -2,8 +2,13 @@
 
 local Config = {}
 
-Config.Version = "AssistedIslandTransportV1"
+Config.Version = "AssistedIslandRouteArrowFallbackV5"
 Config.Enabled = true
+
+-- Cada indice de ilha pode iniciar apenas este numero de voos automaticos
+-- durante a sessao. Novos level ups na mesma ilha mostram somente a seta.
+Config.AutomaticFlightsPerSourceIsland = 1
+Config.GuidanceIndicatorEnabled = true
 
 -- O aviso comeca no level up e o voo so pode iniciar ao final deste prazo.
 Config.LevelUpDelaySeconds = 8
@@ -32,6 +37,16 @@ Config.CameraDistanceStuds = 22
 Config.CameraHeightStuds = 12
 Config.CameraFieldOfView = 74
 
+Config.GuidancePulseSpeed = 4.6
+Config.GuidancePulseAmount = 0.08
+Config.GuidanceBobStuds = 0.45
+Config.GuidanceHeightStuds = 6.5
+Config.GuidanceWaypointArrivalRadiusStuds = 8
+Config.GuidanceArrowScale = 1.35
+-- Se os Parts de entrada/saida ainda nao tiverem sido replicados, a seta
+-- continua visivel e aponta diretamente para a posicao da proxima ilha.
+Config.GuidanceFallbackToDestination = true
+
 -- Um Sound chamado AssistedTransportWhistle em ReplicatedStorage tem
 -- prioridade. Este som interno e apenas o fallback para Studio.
 Config.ReleaseWhistleSoundId = "rbxasset://sounds/electronicpingshort.wav"
@@ -39,6 +54,10 @@ Config.ReleaseWhistleVolume = 0.8
 Config.ReleaseWhistlePlaybackSpeed = 1.25
 
 function Config.Validate()
+	assert(
+		Config.AutomaticFlightsPerSourceIsland >= 1,
+		"AutomaticFlightsPerSourceIsland precisa ser >= 1"
+	)
 	assert(Config.LevelUpDelaySeconds >= 0, "LevelUpDelaySeconds precisa ser >= 0")
 	assert(Config.FlightDurationSeconds > 0, "FlightDurationSeconds precisa ser > 0")
 	assert(Config.LandingCountdownSeconds >= 0, "LandingCountdownSeconds precisa ser >= 0")

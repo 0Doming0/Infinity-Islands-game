@@ -1,4 +1,6 @@
 {
-  "Name": "OrbChoiceRequest",
-  "ClassName": "RemoteEvent"
+  "className": "RemoteEvent",
+  "attributes": {
+    "_lemonadeUniqueId": "ez9rqqHlez9r"
+  }
 }

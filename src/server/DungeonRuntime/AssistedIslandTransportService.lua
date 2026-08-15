@@ -162,6 +162,38 @@ local function resolveEligibility(player, allowUncleared)
 	}, nil
 end
 
+local function resolveGuidanceRoute(player)
+	if not Config.GuidanceIndicatorEnabled or not playerCanTravel(player) then
+		return nil
+	end
+
+	local currentIndex = cleanIndex(player:GetAttribute("CurrentGlobalIslandIndex"))
+	local total = routeTotal()
+	local playerLevel = cleanIndex(player:GetAttribute("PlayerLevel"))
+	local targetIndex = currentIndex
+
+	for index = currentIndex + 1, total do
+		local context = DungeonGenerator.GetRouteIslandContext(index)
+		if recommendedLevel(index, context) > playerLevel then
+			break
+		end
+		targetIndex = index
+	end
+
+	if targetIndex <= currentIndex then
+		return nil
+	end
+
+	return {
+		CurrentIndex = currentIndex,
+		TargetIndex = targetIndex,
+		TargetRecommendedLevel = recommendedLevel(
+			targetIndex,
+			DungeonGenerator.GetRouteIslandContext(targetIndex)
+		),
+	}
+end
+
 local function clearMobAggro(player)
 	for _, model in ipairs(CollectionService:GetTagged("CombatTarget")) do
 		if model:IsA("Model") then
@@ -193,6 +225,14 @@ local function setProtected(player, state, active)
 			player:SetAttribute("InvisibleToEnemies", state.PreviousInvisibleToEnemies)
 		end
 		state.PreviousInvisibleToEnemies = nil
+		workspace:SetAttribute(
+			"DungeonCombatReacquireSerial",
+			(tonumber(workspace:GetAttribute("DungeonCombatReacquireSerial")) or 0) + 1
+		)
+		player:SetAttribute(
+			"DungeonCombatReacquireUserId",
+			player.UserId
+		)
 	end
 end
 
@@ -202,22 +242,155 @@ local function fire(player, payload)
 	end
 end
 
+local function automaticFlightUsed(state, sourceIndex)
+	local counts = state and state.FlightCountBySourceIsland
+	return (counts and (counts[sourceIndex] or 0) or 0)
+		>= Config.AutomaticFlightsPerSourceIsland
+end
+
+local function beginGuidance(player, eligibility, reason)
+	local state = states[player]
+	if not state then
+		return
+	end
+
+	state.Token += 1
+	local token = state.Token
+	state.Phase = "Guidance"
+	state.GuidanceTargetIndex = eligibility.TargetIndex
+	state.DestinationIndex = eligibility.TargetIndex
+	player:SetAttribute("DungeonRouteArrowEligible", true)
+	player:SetAttribute(
+		"DungeonRouteArrowRequiredLevel",
+		eligibility.TargetRecommendedLevel
+	)
+	player:SetAttribute("DungeonRouteArrowServerTargetIsland", eligibility.TargetIndex)
+	player:SetAttribute("DungeonRouteArrowTriggeredAt", now())
+
+	DungeonGenerator.RequestRouteThrough(eligibility.TargetIndex)
+	local destinationContext = DungeonGenerator.GetRouteIslandContext(
+		eligibility.TargetIndex
+	)
+	local destinationCFrame = destinationContext
+		and markerCFrame(destinationContext.SafeSpawn)
+	local focusPosition = destinationContext
+		and (
+			markerPosition(destinationContext.ObjectiveAnchor)
+			or markerPosition(destinationContext.Floor)
+		)
+		or nil
+	local destinationPosition = focusPosition
+		or (destinationCFrame and destinationCFrame.Position)
+		or nil
+
+	player:SetAttribute("DungeonAssistedTransportState", "Guidance")
+	player:SetAttribute(
+		"DungeonAssistedTransportDestination",
+		eligibility.TargetIndex
+	)
+	local payload = {
+		Action = "Guidance",
+		Token = token,
+		Reason = tostring(reason or "AutomaticFlightAlreadyUsed"),
+		SourceIndex = eligibility.CurrentIndex,
+		DestinationIndex = eligibility.TargetIndex,
+		TargetIndex = eligibility.TargetIndex,
+		DestinationLabel = "ILHA "
+			.. tostring(math.max(1, eligibility.TargetIndex - 1)),
+		DestinationPosition = destinationPosition,
+		RecommendedLevel = eligibility.TargetRecommendedLevel,
+	}
+	if destinationPosition then
+		player:SetAttribute("DungeonRouteArrowDestinationPosition", destinationPosition)
+	end
+	fire(player, payload)
+
+	if not destinationPosition then
+		task.spawn(function()
+			local deadline = os.clock() + Config.DestinationReadyTimeoutSeconds
+			repeat
+				if not states[player] or states[player].Token ~= token or states[player].Phase ~= "Guidance" then
+					return
+				end
+				DungeonGenerator.RequestRouteThrough(eligibility.TargetIndex)
+				local context = DungeonGenerator.GetRouteIslandContext(eligibility.TargetIndex)
+				local safeSpawn = context and markerCFrame(context.SafeSpawn)
+				local focus = context and (markerPosition(context.ObjectiveAnchor) or markerPosition(context.Floor))
+				local position = focus or (safeSpawn and safeSpawn.Position)
+				if position then
+					payload.DestinationPosition = position
+					player:SetAttribute("DungeonRouteArrowDestinationPosition", position)
+					fire(player, payload)
+					return
+				end
+				task.wait(Config.EligibilityPollSeconds)
+			until os.clock() >= deadline
+		end)
+	end
+end
+
 local function restoreCharacter(state)
 	local root = state.Root
 	local humanoid = state.Humanoid
+	local character = state.Character
+	if character and character.Parent then
+		root = character:FindFirstChild("HumanoidRootPart") or root
+		humanoid = character:FindFirstChildOfClass("Humanoid") or humanoid
+	end
 	if root and root.Parent then
+		root.Anchored = false
 		root.AssemblyLinearVelocity = Vector3.zero
 		root.AssemblyAngularVelocity = Vector3.zero
-		root.Anchored = state.RootWasAnchored == true
+		pcall(function()
+			root:SetNetworkOwnershipAuto()
+		end)
 	end
 	if humanoid and humanoid.Parent then
+		humanoid.WalkSpeed = (tonumber(state.WalkSpeedWas) or 0) > 0 and state.WalkSpeedWas or 16
+		if state.UseJumpPowerWas then
+			humanoid.JumpPower = (tonumber(state.JumpPowerWas) or 0) > 0 and state.JumpPowerWas or 50
+		else
+			humanoid.JumpHeight = (tonumber(state.JumpHeightWas) or 0) > 0 and state.JumpHeightWas or 7.2
+		end
+		humanoid.PlatformStand = false
+		humanoid.Sit = false
 		humanoid.AutoRotate = state.AutoRotateWasEnabled ~= false
+		humanoid:Move(Vector3.zero, false)
 		pcall(function()
+			humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
 			humanoid:ChangeState(Enum.HumanoidStateType.Running)
 		end)
 	end
+	if character and character.Parent then
+		for _, descendant in ipairs(character:GetDescendants()) do
+			if descendant:IsA("BasePart") and descendant.Anchored then
+				descendant.Anchored = false
+			end
+		end
+	end
 	state.Root = nil
 	state.Humanoid = nil
+	state.Character = nil
+end
+
+local function verifyReleasedCharacter(player)
+	local character, humanoid, root = livingCharacter(player)
+	if not character then
+		return
+	end
+	if root.Anchored then
+		root.Anchored = false
+	end
+	if humanoid.PlatformStand or humanoid.Sit then
+		humanoid.PlatformStand = false
+		humanoid.Sit = false
+	end
+	if humanoid.AutoRotate == false then
+		humanoid.AutoRotate = true
+	end
+	pcall(function()
+		root:SetNetworkOwnershipAuto()
+	end)
 end
 
 local function cancel(player, reason)
@@ -232,8 +405,10 @@ local function cancel(player, reason)
 	end
 	restoreCharacter(state)
 	state.Phase = "Idle"
+	state.GuidanceTargetIndex = nil
 	player:SetAttribute("DungeonAssistedTransportState", "Idle")
 	player:SetAttribute("DungeonAssistedTransportDestination", nil)
+	player:SetAttribute("DungeonRouteArrowEligible", false)
 	fire(player, {
 		Action = "Cancel",
 		Reason = tostring(reason or "Cancelled"),
@@ -291,10 +466,15 @@ local function performFlight(player, eligibility, token)
 		or destinationCFrame.Position
 
 	state.Phase = "Flying"
+	state.Character = character
 	state.Root = root
 	state.Humanoid = humanoid
 	state.RootWasAnchored = root.Anchored
 	state.AutoRotateWasEnabled = humanoid.AutoRotate
+	state.WalkSpeedWas = humanoid.WalkSpeed
+	state.JumpPowerWas = humanoid.JumpPower
+	state.JumpHeightWas = humanoid.JumpHeight
+	state.UseJumpPowerWas = humanoid.UseJumpPower
 	state.Protected = true
 	state.DestinationIndex = eligibility.DestinationIndex
 	setProtected(player, state, true)
@@ -306,6 +486,8 @@ local function performFlight(player, eligibility, token)
 	root.AssemblyAngularVelocity = Vector3.zero
 	root.Anchored = true
 	humanoid.AutoRotate = false
+	humanoid.PlatformStand = false
+	humanoid.Sit = false
 
 	local startPosition = root.Position
 	local endPosition = destinationCFrame.Position
@@ -372,6 +554,12 @@ local function performFlight(player, eligibility, token)
 	end
 
 	character:PivotTo(destinationCFrame)
+	state.FlightCountBySourceIsland[eligibility.CurrentIndex] =
+		(state.FlightCountBySourceIsland[eligibility.CurrentIndex] or 0) + 1
+	player:SetAttribute(
+		"DungeonAssistedTransportLastAutomaticSource",
+		eligibility.CurrentIndex
+	)
 	state.Phase = "Landing"
 	player:SetAttribute("DungeonAssistedTransportState", "LandingCountdown")
 	local releaseAt = now() + Config.LandingCountdownSeconds
@@ -393,38 +581,90 @@ local function performFlight(player, eligibility, token)
 
 	state.CooldownUntil = now() + Config.CooldownSeconds
 	restoreCharacter(state)
+	if state.Protected then
+		state.Protected = false
+		setProtected(player, state, false)
+	end
+	verifyReleasedCharacter(player)
 	fire(player, {
 		Action = "Release",
 		Token = token,
 	})
+
+	task.delay(0.35, function()
+		local latest = states[player]
+		if latest and latest.Token == token and latest.Phase == "Landing" then
+			verifyReleasedCharacter(player)
+		end
+	end)
 
 	task.delay(Config.ReleaseProtectionSeconds, function()
 		local latest = states[player]
 		if not latest or latest.Token ~= token then
 			return
 		end
-		if latest.Protected then
-			latest.Protected = false
-			setProtected(player, latest, false)
+		verifyReleasedCharacter(player)
+		local continuedTarget = tonumber(latest.GuidanceTargetIndex)
+		if Config.GuidanceIndicatorEnabled
+			and continuedTarget
+			and continuedTarget > eligibility.DestinationIndex
+		then
+			beginGuidance(player, {
+				CurrentIndex = eligibility.DestinationIndex,
+				TargetIndex = continuedTarget,
+				TargetRecommendedLevel = recommendedLevel(
+					continuedTarget,
+					DungeonGenerator.GetRouteIslandContext(continuedTarget)
+				),
+			}, "ContinueAfterAutomaticFlight")
+		else
+			latest.Phase = "Idle"
+			latest.GuidanceTargetIndex = nil
+			player:SetAttribute("DungeonAssistedTransportState", "Idle")
+			player:SetAttribute("DungeonAssistedTransportDestination", nil)
+			player:SetAttribute("DungeonRouteArrowEligible", false)
 		end
-		latest.Phase = "Idle"
-		player:SetAttribute("DungeonAssistedTransportState", "Idle")
-		player:SetAttribute("DungeonAssistedTransportDestination", nil)
 	end)
 end
 
 local function beginLevelUpCountdown(player)
 	local state = states[player]
-	if not state or state.Phase == "Flying" or state.Phase == "Landing" then
+	if not state
+		or state.Phase == "Warning"
+		or state.Phase == "WaitingForClear"
+		or state.Phase == "Flying"
+		or state.Phase == "Landing"
+	then
 		return
 	end
 
+	local guidanceRoute = resolveGuidanceRoute(player)
 	local eligibility = resolveEligibility(player, true)
 	if not eligibility then
 		cancel(player, "NotEligibleAfterLevelUp")
 		return
 	end
 
+	if Config.GuidanceIndicatorEnabled
+		and automaticFlightUsed(state, eligibility.CurrentIndex)
+	then
+		if guidanceRoute then
+			beginGuidance(player, guidanceRoute, "AutomaticFlightAlreadyUsed")
+		end
+		return
+	end
+
+	state.GuidanceTargetIndex = guidanceRoute and guidanceRoute.TargetIndex or nil
+	player:SetAttribute("DungeonRouteArrowEligible", guidanceRoute ~= nil)
+	player:SetAttribute(
+		"DungeonRouteArrowRequiredLevel",
+		eligibility.RecommendedLevel
+	)
+	player:SetAttribute(
+		"DungeonRouteArrowServerTargetIsland",
+		guidanceRoute and guidanceRoute.TargetIndex or eligibility.DestinationIndex
+	)
+	player:SetAttribute("DungeonRouteArrowTriggeredAt", now())
 	state.Token += 1
 	local token = state.Token
 	state.Phase = "Warning"
@@ -448,6 +688,14 @@ local function beginLevelUpCountdown(player)
 		DestinationIndex = eligibility.DestinationIndex,
 		DestinationLabel = "ILHA " .. tostring(math.max(1, eligibility.DestinationIndex - 1)),
 		RecommendedLevel = eligibility.RecommendedLevel,
+		GuidanceSourceIndex = guidanceRoute and guidanceRoute.CurrentIndex or nil,
+		GuidanceTargetIndex = guidanceRoute and guidanceRoute.TargetIndex or nil,
+		GuidanceDestinationLabel = guidanceRoute
+			and (
+				"ILHA "
+					.. tostring(math.max(1, guidanceRoute.TargetIndex - 1))
+			)
+			or nil,
 		DestinationPosition = earlyDestinationCFrame
 			and earlyDestinationCFrame.Position
 			or nil,
@@ -505,22 +753,59 @@ local function bindPlayer(player)
 		Token = 0,
 		Phase = "Idle",
 		CooldownUntil = 0,
+		FlightCountBySourceIsland = {},
+		GuidanceTargetIndex = nil,
 	}
 	player:SetAttribute("DungeonAssistedTransportState", "Idle")
 
 	local list = {}
 	connections[player] = list
+	table.insert(list, player:GetAttributeChangedSignal("PlayerLevel"):Connect(function()
+		beginLevelUpCountdown(player)
+	end))
 	table.insert(list, player:GetAttributeChangedSignal("PlayerLevelUpSerial"):Connect(function()
 		beginLevelUpCountdown(player)
 	end))
 	table.insert(list, player:GetAttributeChangedSignal("CurrentGlobalIslandIndex"):Connect(function()
 		local state = states[player]
-		if state and (state.Phase == "Warning" or state.Phase == "WaitingForClear") then
+		if state and (
+			state.Phase == "Warning"
+			or state.Phase == "WaitingForClear"
+		) then
 			cancel(player, "PlayerAdvancedManually")
+		elseif state and state.Phase == "Guidance" then
+			local currentIndex = cleanIndex(
+				player:GetAttribute("CurrentGlobalIslandIndex")
+			)
+			if currentIndex >= cleanIndex(state.GuidanceTargetIndex) then
+				cancel(player, "GuidanceDestinationReached")
+			end
 		end
 	end))
 	table.insert(list, player.CharacterRemoving:Connect(function()
-		cancel(player, "CharacterRemoving")
+		local state = states[player]
+		if not state or state.Phase ~= "Guidance" then
+			cancel(player, "CharacterRemoving")
+		end
+	end))
+	table.insert(list, player.CharacterAdded:Connect(function()
+		task.spawn(function()
+			local deadline = os.clock() + Config.DestinationReadyTimeoutSeconds
+			repeat
+				task.wait(Config.EligibilityPollSeconds)
+			until playerCanTravel(player) or os.clock() >= deadline
+
+			local state = states[player]
+			if not state or state.Phase ~= "Guidance" then
+				return
+			end
+			local route = resolveGuidanceRoute(player)
+			if route then
+				beginGuidance(player, route, "RespawnResume")
+			else
+				cancel(player, "GuidanceNoLongerRequired")
+			end
+		end)
 	end))
 end
 

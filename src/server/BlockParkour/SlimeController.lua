@@ -941,6 +941,35 @@ local function updateNeutralAggro(state)
 	end
 end
 
+local function refreshAggroAfterPlayerChoice(state)
+	local serial = tonumber(workspace:GetAttribute("DungeonCombatReacquireSerial")) or 0
+	local userId = tonumber(workspace:GetAttribute("DungeonCombatReacquireUserId"))
+	if state.LastReacquireSerial == serial then
+		return
+	end
+	state.LastReacquireSerial = serial
+	if state.TutorialPassive then
+		return
+	end
+	setAggro(state, nil)
+	local detectionRange = MobEventModifiers.GetAggroRange(
+		state.Model,
+		state.Definition.AggroRange or state.Definition.DetectionRange or 55
+	)
+	local player = userId and Players:GetPlayerByUserId(userId) or nil
+	local targetRoot = nil
+	if player then
+		local _, _, root = getLivingCharacter(player)
+		targetRoot = root
+	end
+	if not targetRoot then
+		player = nearestPlayer(state.Root.Position, detectionRange)
+	end
+	if player then
+		setAggro(state, player)
+	end
+end
+
 local function targetWasLost(state, now, player, targetRoot)
 	if targetRoot then
 		return false
@@ -1583,6 +1612,7 @@ function SlimeController.Start(entry, definition, random, callbacks)
 				setMovementSpeed(state, 1)
 			end
 			constrainToTutorialArea(state)
+			refreshAggroAfterPlayerChoice(state)
 			if state.Model:GetAttribute("SimulationActive") == false then
 				stopMoving(state, "Dormant")
 				waitInterval = DORMANT_THINK_INTERVAL

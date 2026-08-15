@@ -804,6 +804,28 @@ function PlayerLevelService.AwardXP(
 	totalXP += amount
 	xp += amount
 
+	local orbProgression = ReplicatedStorage:FindFirstChild("OrbCombat")
+	local orbConfig = orbProgression and require(orbProgression:WaitForChild("OrbConfig"))
+	if orbConfig then
+		local orbNames = orbConfig.OrbOrder or {}
+		local equipped = player:GetAttribute("EquippedOrbs")
+		local awardedOrbName
+		if typeof(equipped) == "string" and equipped ~= "" then
+			for orbName in string.gmatch(equipped, "[^,]+") do
+				if orbConfig.GetOrb(orbName) then
+					awardedOrbName = orbName
+					break
+				end
+			end
+		end
+		if awardedOrbName then
+			local xpAttribute = orbConfig.GetOrbLevelXPAttribute(awardedOrbName)
+			if xpAttribute then
+				player:SetAttribute(xpAttribute, math.max(0, math.floor(tonumber(player:GetAttribute(xpAttribute)) or 0)) + amount)
+			end
+		end
+	end
+
 	local levelsGained = 0
 
 	while level

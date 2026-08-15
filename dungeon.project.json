@@ -1,69 +1,146 @@
 {
   "name": "Infinity Islands Dungeon Runtime",
-  "servePort": 34872,
   "tree": {
     "$className": "DataModel",
     "ReplicatedStorage": {
+      "ClientAssets": {
+        "$className": "Folder",
+        "$attributes": {
+          "_lemonadeUniqueId": "l4fMNwiMl4fM"
+        },
+        "$ignoreUnknownInstances": true
+      },
+      "$attributes": {
+        "AssistedTransportWhistleSoundId": "9118113825",
+        "_lemonadeUniqueId": "rs1"
+      },
       "$path": "src/shared"
     },
     "ServerScriptService": {
+      "$attributes": {
+        "_lemonadeUniqueId": "sss"
+      },
       "$path": "src/server"
     },
     "StarterPlayer": {
       "StarterPlayerScripts": {
         "$className": "StarterPlayerScripts",
+        "AdaptiveDecorationCulling": {
+          "$attributes": {
+            "_lemonadeUniqueId": "CGZwmAZHCGZw"
+          },
+          "$path": "src/client/AdaptiveDecorationCulling.client.luau"
+        },
+        "AdaptivePerformanceController": {
+          "$attributes": {
+            "_lemonadeUniqueId": "fih8tgIUfih8"
+          },
+          "$path": "src/client/AdaptivePerformanceController.client.luau"
+        },
         "DungeonArtHUDController": {
+          "$attributes": {
+            "_lemonadeUniqueId": "vrORjdDTvrOR"
+          },
           "$path": "src/client/DungeonArtHUDController.client.luau"
         },
+        "DungeonCameraController": {
+          "$attributes": {
+            "_lemonadeUniqueId": "qd59RB4Aqd59"
+          },
+          "$path": "src/client/DungeonCameraController.client.luau"
+        },
         "DungeonHUDBootstrap": {
+          "$attributes": {
+            "_lemonadeUniqueId": "QrR6ToTZQrR6"
+          },
           "$path": "src/client/DungeonHUDBootstrap.client.luau"
         },
+        "InputProfileController": {
+          "$attributes": {
+            "_lemonadeUniqueId": "mgSxRbeAmgSx"
+          },
+          "$path": "src/client/InputProfileController.client.luau"
+        },
+        "IslandEffectCulling": {
+          "$attributes": {
+            "_lemonadeUniqueId": "GYlZqjwGGYlZ"
+          },
+          "$path": "src/client/IslandEffectCulling.client.luau"
+        },
         "LevelUpPanelAnimation": {
+          "$attributes": {
+            "_lemonadeUniqueId": "wcB9xxWIwcB9"
+          },
           "$path": "src/client/LevelUpPanelAnimation.client.luau"
         },
         "LevelUpStatValues": {
+          "$attributes": {
+            "_lemonadeUniqueId": "0eHVcaBZ0eHV"
+          },
           "$path": "src/client/LevelUpStatValues.client.luau"
         },
-        "XPCollectSound": {
-          "$path": "src/client/XPCollectSound.client.luau"
+        "MobilityPerksController": {
+          "$attributes": {
+            "_lemonadeUniqueId": "HYj1CVLnHYj1"
+          },
+          "$path": "src/client/MobilityPerksController.client.luau"
         },
         "OrbCombatClient": {
+          "$attributes": {
+            "_lemonadeUniqueId": "yL4rINgcyL4r"
+          },
           "$path": "src/client/OrbCombatClient.client.luau"
         },
         "OrbVisualClient": {
+          "$attributes": {
+            "_lemonadeUniqueId": "eRM8snrpeRM8"
+          },
           "$path": "src/client/OrbVisualClient.client.luau"
         },
-        "InputProfileController": {
-          "$path": "src/client/InputProfileController.client.luau"
-        },
-        "DungeonCameraController": {
-          "$path": "src/client/DungeonCameraController.client.luau"
-        },
-        "SprintController": {
-          "$path": "src/client/SprintController.client.luau"
+        "ProgressiveAssetPreloader": {
+          "$attributes": {
+            "_lemonadeUniqueId": "w15dIiCww15d"
+          },
+          "$path": "src/client/ProgressiveAssetPreloader.client.luau"
         },
         "SneakController": {
+          "$attributes": {
+            "_lemonadeUniqueId": "jNhvFDVHjNhv"
+          },
           "$path": "src/client/SneakController.client.luau"
         },
+        "SprintController": {
+          "$attributes": {
+            "_lemonadeUniqueId": "btus714Cbtus"
+          },
+          "$path": "src/client/SprintController.client.luau"
+        },
         "SwordInputClient": {
+          "$attributes": {
+            "_lemonadeUniqueId": "zSwxXMESzSwx"
+          },
           "$path": "src/client/SwordInputClient.client.luau"
         },
-        "MobilityPerksController": {
-          "$path": "src/client/MobilityPerksController.client.luau"
+        "XPCollectSound": {
+          "$attributes": {
+            "_lemonadeUniqueId": "zN0q8Z80zN0q"
+          },
+          "$path": "src/client/XPCollectSound.client.luau"
         },
-        "AdaptivePerformanceController": {
-          "$path": "src/client/AdaptivePerformanceController.client.luau"
-        },
-        "AdaptiveDecorationCulling": {
-          "$path": "src/client/AdaptiveDecorationCulling.client.luau"
-        },
-        "IslandEffectCulling": {
-          "$path": "src/client/IslandEffectCulling.client.luau"
-        },
-        "ProgressiveAssetPreloader": {
-          "$path": "src/client/ProgressiveAssetPreloader.client.luau"
+        "$attributes": {
+          "_lemonadeUniqueId": "sps"
         }
+      },
+      "$properties": {
+        "AvatarJointUpgrade": "Enabled",
+        "CameraMaxZoomDistance": 128.0,
+        "CharacterBreakJointsOnDeath": false,
+        "CharacterUseJumpPower": false
+      },
+      "$attributes": {
+        "_lemonadeUniqueId": "sp1"
       }
     }
-  }
+  },
+  "servePort": 34872
 }

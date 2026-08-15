@@ -109,14 +109,17 @@ local DEFINITIONS = {
 		ScoreMultiplier = 2,
 		CoinMultiplier = 2,
 		AttackRange = 55,
-		AttackDamage = 8,
+		-- 2.5x sobre o antigo dano base 8.
+		AttackDamage = 20,
 		AttackCooldown = 4.2,
 		ImpactRadius = 6,
 		MortarWarningTime = 1.15,
 		MortarArcHeight = 25,
 		GroundEffectRadius = 5,
 		GroundEffectDuration = 5,
-		GroundEffectDamage = 2,
+		-- 2.5x sobre o antigo dano base 2. O MonsterSpawner ainda aplica
+		-- nivel, ciclo, papel e party scaling sobre este valor.
+		GroundEffectDamage = 5,
 		GroundEffectInterval = 0.75,
 		DetectionRange = 72,
 		CombatSpeedMultiplier = 0.8,

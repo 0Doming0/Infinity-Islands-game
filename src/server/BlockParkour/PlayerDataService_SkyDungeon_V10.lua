@@ -1442,7 +1442,7 @@ end
 local function grantCompanionXP(record, amount)
 	record.Kills += 1
 	record.XP += amount
-	local leveled = false
+	local levelsGained = 0
 	while record.Level < CompanionCatalog.MaxLevel do
 		local required = CompanionCatalog.GetXPRequired(record.Level)
 		if record.XP < required then
@@ -1450,12 +1450,12 @@ local function grantCompanionXP(record, amount)
 		end
 		record.XP -= required
 		record.Level += 1
-		leveled = true
+		levelsGained += 1
 	end
 	if record.Level >= CompanionCatalog.MaxLevel then
 		record.XP = 0
 	end
-	return leveled
+	return levelsGained
 end
 
 function PlayerDataService.AddEquippedCompanionsXP(player, amount)
@@ -1468,10 +1468,11 @@ function PlayerDataService.AddEquippedCompanionsXP(player, amount)
 	for _, instanceId in ipairs(session.Data.EquippedCompanions) do
 		local record = session.Data.OwnedCompanions[instanceId]
 		if record then
-			local leveled = grantCompanionXP(record, clean)
+			local levelsGained = grantCompanionXP(record, clean)
 			table.insert(results, {
 				InstanceId = instanceId,
 				MonsterId = record.SpeciesId,
+				LevelsGained = levelsGained,
 				Record = {
 					DisplayName = record.DisplayName,
 					Level = record.Level,
@@ -1479,7 +1480,7 @@ function PlayerDataService.AddEquippedCompanionsXP(player, amount)
 					Kills = record.Kills,
 					Upgrades = cloneDictionary(record.Upgrades),
 				},
-				Leveled = leveled,
+				Leveled = levelsGained > 0,
 			})
 		end
 	end
@@ -1494,7 +1495,8 @@ function PlayerDataService.AddEquippedCompanionXP(player, amount)
 	return result ~= nil,
 		result and result.MonsterId or nil,
 		result and result.Record or nil,
-		result and result.Leveled or false
+		result and result.Leveled or false,
+		result and result.LevelsGained or 0
 end
 
 function PlayerDataService.UpgradeCompanionStat(player, instanceId, statName)

@@ -62,6 +62,11 @@ local lastRenameAt = setmetatable({}, { __mode = "k" })
 local started = false
 local event
 local request
+local levelUpEvent
+local levelUpRequest
+local pendingLevelUps = setmetatable({}, { __mode = "k" })
+local levelUpSelecting = setmetatable({}, { __mode = "k" })
+local levelUpSerials = setmetatable({}, { __mode = "k" })
 local elapsed = 0
 local random = Random.new()
 
@@ -247,18 +252,45 @@ local function push(player, message, success)
 	end
 end
 
-local function addNameplate(model, root, displayName, level, slot)
+local function getUpgradeCardOptions(record)
+	local options = {}
+	for _, statName in ipairs(CompanionCatalog.UpgradeOrder) do
+		local definition = CompanionCatalog.Upgrades[statName]
+		local current = math.max(0, math.floor(tonumber(record.Upgrades and record.Upgrades[statName]) or 0))
+		if definition and current < definition.MaxPoints then
+			local nextValue = current + 1
+			table.insert(options, {
+				ChoiceType = "CompanionUpgrade",
+				UpgradeId = statName,
+				DisplayName = definition.DisplayName,
+				Kind = definition.CardKind,
+				AttributeLabel = definition.AttributeLabel,
+				Description = definition.Description,
+				CurrentValue = current,
+				NextValue = nextValue,
+				Color = statName == "Damage" and Color3.fromRGB(178, 75, 70)
+					or statName == "AttackSpeed" and Color3.fromRGB(78, 139, 207)
+					or statName == "MoveSpeed" and Color3.fromRGB(71, 177, 126)
+					or Color3.fromRGB(137, 100, 199),
+				Available = true,
+			})
+		end
+	end
+	return options
+end
+
+local function addNameplate(model, root, displayName, level, slot, xp, xpRequired)
 	local gui = Instance.new("BillboardGui")
 	gui.Name = "CompanionNameplate"
 	gui.Adornee = root
-	gui.Size = UDim2.fromOffset(145, 30)
-	gui.StudsOffsetWorldSpace = Vector3.new(0, math.max(2.2, model:GetExtentsSize().Y * 0.55 + 0.5), 0)
+	gui.Size = UDim2.fromOffset(170, 48)
+	gui.StudsOffsetWorldSpace = Vector3.new(0, math.max(2.4, model:GetExtentsSize().Y * 0.55 + 0.7), 0)
 	gui.AlwaysOnTop = true
 	gui.MaxDistance = 80
 	gui.Parent = model
 	local label = Instance.new("TextLabel")
 	label.Name = "Label"
-	label.Size = UDim2.fromScale(1, 1)
+	label.Size = UDim2.new(1, 0, 0, 27)
 	label.BackgroundTransparency = 1
 	label.Text = string.format("%d · %s  Nv.%d", slot, displayName, level)
 	label.TextColor3 = Color3.fromRGB(173, 255, 203)
@@ -267,7 +299,26 @@ local function addNameplate(model, root, displayName, level, slot)
 	label.Font = Enum.Font.GothamBold
 	label.TextScaled = true
 	label.Parent = gui
-	return label
+	local xpBackground = Instance.new("Frame")
+	xpBackground.Name = "XPBackground"
+	xpBackground.Position = UDim2.new(0.08, 0, 0, 31)
+	xpBackground.Size = UDim2.new(0.84, 0, 0, 9)
+	xpBackground.BackgroundColor3 = Color3.fromRGB(24, 45, 58)
+	xpBackground.BorderSizePixel = 0
+	xpBackground.Parent = gui
+	local backgroundCorner = Instance.new("UICorner")
+	backgroundCorner.CornerRadius = UDim.new(1, 0)
+	backgroundCorner.Parent = xpBackground
+	local xpFill = Instance.new("Frame")
+	xpFill.Name = "XPFill"
+	xpFill.Size = UDim2.fromScale(math.clamp((tonumber(xp) or 0) / math.max(1, tonumber(xpRequired) or 1), 0, 1), 1)
+	xpFill.BackgroundColor3 = Color3.fromRGB(0, 170, 255)
+	xpFill.BorderSizePixel = 0
+	xpFill.Parent = xpBackground
+	local fillCorner = Instance.new("UICorner")
+	fillCorner.CornerRadius = UDim.new(1, 0)
+	fillCorner.Parent = xpFill
+	return { Label = label, XPFill = xpFill }
 end
 
 local function destroyState(state)
@@ -726,7 +777,7 @@ local function spawnState(player, instanceId, record, slot)
 	humanoid.WalkSpeed = state.CombatStats.WalkSpeed
 	state.NextTeleportAt = workspace:GetServerTimeNow()
 		+ (state.CombatStats.TeleportInterval or math.huge)
-	state.Nameplate = addNameplate(model, root, record.DisplayName, record.Level, slot)
+	state.Nameplate = addNameplate(model, root, record.DisplayName, record.Level, slot, record.XP, xpRequired(record.Level))
 	if characterRoot then
 		teleportToOwner(state, player.Character, characterRoot)
 	end
@@ -1098,6 +1149,8 @@ local function refreshState(player, instanceId, record)
 		if state.InstanceId == instanceId then
 			state.DisplayName = record.DisplayName
 			state.Level = record.Level
+			state.XP = record.XP
+			state.XPRequired = xpRequired(record.Level)
 			state.Upgrades = table.clone(record.Upgrades)
 			state.CombatStats = CompanionCombat.GetStats(
 				state.Model,
@@ -1108,13 +1161,19 @@ local function refreshState(player, instanceId, record)
 			state.Humanoid.WalkSpeed = state.CombatStats.WalkSpeed
 			state.Model:SetAttribute("CompanionLevel", record.Level)
 			state.Model:SetAttribute("CompanionDisplayName", record.DisplayName)
-			if state.Nameplate and state.Nameplate.Parent then
-				state.Nameplate.Text = string.format(
+			if state.Nameplate and state.Nameplate.Label and state.Nameplate.Label.Parent then
+				state.Nameplate.Label.Text = string.format(
 					"%d · %s  Nv.%d",
 					state.Slot,
 					record.DisplayName,
 					record.Level
 				)
+				if state.Nameplate.XPFill then
+					state.Nameplate.XPFill.Size = UDim2.fromScale(
+						math.clamp((tonumber(record.XP) or 0) / math.max(1, xpRequired(record.Level)), 0, 1),
+						1
+					)
+				end
 			end
 		end
 	end
@@ -1283,6 +1342,44 @@ function CompanionService.Upgrade(player, monsterId, statName)
 	return true, message
 end
 
+local function enqueueCompanionLevelUp(player, result)
+	if not levelUpEvent or not result or (result.LevelsGained or 0) <= 0 then
+		return
+	end
+	local queue = pendingLevelUps[player]
+	if not queue then
+		queue = {}
+		pendingLevelUps[player] = queue
+	end
+	for level = math.max(1, result.Record.Level - result.LevelsGained + 1), result.Record.Level do
+		table.insert(queue, {
+			InstanceId = result.InstanceId,
+			SpeciesId = result.MonsterId,
+			DisplayName = result.Record.DisplayName,
+			Level = level,
+			Upgrades = table.clone(result.Record.Upgrades),
+		})
+	end
+	if not player:GetAttribute("PendingCompanionLevelUp") then
+		local nextOffer = table.remove(queue, 1)
+		if nextOffer then
+			local serial = (levelUpSerials[player] or 0) + 1
+			levelUpSerials[player] = serial
+			player:SetAttribute("PendingCompanionLevelUp", true)
+			levelUpEvent:FireClient(player, {
+				Action = "Offer",
+				Serial = serial,
+				InstanceId = nextOffer.InstanceId,
+				SpeciesId = nextOffer.SpeciesId,
+				SpeciesName = getSpeciesDisplayName(nextOffer.SpeciesId),
+				CompanionName = nextOffer.DisplayName,
+				Level = nextOffer.Level,
+				Options = getUpgradeCardOptions(nextOffer),
+			})
+		end
+	end
+end
+
 function CompanionService.RecordDefeat(player, monster)
 	if not player or player.Parent ~= Players or not monster then
 		return
@@ -1294,8 +1391,11 @@ function CompanionService.RecordDefeat(player, monster)
 	local firstLevelUp
 	for _, result in ipairs(progress) do
 		refreshState(player, result.InstanceId, result.Record)
-		if result.Leveled and not firstLevelUp then
-			firstLevelUp = result.Record
+		if result.Leveled then
+			enqueueCompanionLevelUp(player, result)
+			if not firstLevelUp then
+				firstLevelUp = result.Record
+			end
 		end
 	end
 
@@ -1434,6 +1534,47 @@ function CompanionService.Start()
 	pcall(PhysicsService.RegisterCollisionGroup, PhysicsService, COMPANION_GROUP)
 	event = ensureRemote("RemoteEvent", "CompanionEvent")
 	request = ensureRemote("RemoteFunction", "CompanionRequest")
+	levelUpEvent = ensureRemote("RemoteEvent", "CompanionLevelUpEvent")
+	levelUpRequest = ensureRemote("RemoteEvent", "CompanionLevelUpRequest")
+	levelUpRequest.OnServerEvent:Connect(function(player, payload)
+		if levelUpSelecting[player] or type(payload) ~= "table" then
+			return
+		end
+		levelUpSelecting[player] = true
+		local serial = math.floor(tonumber(payload.Serial) or 0)
+		local instanceId = payload.InstanceId
+		local upgradeId = payload.UpgradeId
+		local currentSerial = levelUpSerials[player] or 0
+		if player:GetAttribute("PendingCompanionLevelUp") ~= true or serial ~= currentSerial or type(instanceId) ~= "string" then
+			levelUpSelecting[player] = nil
+			return
+		end
+		local companions = PlayerDataService.GetCompanions(player)
+		local record = companions[instanceId]
+		local definition = CompanionCatalog.Upgrades[upgradeId]
+		if not record or not definition then
+			levelUpSelecting[player] = nil
+			return
+		end
+		local success, message = CompanionService.Upgrade(player, instanceId, upgradeId)
+		if success then
+			player:SetAttribute("PendingCompanionLevelUp", false)
+			levelUpEvent:FireClient(player, { Action = "Selected", InstanceId = instanceId, UpgradeId = upgradeId, Message = message })
+			local queue = pendingLevelUps[player]
+			local nextOffer = queue and table.remove(queue, 1)
+			if nextOffer then
+				local nextSerial = (levelUpSerials[player] or 0) + 1
+				levelUpSerials[player] = nextSerial
+				player:SetAttribute("PendingCompanionLevelUp", true)
+				levelUpEvent:FireClient(player, {
+					Action = "Offer", Serial = nextSerial, InstanceId = nextOffer.InstanceId,
+					SpeciesId = nextOffer.SpeciesId, SpeciesName = getSpeciesDisplayName(nextOffer.SpeciesId), CompanionName = nextOffer.DisplayName,
+					Level = nextOffer.Level, Options = getUpgradeCardOptions(nextOffer),
+				})
+			end
+		end
+		levelUpSelecting[player] = nil
+	end)
 	request.OnServerInvoke = function(player, action, first, second)
 		PlayerDataService.Load(player)
 		if action ~= "Get" then

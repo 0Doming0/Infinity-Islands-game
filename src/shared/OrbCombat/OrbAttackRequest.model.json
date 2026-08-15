@@ -1,4 +1,6 @@
 {
-  "Name": "OrbAttackRequest",
-  "ClassName": "RemoteEvent"
+  "className": "RemoteEvent",
+  "attributes": {
+    "_lemonadeUniqueId": "fjLBj5jzfjLB"
+  }
 }

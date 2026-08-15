@@ -1,1140 +1,409 @@
---[[
-	Infinity Islands - Task 15
-	DungeonCameraController V2 - Portrait Arena Top-Down
-
-	Touch:
-	- Scriptable elevated arena camera;
-	- portrait remains controlled by InputProfileController;
-	- near top-down pitch;
-	- fixed/semi-fixed yaw for spatial consistency;
-	- movement look-ahead;
-	- small combat framing shift toward nearby managed slimes;
-	- occlusion safety.
-
-	Desktop/console:
-	- this controller releases ownership;
-	- Roblox default camera remains unchanged.
-
-	This script DOES NOT:
-	- create HUD;
-	- auto aim;
-	- rotate the player;
-	- move the player;
-	- attack;
-	- choose server combat targets.
-]]
-
-local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
 
 local player = Players.LocalPlayer
 
-local Config = require(
-	ReplicatedStorage
-		:WaitForChild("Shared")
-		:WaitForChild("Configs")
-		:WaitForChild("MobileDungeonCameraConfig")
-)
-
-local VERSION = Config.Version
-local RENDER_STEP =
-	"InfinityIslandsDungeonArenaCameraV2"
+local POLICY = "PlayerFollowRouteCameraMobileV5"
+local CAMERA_HEIGHT = 28
+local CAMERA_DISTANCE = 22
+local CAMERA_FOV = 70
+local POSITION_SMOOTH_SPEED = 10
+local ROTATION_SMOOTH_SPEED = 12
+local MIN_ROUTE_LENGTH = 0.05
+local OBSTRUCTION_PADDING = 1.5
+local FOCUS_TOWARD_TARGET_FRACTION = 0.2
 
 local active = false
-
-local currentCamera
-local savedCameraState
-
-local character
-local rootPart
-local humanoid
-
--- Yaw remains stable instead of following every character turn.
-local baseForward =
-	Vector3.new(0, 0, -1)
-
-local smoothedMovementLookAhead =
-	Vector3.zero
-
-local smoothedCombatFocusShift =
-	Vector3.zero
-
-local snapNextFrame = true
-
-local cameraChangeConnection
+local renderBound = false
+local cameraCFrame
+local savedCameraType
+local savedCameraSubject
+local savedCameraFov
 local characterConnections = {}
+local lastRouteDirection
+local lastRouteSideCenter
 
 local function disconnectCharacterConnections()
-	for _, connection in ipairs(
-		characterConnections
-	) do
+	for _, connection in ipairs(characterConnections) do
 		connection:Disconnect()
 	end
-
-	table.clear(
-		characterConnections
-	)
+	table.clear(characterConnections)
 end
 
-local function horizontalUnit(
-	vector,
-	fallback
-)
-	local horizontal =
-		Vector3.new(
-			vector.X,
-			0,
-			vector.Z
-		)
-
-	if horizontal.Magnitude <= 0.001 then
-		return fallback
-			or Vector3.new(0, 0, -1)
+local function getCharacterParts()
+	local character = player.Character
+	if not character or not character:IsDescendantOf(Workspace) then
+		return nil, nil, nil
 	end
 
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if not humanoid or not root or not root:IsA("BasePart") or not root:IsDescendantOf(character) then
+		return character, humanoid, nil
+	end
+	return character, humanoid, root
+end
+
+local function horizontalUnit(vector)
+	local horizontal = Vector3.new(vector.X, 0, vector.Z)
+	if horizontal.Magnitude < MIN_ROUTE_LENGTH then
+		return nil
+	end
 	return horizontal.Unit
 end
 
-local function numberSetting(
-	attributeName,
-	defaultValue,
-	minimum,
-	maximum
-)
-	local value =
-		tonumber(
-			player:GetAttribute(
-				attributeName
-			)
-		)
-
-	if value == nil then
-		value = defaultValue
+local function findAnchor(container, names)
+	if not container then
+		return nil
 	end
-
-	return math.clamp(
-		value,
-		minimum,
-		maximum
-	)
-end
-
-local function ensureTuningAttributes()
-	local attributes = {
-		DungeonMobileCameraHeight =
-			Config.Height,
-
-		DungeonMobileCameraBackDistance =
-			Config.BackDistance,
-
-		DungeonMobileCameraFov =
-			Config.FieldOfView,
-
-		DungeonMobileCameraLookAhead =
-			Config.MovementLookAhead,
-
-		DungeonMobileCameraForwardBias =
-			Config.ForwardBias,
-
-		DungeonMobileCameraFocusHeight =
-			Config.FocusHeight,
-
-		DungeonMobileCameraSmoothSpeed =
-			Config.SmoothSpeed,
-
-		DungeonMobileCameraCombatFocusRadius =
-			Config.CombatFocusRadius,
-
-		DungeonMobileCameraCombatFocusShift =
-			Config.CombatFocusMaximumShift,
-	}
-
-	for name, value in pairs(
-		attributes
-	) do
-		if player:GetAttribute(name) == nil then
-			player:SetAttribute(
-				name,
-				value
-			)
+	for _, name in ipairs(names) do
+		local instance = container:FindFirstChild(name, true)
+		if instance and instance:IsA("BasePart") then
+			return instance
 		end
 	end
+	return nil
 end
 
-local function captureCameraState(camera)
-	return {
-		CameraType =
-			camera.CameraType,
+local function getCurrentIslandIndex()
+	local value = tonumber(
+		player:GetAttribute("CurrentGlobalIslandIndex")
+			or Workspace:GetAttribute("DungeonObjectiveGlobalIslandIndex")
+			or Workspace:GetAttribute("DungeonCurrentObjectiveIsland")
+	)
+	return value and math.floor(value) or nil
+end
 
-		CameraSubject =
-			camera.CameraSubject,
+local function getIslandByIndex(index, root)
+	local indexedIsland
+	local nearestIsland
+	local nearestDistance = math.huge
 
-		FieldOfView =
-			camera.FieldOfView,
+	for _, instance in ipairs(Workspace:GetDescendants()) do
+		if instance:IsA("Model") and tonumber(instance:GetAttribute("GlobalIslandIndex")) then
+			local islandIndex = math.floor(tonumber(instance:GetAttribute("GlobalIslandIndex")))
+			if index and islandIndex == index then
+				indexedIsland = instance
+				break
+			end
+			if root then
+				local boundsCFrame = instance:GetBoundingBox()
+				local distance = (boundsCFrame.Position - root.Position).Magnitude
+				if distance < nearestDistance then
+					nearestIsland = instance
+					nearestDistance = distance
+				end
+			end
+		end
+	end
 
-		CFrame =
-			camera.CFrame,
+	return indexedIsland or nearestIsland
+end
 
-		Focus =
-			camera.Focus,
+local function getExitSideTarget(island)
+	if not island then
+		return nil, nil, nil
+	end
+	local exit = findAnchor(island, { "ExitAnchor", "Exit" })
+	if not exit then
+		return nil, nil, nil
+	end
+
+	local boundsCFrame, boundsSize = island:GetBoundingBox()
+	local exitPosition = boundsCFrame:PointToObjectSpace(exit.Position)
+	local halfSize = boundsSize * 0.5
+	local distances = {
+		{ math.abs(halfSize.X - exitPosition.X), Vector3.new(1, 0, 0), Vector3.new(halfSize.X, 0, 0) },
+		{ math.abs(-halfSize.X - exitPosition.X), Vector3.new(-1, 0, 0), Vector3.new(-halfSize.X, 0, 0) },
+		{ math.abs(halfSize.Z - exitPosition.Z), Vector3.new(0, 0, 1), Vector3.new(0, 0, halfSize.Z) },
+		{ math.abs(-halfSize.Z - exitPosition.Z), Vector3.new(0, 0, -1), Vector3.new(0, 0, -halfSize.Z) },
 	}
+
+	local closest = distances[1]
+	for index = 2, #distances do
+		if distances[index][1] < closest[1] then
+			closest = distances[index]
+		end
+	end
+
+	local sideNormal = boundsCFrame:VectorToWorldSpace(closest[2])
+	local sideCenter = boundsCFrame:PointToWorldSpace(closest[3])
+	return horizontalUnit(sideNormal), sideCenter, exit.Position
 end
 
-local function restoreCamera(
-	camera,
-	state
-)
-	if not camera
-		or not camera.Parent
-		or not state
-	then
+local function getCameraTarget(root)
+	local playerPosition = root.Position
+	local island = getIslandByIndex(getCurrentIslandIndex(), root)
+	local sideDirection, sideCenter = getExitSideTarget(island)
+	if sideDirection and sideCenter and root:IsDescendantOf(Workspace) then
+		lastRouteDirection = sideDirection
+		lastRouteSideCenter = sideCenter
+	else
+		sideDirection = lastRouteDirection
+		sideCenter = lastRouteSideCenter
+	end
+
+	if sideDirection and sideCenter then
+		local focus = Vector3.new(
+			playerPosition.X + (sideCenter.X - playerPosition.X) * FOCUS_TOWARD_TARGET_FRACTION,
+			playerPosition.Y + (sideCenter.Y - playerPosition.Y) * FOCUS_TOWARD_TARGET_FRACTION,
+			playerPosition.Z + (sideCenter.Z - playerPosition.Z) * FOCUS_TOWARD_TARGET_FRACTION
+		)
+		return sideDirection, focus, sideCenter, playerPosition
+	end
+
+	local override = Workspace:GetAttribute("DungeonMobileCameraForwardOverride")
+	local overrideDirection = typeof(override) == "Vector3" and horizontalUnit(override) or nil
+	if not overrideDirection then
+		overrideDirection = lastRouteDirection or Vector3.new(0, 0, -1)
+	end
+
+	local focusOverride = Workspace:GetAttribute("DungeonMobileCameraFocusWorldOverride")
+	if typeof(focusOverride) == "Vector3" then
+		local focus = Vector3.new(
+			playerPosition.X + (focusOverride.X - playerPosition.X) * FOCUS_TOWARD_TARGET_FRACTION,
+			playerPosition.Y + (focusOverride.Y - playerPosition.Y) * FOCUS_TOWARD_TARGET_FRACTION,
+			playerPosition.Z + (focusOverride.Z - playerPosition.Z) * FOCUS_TOWARD_TARGET_FRACTION
+		)
+		return overrideDirection, focus, focusOverride, playerPosition
+	end
+
+	local fallbackCenter = lastRouteSideCenter or (
+		playerPosition + overrideDirection * 8
+	)
+	local fallbackFocus = Vector3.new(
+		playerPosition.X + (fallbackCenter.X - playerPosition.X) * FOCUS_TOWARD_TARGET_FRACTION,
+		playerPosition.Y + (fallbackCenter.Y - playerPosition.Y) * FOCUS_TOWARD_TARGET_FRACTION,
+		playerPosition.Z + (fallbackCenter.Z - playerPosition.Z) * FOCUS_TOWARD_TARGET_FRACTION
+	)
+	return overrideDirection, fallbackFocus, fallbackCenter, playerPosition
+end
+
+local function getHumanoidModel(instance)
+	local current = instance
+	while current and current ~= Workspace do
+		if current:IsA("Model") and current:FindFirstChildWhichIsA("Humanoid") then
+			return current
+		end
+		current = current.Parent
+	end
+	return nil
+end
+
+local function getCameraPosition(root, direction, focus)
+	local desiredPosition = root.Position - direction * CAMERA_DISTANCE
+		+ Vector3.new(0, CAMERA_HEIGHT, 0)
+
+	local rayOrigin = focus
+	local rayDirection = desiredPosition - rayOrigin
+	if rayDirection.Magnitude > 0.1 then
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Exclude
+
+		local exclusions = {}
+		if player.Character then
+			table.insert(exclusions, player.Character)
+		end
+		params.FilterDescendantsInstances = exclusions
+
+		for _ = 1, 32 do
+			local hit = Workspace:Raycast(rayOrigin, rayDirection, params)
+			if not hit then
+				break
+			end
+
+			local humanoidModel = getHumanoidModel(hit.Instance)
+			if not humanoidModel then
+				desiredPosition = hit.Position + (rayDirection.Unit * -OBSTRUCTION_PADDING)
+				break
+			end
+
+			table.insert(exclusions, humanoidModel)
+			params.FilterDescendantsInstances = exclusions
+		end
+	end
+
+	return desiredPosition
+end
+
+local function restoreCamera()
+	local camera = Workspace.CurrentCamera
+	if not camera then
 		return
 	end
 
-	pcall(function()
-		camera.CameraType =
-			state.CameraType
-
-		camera.CameraSubject =
-			state.CameraSubject
-
-		camera.FieldOfView =
-			state.FieldOfView
-
-		camera.CFrame =
-			state.CFrame
-
-		camera.Focus =
-			state.Focus
-	end)
-end
-
-local function releaseCamera()
-	if currentCamera
-		and savedCameraState
-	then
-		restoreCamera(
-			currentCamera,
-			savedCameraState
-		)
+	camera.CameraType = savedCameraType or Enum.CameraType.Custom
+	if savedCameraSubject and savedCameraSubject.Parent then
+		camera.CameraSubject = savedCameraSubject
+	else
+		local _, humanoid = getCharacterParts()
+		if humanoid then
+			camera.CameraSubject = humanoid
+		end
 	end
-
-	currentCamera = nil
-	savedCameraState = nil
-
-	player:SetAttribute(
-		"DungeonMobileCameraActive",
-		false
-	)
+	if savedCameraFov then
+		camera.FieldOfView = savedCameraFov
+	end
+	cameraCFrame = nil
 end
 
-local function acquireCamera(camera)
+local function prepareCamera(camera)
 	if not camera then
 		return false
 	end
-
-	if currentCamera ~= camera then
-		if currentCamera
-			and savedCameraState
-		then
-			restoreCamera(
-				currentCamera,
-				savedCameraState
-			)
-		end
-
-		currentCamera = camera
-
-		savedCameraState =
-			captureCameraState(
-				camera
-			)
+	if not savedCameraType then
+		savedCameraType = camera.CameraType
+		savedCameraSubject = camera.CameraSubject
+		savedCameraFov = camera.FieldOfView
 	end
-
-	camera.CameraType =
-		Enum.CameraType.Scriptable
-
-	camera.FieldOfView =
-		numberSetting(
-			"DungeonMobileCameraFov",
-			Config.FieldOfView,
-			Config.MinimumFOV,
-			Config.MaximumFOV
-		)
-
-	snapNextFrame = true
-
-	player:SetAttribute(
-		"DungeonMobileCameraActive",
-		true
-	)
-
+	camera.CameraType = Enum.CameraType.Scriptable
+	camera.FieldOfView = CAMERA_FOV
 	return true
 end
 
-local function refreshBaseForward()
-	if not rootPart then
+local function updateCamera(deltaTime)
+	if not active then
 		return
 	end
 
-	baseForward =
-		horizontalUnit(
-			rootPart.CFrame.LookVector,
-			baseForward
-		)
-
-	player:SetAttribute(
-		"DungeonMobileCameraBaseForward",
-		baseForward
-	)
-end
-
-local function bindCharacter(
-	newCharacter
-)
-	disconnectCharacterConnections()
-
-	character = newCharacter
-	rootPart = nil
-	humanoid = nil
-
-	smoothedMovementLookAhead =
-		Vector3.zero
-
-	smoothedCombatFocusShift =
-		Vector3.zero
-
-	snapNextFrame = true
-
-	if not character then
+	local camera = Workspace.CurrentCamera
+	local _, _, root = getCharacterParts()
+	if not camera or not root or not prepareCamera(camera) then
 		return
 	end
 
-	local function refreshCharacterParts()
-		rootPart =
-			character
-				and character:FindFirstChild(
-					"HumanoidRootPart"
-				)
-
-		humanoid =
-			character
-				and character
-					:FindFirstChildOfClass(
-						"Humanoid"
-					)
-
-		if rootPart then
-			refreshBaseForward()
-			snapNextFrame = true
-		end
-	end
-
-	table.insert(
-		characterConnections,
-		character.ChildAdded:Connect(
-			function(child)
-				if child.Name
-						== "HumanoidRootPart"
-					or child:IsA("Humanoid")
-				then
-					task.defer(
-						refreshCharacterParts
-					)
-				end
-			end
-		)
-	)
-
-	table.insert(
-		characterConnections,
-		character.ChildRemoved:Connect(
-			function(child)
-				if child == rootPart
-					or child == humanoid
-				then
-					task.defer(
-						refreshCharacterParts
-					)
-				end
-			end
-		)
-	)
-
-	refreshCharacterParts()
-end
-
-local function updateBaseForwardFromOverride()
-	local override =
-		workspace:GetAttribute(
-			"DungeonMobileCameraForwardOverride"
-		)
-
-	if typeof(override) == "Vector3" then
-		local horizontal =
-			Vector3.new(
-				override.X,
-				0,
-				override.Z
-			)
-
-		if horizontal.Magnitude > 0.001 then
-			baseForward =
-				horizontal.Unit
-
-			return
-		end
-	end
-end
-
-local function sameCurrentIsland(
-	target
-)
-	local playerIndex =
-		tonumber(
-			player:GetAttribute(
-				"CurrentGlobalIslandIndex"
-			)
-		)
-
-	local targetIndex =
-		tonumber(
-			target:GetAttribute(
-				"GlobalIslandIndex"
-			)
-		)
-
-	if not playerIndex
-		or not targetIndex
-	then
-		return true
-	end
-
-	return math.floor(playerIndex)
-		== math.floor(targetIndex)
-end
-
-local function combatTargetPosition(
-	target
-)
-	if not target
-		or not target:IsA("Model")
-		or not target.Parent
-		or target:GetAttribute(
-			"IslandCombatManaged"
-		) ~= true
-		or target:GetAttribute(
-			"Peaceful"
-		) == true
-		or not sameCurrentIsland(
-			target
-		)
-	then
-		return nil
-	end
-
-	local humanoid =
-		target:FindFirstChildWhichIsA(
-			"Humanoid",
-			true
-		)
-
-	if not humanoid
-		or humanoid.Health <= 0
-	then
-		return nil
-	end
-
-	local part =
-		target:FindFirstChild(
-			"HumanoidRootPart",
-			true
-		)
-			or target.PrimaryPart
-			or target:FindFirstChildWhichIsA(
-				"BasePart",
-				true
-			)
-
-	return part and part.Position
-end
-
-local function desiredCombatFocusShift()
-	if Config.CombatFocusEnabled ~= true
-		or not rootPart
-	then
-		return Vector3.zero, 0
-	end
-
-	local radius =
-		numberSetting(
-			"DungeonMobileCameraCombatFocusRadius",
-			Config.CombatFocusRadius,
-			8,
-			32
-		)
-
-	local maximumShift =
-		numberSetting(
-			"DungeonMobileCameraCombatFocusShift",
-			Config.CombatFocusMaximumShift,
-			0,
-			8
-		)
-
-	if maximumShift <= 0 then
-		return Vector3.zero, 0
-	end
-
-	local accumulated =
-		Vector3.zero
-
-	local weightTotal = 0
-	local count = 0
-
-	for _, target in ipairs(
-		CollectionService:GetTagged(
-			"CombatTarget"
-		)
-	) do
-		local position =
-			combatTargetPosition(
-				target
-			)
-
-		if not position then
-			continue
-		end
-
-		local delta =
-			Vector3.new(
-				position.X
-					- rootPart.Position.X,
-				0,
-				position.Z
-					- rootPart.Position.Z
-			)
-
-		local distance =
-			delta.Magnitude
-
-		if distance <= radius then
-			local weight =
-				1
-					- math.clamp(
-						distance / radius,
-						0,
-						1
-					)
-
-			-- Keep distant-but-visible enemies useful for framing.
-			weight =
-				0.25
-					+ weight * 0.75
-
-			accumulated +=
-				delta * weight
-
-			weightTotal += weight
-			count += 1
-		end
-	end
-
-	if weightTotal <= 0 then
-		return Vector3.zero, 0
-	end
-
-	local average =
-		accumulated
-			/ weightTotal
-
-	local shift =
-		average
-			* Config.CombatFocusWeight
-
-	if shift.Magnitude > maximumShift then
-		shift =
-			shift.Unit
-				* maximumShift
-	end
-
-	return shift,
-		count
-end
-
-local function occlusionSafePosition(
-	focusPosition,
-	desiredPosition
-)
-	if not character then
-		return desiredPosition
-	end
-
-	local direction =
-		desiredPosition
-			- focusPosition
-
-	if direction.Magnitude <= 0.01 then
-		return desiredPosition
-	end
-
-	local params =
-		RaycastParams.new()
-
-	params.FilterType =
-		Enum.RaycastFilterType.Exclude
-
-	params.FilterDescendantsInstances =
-		{ character }
-
-	params.IgnoreWater = true
-
-	local result =
-		workspace:Raycast(
-			focusPosition,
-			direction,
-			params
-		)
-
-	if not result then
-		return desiredPosition
-	end
-
-	local padding =
-		numberSetting(
-			"DungeonMobileCameraOcclusionPadding",
-			Config.OcclusionPadding,
-			0.5,
-			4
-		)
-
-	return result.Position
-		+ result.Normal * padding
-end
-
-local function desiredCameraFrame(
-	deltaTime
-)
-	if not rootPart
-		or not rootPart.Parent
-	then
-		return nil
-	end
-
-	updateBaseForwardFromOverride()
-
-	local moveDirection =
-		humanoid
-			and humanoid.MoveDirection
-			or Vector3.zero
-
-	local horizontalMove =
-		Vector3.new(
-			moveDirection.X,
-			0,
-			moveDirection.Z
-		)
-
-	local movementLookAheadDistance =
-		numberSetting(
-			"DungeonMobileCameraLookAhead",
-			Config.MovementLookAhead,
-			0,
-			10
-		)
-
-	local desiredLookAhead =
-		Vector3.zero
-
-	if horizontalMove.Magnitude > 0.05 then
-		desiredLookAhead =
-			horizontalMove.Unit
-				* movementLookAheadDistance
-	end
-
-	local lookAheadAlpha =
-		1
-			- math.exp(
-				-Config.LookAheadSmoothSpeed
-					* math.max(
-						0,
-						deltaTime
-					)
-			)
-
-	smoothedMovementLookAhead =
-		smoothedMovementLookAhead:Lerp(
-			desiredLookAhead,
-			lookAheadAlpha
-		)
-
-	local desiredCombatShift,
-		combatTargetCount =
-			desiredCombatFocusShift()
-
-	local combatAlpha =
-		1
-			- math.exp(
-				-Config.CombatFocusSmoothSpeed
-					* math.max(
-						0,
-						deltaTime
-					)
-			)
-
-	smoothedCombatFocusShift =
-		smoothedCombatFocusShift:Lerp(
-			desiredCombatShift,
-			combatAlpha
-		)
-
-	local height =
-		numberSetting(
-			"DungeonMobileCameraHeight",
-			Config.Height,
-			Config.MinimumHeight,
-			Config.MaximumHeight
-		)
-
-	local backDistance =
-		numberSetting(
-			"DungeonMobileCameraBackDistance",
-			Config.BackDistance,
-			Config.MinimumBackDistance,
-			Config.MaximumBackDistance
-		)
-
-	local forwardBias =
-		numberSetting(
-			"DungeonMobileCameraForwardBias",
-			Config.ForwardBias,
-			0,
-			8
-		)
-
-	local focusHeight =
-		numberSetting(
-			"DungeonMobileCameraFocusHeight",
-			Config.FocusHeight,
-			0,
-			6
-		)
-
-	local focusPosition =
-		rootPart.Position
-			+ Vector3.new(
-				0,
-				focusHeight,
-				0
-			)
-			+ baseForward
-				* forwardBias
-			+ smoothedMovementLookAhead
-			+ smoothedCombatFocusShift
-
-	-- Kept as a clean seam for special non-MVP presentation/testing.
-	local worldFocusOverride =
-		workspace:GetAttribute(
-			"DungeonMobileCameraFocusWorldOverride"
-		)
-
-	if typeof(worldFocusOverride)
-		== "Vector3"
-	then
-		focusPosition =
-			worldFocusOverride
-	end
-
-	local desiredPosition =
-		focusPosition
-			- baseForward
-				* backDistance
-			+ Vector3.new(
-				0,
-				height,
-				0
-			)
-
-	desiredPosition =
-		occlusionSafePosition(
-			focusPosition,
-			desiredPosition
-		)
-
-	local desired =
-		CFrame.lookAt(
-			desiredPosition,
-			focusPosition,
-			Vector3.new(0, 1, 0)
-		)
-
-	local pitchDegrees =
-		math.deg(
-			math.atan2(
-				height,
-				backDistance
-			)
-		)
-
-	local fromVertical =
-		90 - pitchDegrees
-
-	player:SetAttribute(
-		"DungeonMobileCameraPitchDegrees",
-		math.floor(
-			pitchDegrees * 10
-				+ 0.5
-		) / 10
-	)
-
-	player:SetAttribute(
-		"DungeonMobileCameraDegreesFromVertical",
-		math.floor(
-			fromVertical * 10
-				+ 0.5
-		) / 10
-	)
-
-	player:SetAttribute(
-		"DungeonMobileCameraCombatTargetCount",
-		combatTargetCount
-	)
-
-	player:SetAttribute(
-		"DungeonMobileCameraCombatFocusShift",
-		smoothedCombatFocusShift
-	)
-
-	return desired,
-		focusPosition
-end
-
-local function renderCamera(
-	deltaTime
-)
-	if player:GetAttribute(
-		"DungeonAssistedTransportActive"
-	) == true
-	then
-		releaseCamera()
-		return
-	end
-
-	if not active
-		or player:GetAttribute(
-			"DungeonMobileMode"
-		) ~= true
-	then
-		return
-	end
-
-	local camera =
-		workspace.CurrentCamera
-
-	if not camera then
-		return
-	end
-
-	if currentCamera ~= camera then
-		acquireCamera(camera)
-	elseif camera.CameraType
-		~= Enum.CameraType.Scriptable
-	then
-		camera.CameraType =
-			Enum.CameraType.Scriptable
-	end
-
-	if not rootPart
-		or not rootPart.Parent
-	then
-		if player.Character
-			~= character
-		then
-			bindCharacter(
-				player.Character
-			)
-		end
-
-		return
-	end
-
-	local desired,
-		focusPosition =
-			desiredCameraFrame(
-				deltaTime
-			)
-
-	if not desired
-		or not focusPosition
-	then
-		return
-	end
-
-	camera.FieldOfView =
-		numberSetting(
-			"DungeonMobileCameraFov",
-			Config.FieldOfView,
-			Config.MinimumFOV,
-			Config.MaximumFOV
-		)
-
-	local currentDistance =
-		(
-			camera.CFrame.Position
-				- desired.Position
-		).Magnitude
-
-	if snapNextFrame
-		or currentDistance
-			>= Config.SnapDistance
-	then
-		camera.CFrame = desired
-		snapNextFrame = false
+	local direction, focus, sideCenter, playerPosition = getCameraTarget(root)
+	local desiredPosition = getCameraPosition(root, direction, focus)
+	local desiredCFrame = CFrame.lookAt(desiredPosition, focus, Vector3.new(0, 1, 0))
+
+	local positionAlpha = 1 - math.exp(-POSITION_SMOOTH_SPEED * math.max(deltaTime, 0))
+	local position
+	if cameraCFrame then
+		position = cameraCFrame.Position:Lerp(desiredPosition, positionAlpha)
 	else
-		local smoothSpeed =
-			numberSetting(
-				"DungeonMobileCameraSmoothSpeed",
-				Config.SmoothSpeed,
-				2,
-				20
-			)
-
-		local alpha =
-			1
-				- math.exp(
-					-smoothSpeed
-						* math.max(
-							0,
-							deltaTime
-						)
-				)
-
-		camera.CFrame =
-			camera.CFrame:Lerp(
-				desired,
-				alpha
-			)
+		position = desiredPosition
 	end
 
-	camera.Focus =
-		CFrame.new(
-			focusPosition
-		)
+	cameraCFrame = CFrame.lookAt(position, focus, Vector3.new(0, 1, 0))
+	camera.CFrame = cameraCFrame
+	camera.Focus = CFrame.new(focus)
 
-	player:SetAttribute(
-		"DungeonMobileCameraPosition",
-		camera.CFrame.Position
-	)
+	player:SetAttribute("DungeonMobileCameraActive", true)
+	player:SetAttribute("DungeonMobileCameraMode", "RouteFollowScriptable")
+	player:SetAttribute("DungeonMobileCameraPolicy", POLICY)
+	player:SetAttribute("DungeonMobileCameraRotationPolicy", "LockedToExitSideCenter")
+	player:SetAttribute("DungeonMobileCameraTouchRotationDisabled", true)
+	player:SetAttribute("DungeonMobileCameraForward", direction)
+	player:SetAttribute("DungeonMobileCameraFocusWorld", focus)
+	player:SetAttribute("DungeonMobileCameraSideCenterWorld", sideCenter)
+	player:SetAttribute("DungeonMobileCameraPlayerPositionWorld", playerPosition)
+end
 
-	player:SetAttribute(
-		"DungeonMobileCameraFocus",
-		focusPosition
-	)
+local function bindCharacter(character)
+	disconnectCharacterConnections()
+	if not character then
+		return
+	end
+	table.insert(characterConnections, character.ChildAdded:Connect(function(child)
+		if child:IsA("Humanoid") then
+			task.defer(function()
+				cameraCFrame = nil
+			end)
+		end
+	end))
 end
 
 local function activate()
-	if active
-		or player:GetAttribute(
-			"DungeonMobileMode"
-		) ~= true
-	then
+	if active then
 		return
 	end
-
 	active = true
-
-	ensureTuningAttributes()
-	bindCharacter(
-		player.Character
-	)
-
-	acquireCamera(
-		workspace.CurrentCamera
-	)
-
-	player:SetAttribute(
-		"DungeonMobileCameraReady",
-		true
-	)
-
-	player:SetAttribute(
-		"DungeonMobileCameraVersion",
-		VERSION
-	)
-
-	player:SetAttribute(
-		"DungeonMobileCameraPolicy",
-		"PortraitArenaTopDownV2"
-	)
-
-	player:SetAttribute(
-		"DungeonMobileCameraRotationPolicy",
-		"StableYawMovementAndCombatFocus"
-	)
-
-	player:SetAttribute(
-		"DungeonMobileCameraCombatFocusEnabled",
-		Config.CombatFocusEnabled
-	)
+	bindCharacter(player.Character)
+	player:SetAttribute("DungeonMobileCameraReady", true)
+	player:SetAttribute("DungeonMobileCameraVersion", POLICY)
+	player:SetAttribute("DungeonMobileCameraTouchRotationDisabled", true)
+	if not renderBound then
+		RunService:BindToRenderStep(
+			"DungeonCameraController",
+			Enum.RenderPriority.Camera.Value + 1,
+			updateCamera
+		)
+		renderBound = true
+	end
 end
 
 local function deactivate()
 	if not active then
 		return
 	end
-
 	active = false
-
-	releaseCamera()
+	lastRouteDirection = nil
+	lastRouteSideCenter = nil
 	disconnectCharacterConnections()
+	restoreCamera()
+	savedCameraType = nil
+	savedCameraSubject = nil
+	savedCameraFov = nil
+	player:SetAttribute("DungeonMobileCameraActive", false)
+	player:SetAttribute("DungeonMobileCameraMode", "RobloxDefault")
+	player:SetAttribute("DungeonMobileCameraPolicy", "RobloxDefault")
+	player:SetAttribute("DungeonMobileCameraTouchRotationDisabled", false)
+end
 
-	character = nil
-	rootPart = nil
-	humanoid = nil
+local function smartCameraEligible()
+	if player:GetAttribute("DungeonMobileMode") ~= true then
+		return false
+	end
 
-	smoothedMovementLookAhead =
-		Vector3.zero
+	if player:GetAttribute("CurrentIsInitialIsland") == true then
+		return false
+	end
 
-	smoothedCombatFocusShift =
-		Vector3.zero
-
-	player:SetAttribute(
-		"DungeonMobileCameraActive",
-		false
-	)
+	local currentIslandIndex = tonumber(player:GetAttribute("CurrentGlobalIslandIndex"))
+	return currentIslandIndex ~= nil and math.floor(currentIslandIndex) >= 2
 end
 
 local function refreshActivation()
-	if player:GetAttribute(
-		"DungeonMobileMode"
-	) == true
-	then
+	if smartCameraEligible() then
 		activate()
 	else
 		deactivate()
 	end
 end
 
-player.CharacterAdded:Connect(
-	function(newCharacter)
-		bindCharacter(
-			newCharacter
-		)
-
-		if active then
-			snapNextFrame = true
-		end
-	end
-)
-
-player:GetAttributeChangedSignal(
-	"DungeonMobileMode"
-):Connect(
-	refreshActivation
-)
-
--- When the player advances to a new island, capture the current facing once.
--- The camera then remains stable through the combat on that island.
-player:GetAttributeChangedSignal(
-	"CurrentGlobalIslandIndex"
-):Connect(function()
-	if active
-		and rootPart
-		and rootPart.Parent
-	then
-		refreshBaseForward()
-		snapNextFrame = true
+player.CharacterAdded:Connect(function(character)
+	bindCharacter(character)
+	cameraCFrame = nil
+	lastRouteDirection = nil
+	lastRouteSideCenter = nil
+	if active then
+		task.defer(function()
+			local camera = Workspace.CurrentCamera
+			if camera then
+				cameraCFrame = nil
+				prepareCamera(camera)
+			end
+		end)
 	end
 end)
 
-cameraChangeConnection =
-	workspace
-		:GetPropertyChangedSignal(
-			"CurrentCamera"
-		)
-		:Connect(function()
-			if not active then
-				return
-			end
-
-			local camera =
-				workspace.CurrentCamera
-
-			if camera then
-				acquireCamera(
-					camera
-				)
-			end
-		end)
-
-RunService:BindToRenderStep(
-	RENDER_STEP,
-	Enum.RenderPriority.Camera.Value + 1,
-	renderCamera
-)
-
-player:SetAttribute(
-	"DungeonMobileCameraControllerLoaded",
-	true
-)
-
-player:SetAttribute(
-	"DungeonMobileCameraVersion",
-	VERSION
-)
-
--- InputProfileController may initialize before or after this LocalScript.
-if player:GetAttribute(
-	"DungeonInputProfileReady"
-) == true
-then
-	refreshActivation()
-else
-	local readyConnection
-
-	readyConnection =
-		player
-			:GetAttributeChangedSignal(
-				"DungeonInputProfileReady"
-			)
-			:Connect(function()
-				if player:GetAttribute(
-					"DungeonInputProfileReady"
-				) == true
-				then
-					if readyConnection then
-						readyConnection:Disconnect()
-						readyConnection = nil
-					end
-
-					refreshActivation()
-				end
-			end)
-
-	if player:GetAttribute(
-		"DungeonMobileMode"
-	) ~= nil
-	then
-		if readyConnection then
-			readyConnection:Disconnect()
-			readyConnection = nil
-		end
-
-		refreshActivation()
+player:GetAttributeChangedSignal("DungeonMobileMode"):Connect(refreshActivation)
+player:GetAttributeChangedSignal("CurrentIsInitialIsland"):Connect(refreshActivation)
+player:GetAttributeChangedSignal("CurrentGlobalIslandIndex"):Connect(refreshActivation)
+Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+	if active then
+		cameraCFrame = nil
 	end
-end
+end)
+
+player:SetAttribute("DungeonMobileCameraControllerLoaded", true)
+refreshActivation()
 
 script.Destroying:Connect(function()
-	deactivate()
-
-	if cameraChangeConnection then
-		cameraChangeConnection:Disconnect()
-		cameraChangeConnection = nil
+	if renderBound then
+		RunService:UnbindFromRenderStep("DungeonCameraController")
+		renderBound = false
 	end
-
-	RunService:UnbindFromRenderStep(
-		RENDER_STEP
-	)
+	deactivate()
 end)

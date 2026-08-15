@@ -1647,6 +1647,19 @@ local function visitNode(player, record)
 		player:SetAttribute("CurrentOptionalRouteBranch", nil)
 		player:SetAttribute("CurrentRouteIslandIndex", record.Spec.IslandIndex)
 		player:SetAttribute("CurrentGlobalIslandIndex", record.Spec.GlobalIslandIndex)
+		if fixedRouteState and routePlan and record.Spec.IsMandatoryRoute == true then
+			local currentObjective = math.max(1, math.floor(tonumber(record.Spec.GlobalIslandIndex) or 1))
+			local futureObjective = math.min(
+				routePlan.TotalIslandCount,
+				currentObjective + math.max(1, math.floor(tonumber(routePlan.FutureWindowSize) or 3))
+			)
+			local targetNodeIndex = routeMaterializationIndex(futureObjective)
+			if targetNodeIndex then
+				fixedRouteState.TargetNodeIndex = math.max(fixedRouteState.TargetNodeIndex, targetNodeIndex)
+				fixedRouteLastProgressRefreshAt = os.clock()
+				workspace:SetAttribute("DungeonRouteMaterializationTargetNode", fixedRouteState.TargetNodeIndex)
+			end
+		end
 		player:SetAttribute(
 			"CurrentIsInitialIsland",
 			record.Spec.IsInitialIsland == true
@@ -1682,7 +1695,7 @@ local function visitNode(player, record)
 		if fixedRouteState and record.Spec.IsMandatoryRoute == true then
 			local futureObjectiveIndex = math.min(
 				routePlan.TotalIslandCount,
-				record.Spec.GlobalIslandIndex + routePlan.FutureWindowSize
+				record.Spec.GlobalIslandIndex + math.max(1, math.floor(tonumber(routePlan.FutureWindowSize) or 3))
 			)
 			local targetNodeIndex = routeMaterializationIndex(futureObjectiveIndex)
 			if targetNodeIndex then
@@ -1690,6 +1703,8 @@ local function visitNode(player, record)
 					fixedRouteState.TargetNodeIndex,
 					targetNodeIndex
 				)
+				fixedRouteLastProgressRefreshAt = os.clock()
+				workspace:SetAttribute("DungeonRouteMaterializationTargetNode", fixedRouteState.TargetNodeIndex)
 			end
 		end
 	end

@@ -1,4 +1,6 @@
 {
-  "Name": "OrbAttackConfirmed",
-  "ClassName": "RemoteEvent"
+  "className": "RemoteEvent",
+  "attributes": {
+    "_lemonadeUniqueId": "uFCR2PKMuFCR"
+  }
 }

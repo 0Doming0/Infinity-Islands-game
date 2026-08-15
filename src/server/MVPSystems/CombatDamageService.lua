@@ -725,7 +725,7 @@ function DamageService.ApplyEffectDamage(
     amount,
     source
 )
-    local resolved = validateTarget(target, false)
+    local resolved = validateTarget(target, true)
     if not resolved or not validAttacker(attacker) then
         return false, false
     end

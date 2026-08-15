@@ -93,6 +93,10 @@ local CombatDamageService = require(
 	script.Parent.Parent.MVPSystems.CombatDamageService
 )
 
+local CompanionService = require(
+	script.Parent.Parent.MVPSystems:WaitForChild("CompanionService")
+)
+
 local AnimeOutline = require(
 	script.Parent.Parent.MVPSystems.AnimeOutline
 )
@@ -234,7 +238,7 @@ local function islandLevel(island)
 	local explicit =
 		tonumber(
 			island
-				and island:GetAttribute("IslandLevel")
+			and island:GetAttribute("IslandLevel")
 		)
 
 	if explicit then
@@ -254,9 +258,9 @@ local function recommendedLevel(island)
 	local explicit =
 		tonumber(
 			island
-				and island:GetAttribute(
-					"RecommendedLevel"
-				)
+			and island:GetAttribute(
+				"RecommendedLevel"
+			)
 		)
 
 	if explicit then
@@ -270,9 +274,9 @@ local function islandCycleIndex(island, globalIndex)
 	local explicit =
 		tonumber(
 			island
-				and island:GetAttribute(
-					"CycleIndex"
-				)
+			and island:GetAttribute(
+				"CycleIndex"
+			)
 		)
 
 	if explicit then
@@ -288,9 +292,9 @@ local function mobLevelInCycle(island, globalIndex)
 	local explicit =
 		tonumber(
 			island
-				and island:GetAttribute(
-					"LevelInCycle"
-				)
+			and island:GetAttribute(
+				"LevelInCycle"
+			)
 		)
 
 	if explicit then
@@ -344,7 +348,7 @@ local function getSpawnLimit()
 				)
 			)
 				or IslandMobScalingConfig
-					.DefaultMaximumActiveMonsters
+				.DefaultMaximumActiveMonsters
 		)
 	)
 end
@@ -354,20 +358,20 @@ local function isLinearCombatIsland(island)
 		and island:IsA("Model")
 		and globalIslandIndex(island) ~= nil
 		and island:GetAttribute("IsMandatoryRoute")
-			~= false
+		~= false
 		and island:GetAttribute("IsOptionalRoute")
-			~= true
+		~= true
 		and island:GetAttribute("IsRewardIsland")
-			~= true
+		~= true
 		and island:GetAttribute("IsBossSanctuary")
-			~= true
+		~= true
 end
 
 local function getMonsterFolder()
 	local phaseId =
 		tostring(
 			workspace:GetAttribute("DungeonPhaseId")
-				or "Phase01"
+			or "Phase01"
 		)
 
 	local folder =
@@ -457,7 +461,7 @@ local function getTemplates()
 
 		local monsterId =
 			template:GetAttribute("MonsterId")
-				or template.Name
+			or template.Name
 
 		if REMOVED_MONSTER_IDS[monsterId]
 			or REMOVED_MONSTER_IDS[template.Name]
@@ -522,7 +526,7 @@ local function objectiveTemplate(options)
 			if (
 				template:GetAttribute("MonsterId")
 					or template.Name
-			) == requestedId
+				) == requestedId
 			then
 				return template
 			end
@@ -563,7 +567,7 @@ local function validCellRecord(record)
 	return typeof(record) == "table"
 		and typeof(record.Cell) == "Vector3"
 		and typeof(record.SurfacePosition)
-			== "Vector3"
+		== "Vector3"
 end
 
 local function validCells(source)
@@ -597,7 +601,7 @@ local function selectSpawnCells(
 			if horizontalDistance(
 				candidate.SurfacePosition,
 				existing.SurfacePosition
-			) < spacing
+				) < spacing
 			then
 				farEnough = false
 				break
@@ -681,7 +685,7 @@ end
 local function firstCombatReference(island)
 	for _, name in ipairs(
 		FirstCombatEngagementConfig.ReferenceNames
-	) do
+		) do
 		local candidate =
 			island:FindFirstChild(
 				name,
@@ -712,7 +716,7 @@ local function prioritizeFirstCombatCell(
 		.AppliesToIsland(
 			globalIslandIndex
 		)
-		or #cells <= 0
+			or #cells <= 0
 	then
 		return cells,
 			nil
@@ -720,9 +724,9 @@ local function prioritizeFirstCombatCell(
 
 	local referencePosition,
 		referenceName =
-			firstCombatReference(
-				island
-			)
+		firstCombatReference(
+			island
+		)
 
 	local bestIndex = nil
 	local bestScore = math.huge
@@ -737,9 +741,9 @@ local function prioritizeFirstCombatCell(
 
 		local score =
 			FirstCombatEngagementConfig
-				.ScoreDistance(
-					distance
-				)
+			.ScoreDistance(
+				distance
+			)
 
 		if score < bestScore then
 			bestScore = score
@@ -753,26 +757,26 @@ local function prioritizeFirstCombatCell(
 	then
 		cells[1],
 			cells[bestIndex] =
-				cells[bestIndex],
-				cells[1]
+			cells[bestIndex],
+			cells[1]
 	end
 
 	return cells,
 		{
 			ReferenceName =
-				referenceName,
+			referenceName,
 
 			ReferencePosition =
-				referencePosition,
+			referencePosition,
 
 			Distance =
-				bestDistance,
+			bestDistance,
 
 			WithinPreferredBand =
-				FirstCombatEngagementConfig
-					.IsInPreferredBand(
-						bestDistance
-					),
+			FirstCombatEngagementConfig
+			.IsInPreferredBand(
+				bestDistance
+			),
 		}
 end
 
@@ -843,7 +847,7 @@ local function getRecordedDamager(
 
 	local userId =
 		model:GetAttribute("LastDamagedByUserId")
-			or model:GetAttribute("LastHitUserId")
+		or model:GetAttribute("LastHitUserId")
 
 	if typeof(userId) == "number" then
 		return Players:GetPlayerByUserId(userId)
@@ -878,7 +882,7 @@ local function xpParticipants(
 
 	for _, player in ipairs(
 		Players:GetPlayers()
-	) do
+		) do
 		local currentIndex =
 			cleanIndex(
 				player:GetAttribute(
@@ -923,7 +927,7 @@ local function awardManagedMobXP(
 	-- single-fire, but this guards future callbacks/retries from double paying.
 	if model:GetAttribute(
 		"XPRewardClaimed"
-	) == true
+		) == true
 	then
 		return false, "AlreadyClaimed"
 	end
@@ -944,9 +948,9 @@ local function awardManagedMobXP(
 	local islandIndex =
 		cleanIndex(
 			entry.GlobalIslandIndex
-				or model:GetAttribute(
-					"GlobalIslandIndex"
-				)
+			or model:GetAttribute(
+				"GlobalIslandIndex"
+			)
 		)
 
 	if not islandIndex then
@@ -990,16 +994,16 @@ local function awardManagedMobXP(
 						"XPReward"
 					)
 				)
-					or MobXPConfig
-						.GetMobXPReward(
-							model:GetAttribute(
-								"SlimeVariant"
-							),
-							mobLevel,
-							model:GetAttribute(
-								"XPRewardMultiplier"
-							)
-						)
+				or MobXPConfig
+				.GetMobXPReward(
+					model:GetAttribute(
+						"SlimeVariant"
+					),
+					mobLevel,
+					model:GetAttribute(
+						"XPRewardMultiplier"
+					)
+				)
 			)
 		)
 
@@ -1028,30 +1032,38 @@ local function awardManagedMobXP(
 
 		local amount,
 			riskBonus =
-				MobXPConfig
-					.GetAwardForPlayer(
-						baseReward,
-						riskRewardLevel,
-						playerLevel
-					)
+			MobXPConfig
+			.GetAwardForPlayer(
+				baseReward,
+				riskRewardLevel,
+				playerLevel
+			)
 
 		local success =
 			PlayerLevelService.AwardXP(
 				player,
 				amount,
 				"MobDefeated:"
-					.. tostring(
-						model:GetAttribute(
-							"SlimeVariant"
-						)
-							or model:GetAttribute(
-								"MonsterId"
-							)
-							or model.Name
+				.. tostring(
+					model:GetAttribute(
+						"SlimeVariant"
 					)
+					or model:GetAttribute(
+						"MonsterId"
+					)
+					or model.Name
+				)
 			)
 
 		if success then
+			local companionOk, companionError = pcall(
+				CompanionService.RecordDefeat,
+				player,
+				model
+			)
+			if not companionOk then
+				warn("[MonsterSpawner] Falha ao processar companheiro: " .. tostring(companionError))
+			end
 			awarded += 1
 			totalGranted += amount
 			highestRiskBonus =
@@ -1178,7 +1190,7 @@ local function createDeathParticles(root, color)
 	emitter.Color =
 		ColorSequence.new(
 			color
-				or Color3.fromRGB(89, 220, 91)
+			or Color3.fromRGB(89, 220, 91)
 		)
 	emitter.LightEmission = 0.5
 	emitter.Lifetime = NumberRange.new(0.3, 0.6)
@@ -1204,7 +1216,7 @@ local function publishPlanConcurrency(plan)
 		math.max(
 			0,
 			plan.MaxAlive
-				- plan.Alive
+			- plan.Alive
 		)
 
 	plan.Island:SetAttribute(
@@ -1258,8 +1270,8 @@ local function unregisterMonster(model)
 
 			local plan =
 				plansByIndex[
-					entry.GlobalIslandIndex
-				]
+			entry.GlobalIslandIndex
+			]
 
 			if plan then
 				plan.Alive =
@@ -1276,7 +1288,7 @@ local function unregisterMonster(model)
 	if CollectionService:HasTag(
 		model,
 		"CombatTarget"
-	)
+		)
 	then
 		CollectionService:RemoveTag(
 			model,
@@ -1295,20 +1307,20 @@ local function configureRuntimeScripts(
 )
 	for _, descendant in ipairs(
 		clone:GetDescendants()
-	) do
+		) do
 		if descendant:IsA("BaseScript")
 			and (
 				usesSlimeController
-				or useCentralAI
+					or useCentralAI
 			)
 		then
 			if descendant.Name ~= "Animate"
 				and template:GetAttribute(
 					"KeepEmbeddedAIScripts"
 				) ~= true
-				and descendant:GetAttribute(
-					"AllowWithSlimeController"
-				) ~= true
+					and descendant:GetAttribute(
+						"AllowWithSlimeController"
+					) ~= true
 			then
 				descendant.Disabled = true
 			end
@@ -1351,8 +1363,8 @@ local function spawnClone(
 )
 	spawnOptions =
 		type(spawnOptions) == "table"
-			and spawnOptions
-			or {}
+		and spawnOptions
+		or {}
 
 	if monsterCount >= getSpawnLimit() then
 		return false, nil, "GlobalMonsterLimitReached"
@@ -1372,44 +1384,44 @@ local function spawnClone(
 
 	local slimeDefinition,
 		slimeVariant =
-			SlimeVariants.ConfigureClone(
-				clone,
-				template,
-				random,
-				slimeVariantForSpawn
-			)
+		SlimeVariants.ConfigureClone(
+			clone,
+			template,
+			random,
+			slimeVariantForSpawn
+		)
 
 	local monsterId =
 		slimeDefinition
-			and slimeDefinition.MonsterId
-			or template:GetAttribute(
-				"MonsterId"
-			)
-			or template.Name
+		and slimeDefinition.MonsterId
+		or template:GetAttribute(
+			"MonsterId"
+		)
+		or template.Name
 
 	local displayName =
 		slimeDefinition
-			and slimeDefinition.DisplayName
-			or template:GetAttribute(
-				"DisplayName"
-			)
-			or monsterId
+		and slimeDefinition.DisplayName
+		or template:GetAttribute(
+			"DisplayName"
+		)
+		or monsterId
 
 	local globalIndex =
 		cleanIndex(
 			spawnOptions.GlobalIslandIndex
-				or globalIslandIndex(island)
+			or globalIslandIndex(island)
 		)
 
 	local initialIsland =
 		spawnOptions.InitialIsland == true
-			or isInitialIsland(island, globalIndex)
+		or isInitialIsland(island, globalIndex)
 
 	local modelScaleMultiplier =
 		initialIsland
-			and EarlyGamePacingConfig
-				.InitialIslandModelScale
-			or 1
+		and EarlyGamePacingConfig
+		.InitialIslandModelScale
+		or 1
 
 	if modelScaleMultiplier ~= 1 then
 		clone:ScaleTo(
@@ -1450,22 +1462,22 @@ local function spawnClone(
 	if slimeDefinition and not initialIsland then
 		baseHealth *=
 			slimeDefinition.HealthMultiplier
-				or 1
+			or 1
 	end
 
 	if slimeDefinition then
 		baseDamage =
 			slimeDefinition.AttackDamage
-				or baseDamage
+			or baseDamage
 	end
 
 	local healthLevelMultiplier =
 		IslandMobScalingConfig
-			.GetHealthMultiplier(mobLevel)
+		.GetHealthMultiplier(mobLevel)
 
 	local damageLevelMultiplier =
 		IslandMobScalingConfig
-			.GetDamageMultiplier(mobLevel)
+		.GetDamageMultiplier(mobLevel)
 
 	local requestedRole =
 		tostring(spawnOptions.Role or "")
@@ -1475,17 +1487,17 @@ local function spawnClone(
 
 	local role =
 		requestedRole ~= ""
-			and requestedRole
-			or (
-				isElite
-					and "Elite"
-					or "Common"
-			)
+		and requestedRole
+		or (
+			isElite
+			and "Elite"
+			or "Common"
+		)
 
 	local roleHealth,
 		roleDamage,
 		roleSpeed =
-			roleMultipliers(role)
+		roleMultipliers(role)
 
 	local health =
 		baseHealth
@@ -1539,18 +1551,18 @@ local function spawnClone(
 	health,
 		damage,
 		partyMultipliers =
-			PartyScalingService.ScaleValues(
-				math.max(
-					1,
-					math.floor(health + 0.5)
-				),
-				math.max(
-					0,
-					math.floor(damage + 0.5)
-				),
-				partySize,
-				false
-			)
+		PartyScalingService.ScaleValues(
+			math.max(
+				1,
+				math.floor(health + 0.5)
+			),
+			math.max(
+				0,
+				math.floor(damage + 0.5)
+			),
+			partySize,
+			false
+		)
 
 	humanoid.MaxHealth = health
 	humanoid.Health = health
@@ -1571,7 +1583,7 @@ local function spawnClone(
 				"WalkSpeed",
 				humanoid.WalkSpeed
 			)
-				* speedMultiplier,
+			* speedMultiplier,
 			4,
 			28 * cycleMultipliers.Speed
 		)
@@ -1581,7 +1593,7 @@ local function spawnClone(
 
 	local islandCombatManaged =
 		spawnOptions.IslandCombatManaged
-			== true
+		== true
 
 	clone.Name = "Monster_" .. monsterId
 
@@ -1607,16 +1619,16 @@ local function spawnClone(
 
 	local skyDropHeight =
 		skyDrop
-			and math.max(
-				0,
-				tonumber(
-					spawnOptions
-						.SkyDropHeightStuds
-				)
-					or IslandMobSpawnConfig
-						.SkyDropHeightStuds
+		and math.max(
+			0,
+			tonumber(
+				spawnOptions
+				.SkyDropHeightStuds
 			)
-			or 0
+			or IslandMobSpawnConfig
+			.SkyDropHeightStuds
+		)
+		or 0
 
 	clone:SetAttribute(
 		"SkyDropSpawn",
@@ -1665,7 +1677,7 @@ local function spawnClone(
 	)
 	clone:SetAttribute(
 		"MobDifficultySource",
-		"LevelInCycleAndCycleIndexV3"
+		"StrongerBaseLevelAndCycleV5"
 	)
 	clone:SetAttribute(
 		"HealthLevelMultiplier",
@@ -1755,10 +1767,10 @@ local function spawnClone(
 	local slimeVariantName =
 		tostring(
 			slimeVariant
-				or clone:GetAttribute(
-					"SlimeVariant"
-				)
-				or "Green"
+			or clone:GetAttribute(
+				"SlimeVariant"
+			)
+			or "Green"
 		)
 	local xpRewardVariant =
 		initialIsland and "Green" or slimeVariantName
@@ -1780,13 +1792,13 @@ local function spawnClone(
 
 	local initialXPRewardMultiplier =
 		initialIsland
-			and EarlyGamePacingConfig
-				.InitialIslandXPRewardMultiplier
-			or 1
+		and EarlyGamePacingConfig
+		.InitialIslandXPRewardMultiplier
+		or 1
 
 	local effectiveXPRewardMultiplier =
 		xpCycleMultiplier
-			* initialXPRewardMultiplier
+		* initialXPRewardMultiplier
 
 	local xpReward =
 		MobXPConfig.GetMobXPReward(
@@ -2014,25 +2026,25 @@ local function spawnClone(
 		not forcePeaceful
 		and (
 			spawnOptions.ForceHostile == true
-				or encounterId ~= nil
-				or islandCombatManaged
+			or encounterId ~= nil
+			or islandCombatManaged
 		)
 
 	local initiallyPeaceful =
 		template:GetAttribute("Peaceful")
-			== true
+		== true
 
 	if slimeDefinition then
 		initiallyPeaceful =
 			slimeDefinition.InitiallyPeaceful
-				== true
+			== true
 	end
 
 	clone:SetAttribute(
 		"Peaceful",
 		forcePeaceful
 			or not forceHostile
-				and initiallyPeaceful
+			and initiallyPeaceful
 			or false
 	)
 
@@ -2041,9 +2053,9 @@ local function spawnClone(
 
 	local useCentralAI =
 		not usesSlimeController
-			and template:GetAttribute(
-				"UseCustomAI"
-			) ~= true
+		and template:GetAttribute(
+			"UseCustomAI"
+		) ~= true
 
 	if useCentralAI then
 		MonsterConfig.ApplyRuntimeDefaults(clone)
@@ -2059,8 +2071,8 @@ local function spawnClone(
 			and "Slime"
 			or (
 				useCentralAI
-					and "Generic"
-					or "Custom"
+				and "Generic"
+				or "Custom"
 			)
 	)
 
@@ -2094,19 +2106,19 @@ local function spawnClone(
 
 	local boundingBox,
 		boundingSize =
-			clone:GetBoundingBox()
+		clone:GetBoundingBox()
 
 	local bottomOffset =
 		boundingBox.Position.Y
-			- boundingSize.Y / 2
+	- boundingSize.Y / 2
 
 	local desiredBottomY =
 		cellRecord.SurfacePosition.Y + 0.15
 
 	local finalSpawnY =
 		desiredBottomY
-			- bottomOffset
-			+ skyDropHeight
+	- bottomOffset
+		+ skyDropHeight
 
 	clone:PivotTo(
 		CFrame.new(
@@ -2133,7 +2145,7 @@ local function spawnClone(
 			"SpawnAirborneUntil",
 			workspace:GetServerTimeNow()
 				+ IslandMobSpawnConfig
-					.AirborneVisualSeconds
+				.AirborneVisualSeconds
 		)
 
 		task.delay(
@@ -2163,10 +2175,10 @@ local function spawnClone(
 			),
 		SlimeDefinition =
 			slimeDefinition
-				and table.clone(
-					slimeDefinition
-				)
-				or nil,
+			and table.clone(
+				slimeDefinition
+			)
+			or nil,
 		IslandCombatManaged =
 			islandCombatManaged,
 		GlobalIslandIndex =
@@ -2186,6 +2198,30 @@ local function spawnClone(
 	if entry.SlimeDefinition then
 		entry.SlimeDefinition.AttackDamage =
 			forcePeaceful and 0 or damage
+
+		local groundEffectBase = tonumber(
+			entry.SlimeDefinition.GroundEffectDamage
+		)
+		if groundEffectBase then
+			local totalDamageMultiplier = baseDamage > 0
+				and (damage / baseDamage)
+				or 0
+			entry.SlimeDefinition.GroundEffectDamage = forcePeaceful
+				and 0
+				or groundEffectBase * totalDamageMultiplier
+			clone:SetAttribute(
+				"FireGroundBaseDamage",
+				groundEffectBase
+			)
+			clone:SetAttribute(
+				"FireGroundDamage",
+				entry.SlimeDefinition.GroundEffectDamage
+			)
+			clone:SetAttribute(
+				"FireGroundDamageUsesMobScaling",
+				true
+			)
+		end
 
 		if forcePeaceful then
 			entry.SlimeDefinition.InitiallyPeaceful =
@@ -2223,8 +2259,8 @@ local function spawnClone(
 
 		local deathPosition =
 			root.Parent
-				and root.Position
-				or cellRecord.SurfacePosition
+			and root.Position
+			or cellRecord.SurfacePosition
 
 		local damager =
 			getRecordedDamager(
@@ -2241,11 +2277,15 @@ local function spawnClone(
 			damager
 		)
 
+		if damager and current.IslandCombatManaged == true then
+			pcall(CompanionService.RecordDefeat, damager, clone)
+		end
+
 		unregisterMonster(clone)
 
 		for _, descendant in ipairs(
 			clone:GetDescendants()
-		) do
+			) do
 			if descendant:IsA("BasePart") then
 				descendant.CanCollide = false
 				descendant.CanTouch = false
@@ -2263,8 +2303,8 @@ local function spawnClone(
 				Target = clone,
 				SourceUserId =
 					damager
-						and damager.UserId
-						or nil,
+					and damager.UserId
+					or nil,
 				GlobalIslandIndex =
 					current.GlobalIslandIndex,
 				MonsterRole =
@@ -2305,7 +2345,7 @@ local function spawnClone(
 					and plan.Island.Parent
 					and plan.Island:IsDescendantOf(workspace)
 					and plan.Alive
-						< plan.MaxAlive
+					< plan.MaxAlive
 					and plan.Island:GetAttribute(
 						"CombatState"
 					) == "Active"
@@ -2530,8 +2570,8 @@ attemptSpawnPlan = function(plan)
 
 		local firstEngagement =
 			sequence == 1
-				and plan.FirstCombatEngagement
-				or nil
+			and plan.FirstCombatEngagement
+			or nil
 
 		marker:SetAttribute(
 			"FirstCombatEngagementPriority",
@@ -2549,14 +2589,14 @@ attemptSpawnPlan = function(plan)
 			Random.new(
 				normalizedSeed(
 					plan.Seed
-						+ sequence * 101
+					+ sequence * 101
 				)
 			)
 
 		local rosterIndex = ((sequence - 1) % #plan.Roster) + 1
 		local plannedVariant =
 			plan.Roster[rosterIndex]
-				or "Green"
+			or "Green"
 
 		local plannedDefinition =
 			IslandMobRosterConfig.GetVariant(
@@ -2580,7 +2620,7 @@ attemptSpawnPlan = function(plan)
 
 		local success,
 			spawnedModel =
-				spawnClone(
+			spawnClone(
 				plan.Template,
 				plan.MonsterFolder,
 				plan.Island,
@@ -2591,19 +2631,19 @@ attemptSpawnPlan = function(plan)
 				plannedVariant,
 				{
 					GlobalIslandIndex =
-						plan.GlobalIslandIndex,
+					plan.GlobalIslandIndex,
 					IslandCombatManaged = true,
 					ForceHostile =
-						not plan.InitialIsland,
+					not plan.InitialIsland,
 					ForcePeaceful =
-						plan.InitialIsland,
+					plan.InitialIsland,
 					InitialIsland =
-						plan.InitialIsland,
+					plan.InitialIsland,
 					Role = "Common",
 					SkyDrop = true,
 					SkyDropHeightStuds =
-						IslandMobSpawnConfig
-							.SkyDropHeightStuds,
+					IslandMobSpawnConfig
+					.SkyDropHeightStuds,
 				}
 			)
 
@@ -2740,21 +2780,21 @@ local function buildPlan(
 		"InitialIslandMobScale",
 		initialIsland
 			and EarlyGamePacingConfig
-				.InitialIslandModelScale
+			.InitialIslandModelScale
 			or nil
 	)
 	island:SetAttribute(
 		"InitialIslandMobXPRewardMultiplier",
 		initialIsland
 			and EarlyGamePacingConfig
-				.InitialIslandXPRewardMultiplier
+			.InitialIslandXPRewardMultiplier
 			or nil
 	)
 
 	local size =
 		tostring(
 			island:GetAttribute("TerrainSize")
-				or "Small"
+			or "Small"
 		)
 
 	if not SIZE_RANK[size] then
@@ -2766,37 +2806,37 @@ local function buildPlan(
 
 	local mobCountCyclePosition =
 		initialIsland
-			and 0
-			or IslandProgressionConfig
-				.GetIslandIndexInCycle(globalIndex)
+		and 0
+		or IslandProgressionConfig
+		.GetIslandIndexInCycle(globalIndex)
 
 	-- A Ilha Inicial tem roster proprio de demonstracao. A numeracao real do
 	-- roster comeca na Ilha 1, portanto o indice global precisa descontar a
 	-- posicao inicial nao numerada.
 	local rosterProgressionLevel =
 		initialIsland
-			and 0
-			or math.max(1, globalIndex - 1)
+		and 0
+		or math.max(1, globalIndex - 1)
 
 	local defaultPlanned =
 		IslandMobScalingConfig
-			.GetPlannedMobCount(
-				size,
-				level
-			)
+		.GetPlannedMobCount(
+			size,
+			level
+		)
 
 	local earlyPacingOverride =
 		EarlyGamePacingConfig
-			.GetOverride(
-				globalIndex
-			)
+		.GetOverride(
+			globalIndex
+		)
 
 	local planned =
 		EarlyGamePacingConfig
-			.GetTargetCount(
-				globalIndex,
-				defaultPlanned
-			)
+		.GetTargetCount(
+			globalIndex,
+			defaultPlanned
+		)
 
 	local available =
 		validCells(freeCells)
@@ -2805,14 +2845,14 @@ local function buildPlan(
 	if initialIsland then
 		local tutorialCells,
 			area =
-				TutorialIslandTemplateService
-					.GetEnemySpawnCells(
-						island,
-						planned,
-						context
-							and context.GridSize
-							or 5
-					)
+			TutorialIslandTemplateService
+			.GetEnemySpawnCells(
+				island,
+				planned,
+				context
+				and context.GridSize
+				or 5
+			)
 
 		if #tutorialCells > 0 then
 			available = tutorialCells
@@ -2873,18 +2913,18 @@ local function buildPlan(
 
 	local baseSeed =
 		islandSeed
-			or tonumber(
-				context
-					and context.RoundSeed
-			)
-			or 1
+		or tonumber(
+			context
+			and context.RoundSeed
+		)
+		or 1
 
 	local seed =
 		normalizedSeed(
 			baseSeed
-				+ terrainId * 7907
-				+ globalIndex * 104729
-				+ CONFIG.RANDOM_SALT
+			+ terrainId * 7907
+			+ globalIndex * 104729
+			+ CONFIG.RANDOM_SALT
 		)
 
 	local random = Random.new(seed)
@@ -2894,7 +2934,7 @@ local function buildPlan(
 			available,
 			target,
 			IslandMobScalingConfig
-				.MinimumSpawnSpacingStuds,
+			.MinimumSpawnSpacingStuds,
 			random
 		)
 
@@ -2902,11 +2942,11 @@ local function buildPlan(
 
 	cells,
 		engagementInfo =
-			prioritizeFirstCombatCell(
-				cells,
-				island,
-				globalIndex
-			)
+		prioritizeFirstCombatCell(
+			cells,
+			island,
+			globalIndex
+		)
 
 	target = #cells
 
@@ -2955,8 +2995,8 @@ local function buildPlan(
 
 		NavigationCells =
 			initialIsland
-				and available
-				or nil,
+			and available
+			or nil,
 
 		InitialIsland =
 			initialIsland,
@@ -2981,28 +3021,28 @@ local function buildPlan(
 			earlyPacingOverride,
 		MaxAlive =
 			EarlyGamePacingConfig
+			.GetMaximumAlive(
+				globalIndex,
+				IslandMobSpawnConfig
 				.GetMaximumAlive(
-					globalIndex,
-					IslandMobSpawnConfig
-						.GetMaximumAlive(
-							target
-						),
 					target
 				),
+				target
+			),
 		SpawnStaggerSeconds =
 			EarlyGamePacingConfig
-				.GetSpawnStaggerSeconds(
-					globalIndex,
-					IslandMobSpawnConfig
-						.SpawnStaggerSeconds
-				),
+			.GetSpawnStaggerSeconds(
+				globalIndex,
+				IslandMobSpawnConfig
+				.SpawnStaggerSeconds
+			),
 		Spawned = 0,
 		Alive = 0,
 		Spawning = false,
 		YieldCallback =
 			context
-				and context.YieldCallback
-				or nil,
+			and context.YieldCallback
+			or nil,
 		StateConnection = nil,
 	}
 
@@ -3218,7 +3258,7 @@ local function buildPlan(
 	)
 	island:SetAttribute(
 		"MobDifficultySource",
-		"LevelInCycleAndCycleIndexV3"
+		"StrongerBaseLevelAndCycleV5"
 	)
 	island:SetAttribute(
 		"LegacyRoundDifficultyDisabled",
@@ -3242,16 +3282,16 @@ local function buildPlan(
 		island:GetAttributeChangedSignal(
 			"CombatState"
 		):Connect(function()
-			if island:GetAttribute(
-				"CombatState"
+		if island:GetAttribute(
+			"CombatState"
 			) == "Active"
-			then
-				task.defer(
-					attemptSpawnPlan,
-					plan
-				)
-			end
-		end)
+		then
+			task.defer(
+				attemptSpawnPlan,
+				plan
+			)
+		end
+	end)
 
 	island.Destroying:Connect(function()
 		if plan.StateConnection then
@@ -3293,10 +3333,10 @@ local function objectiveSurfacePosition(
 				angleOffset
 				+ (
 					(slot - 1)
-						/ CONFIG.OBJECTIVE_RING_SLOTS
+					/ CONFIG.OBJECTIVE_RING_SLOTS
 				)
-					* math.pi
-					* 2
+				* math.pi
+				* 2
 
 			table.insert(
 				candidates,
@@ -3319,7 +3359,7 @@ local function objectiveSurfacePosition(
 
 	for _, player in ipairs(
 		Players:GetPlayers()
-	) do
+		) do
 		if player.Character then
 			table.insert(
 				excluded,
@@ -3335,7 +3375,7 @@ local function objectiveSurfacePosition(
 		local result =
 			workspace:Raycast(
 				candidate
-					+ Vector3.new(0, 18, 0),
+				+ Vector3.new(0, 18, 0),
 				Vector3.new(0, -42, 0),
 				params
 			)
@@ -3350,14 +3390,14 @@ local function objectiveSurfacePosition(
 
 			for _, player in ipairs(
 				Players:GetPlayers()
-			) do
+				) do
 				local character =
 					player.Character
 				local root =
 					character
-						and character:FindFirstChild(
-							"HumanoidRootPart"
-						)
+					and character:FindFirstChild(
+						"HumanoidRootPart"
+					)
 
 				if root
 					and horizontalDistance(
@@ -3365,7 +3405,7 @@ local function objectiveSurfacePosition(
 						result.Position
 					)
 						< CONFIG
-							.OBJECTIVE_MIN_PLAYER_SPACING
+						.OBJECTIVE_MIN_PLAYER_SPACING
 				then
 					tooClose = true
 					break
@@ -3442,9 +3482,25 @@ local function initialize()
 			.HealthPerLevel
 	)
 	workspace:SetAttribute(
+		"DungeonMobBaseHealthMultiplier",
+		IslandMobScalingConfig.BaseHealthMultiplier
+	)
+	workspace:SetAttribute(
 		"DungeonMobDamagePerLevel",
 		IslandMobScalingConfig
 			.DamagePerLevel
+	)
+	workspace:SetAttribute(
+		"DungeonMobBaseDamageMultiplier",
+		IslandMobScalingConfig.BaseDamageMultiplier
+	)
+	workspace:SetAttribute(
+		"DungeonFireSlimeBaseDamageMultiplier",
+		2.5
+	)
+	workspace:SetAttribute(
+		"DungeonFireSlimeGroundUsesMobScaling",
+		true
 	)
 	workspace:SetAttribute(
 		"DungeonMobHealthPerCycle",
@@ -3635,13 +3691,13 @@ local function initialize()
 
 			for _, plan in pairs(
 				plansByIndex
-			) do
+				) do
 				if plan
 					and plan.Island
 					and plan.Island.Parent
 					and plan.Island:IsDescendantOf(workspace)
 					and plan.Alive
-						< plan.MaxAlive
+					< plan.MaxAlive
 					and plan.Island:GetAttribute(
 						"CombatState"
 					) == "Active"
@@ -3673,8 +3729,8 @@ function MonsterSpawner.PopulateIsland(
 
 	context =
 		type(context) == "table"
-			and context
-			or {}
+		and context
+		or {}
 
 	SlimeController.RegisterIsland(
 		island,
@@ -3764,13 +3820,13 @@ function MonsterSpawner.SpawnObjectiveMonster(
 
 	spawnOptions =
 		type(spawnOptions) == "table"
-			and table.clone(spawnOptions)
-			or {}
+		and table.clone(spawnOptions)
+		or {}
 
 	local encounterId =
 		tostring(
 			spawnOptions.EncounterId
-				or ""
+			or ""
 		)
 
 	if encounterId == "" then
@@ -3847,12 +3903,12 @@ function MonsterSpawner.SpawnObjectiveMonster(
 			math.floor(
 				tonumber(
 					spawnOptions
-						.SpawnSequence
+					.SpawnSequence
 				)
-					or (
-						#pointsFolder:GetChildren()
-							+ 1
-					)
+				or (
+					#pointsFolder:GetChildren()
+					+ 1
+				)
 			)
 		)
 
@@ -3911,14 +3967,14 @@ function MonsterSpawner.SpawnObjectiveMonster(
 	local seed =
 		normalizedSeed(
 			tonumber(spawnOptions.Seed)
-				or (
-					tonumber(
-						island:GetAttribute(
-							"IslandSeed"
-						)
-					) or 1
-				)
-					+ sequence * 104729
+			or (
+				tonumber(
+					island:GetAttribute(
+						"IslandSeed"
+					)
+				) or 1
+			)
+			+ sequence * 104729
 		)
 
 	local variant =
@@ -3927,13 +3983,13 @@ function MonsterSpawner.SpawnObjectiveMonster(
 	if variant == nil then
 		variant =
 			spawnOptions.Role == "Ranged"
-				and "Blue"
-				or (
-					spawnOptions.Role
-						== "Elite"
-						and "Red"
-						or "Green"
-				)
+			and "Blue"
+			or (
+				spawnOptions.Role
+				== "Elite"
+				and "Red"
+				or "Green"
+			)
 	end
 
 	-- Critical migration rule:
@@ -3941,7 +3997,7 @@ function MonsterSpawner.SpawnObjectiveMonster(
 	spawnOptions.IslandCombatManaged = false
 	spawnOptions.GlobalIslandIndex =
 		spawnOptions.GlobalIslandIndex
-			or globalIslandIndex(island)
+		or globalIslandIndex(island)
 
 	local spawned, clone, errorCode =
 		spawnClone(
@@ -3962,7 +4018,7 @@ function MonsterSpawner.SpawnObjectiveMonster(
 		return
 			nil,
 			errorCode
-				or "SpawnCloneFailed"
+			or "SpawnCloneFailed"
 	end
 
 	island:SetAttribute(
@@ -3980,18 +4036,18 @@ function MonsterSpawner.GetObjectiveActiveCount(
 
 	for model, entry in pairs(
 		activeMonsters
-	) do
+		) do
 		if model.Parent
 			and entry.Humanoid.Health > 0
 			and model:GetAttribute(
 				"ObjectiveSpawned"
 			) == true
-			and (
-				encounterId == nil
+				and (
+					encounterId == nil
 					or model:GetAttribute(
 						"ObjectiveEncounterId"
 					) == encounterId
-			)
+				)
 		then
 			count += 1
 		end
@@ -4010,17 +4066,17 @@ function MonsterSpawner.SetObjectiveMonstersActive(
 
 	for model, entry in pairs(
 		activeMonsters
-	) do
+		) do
 		if model.Parent
 			and model:GetAttribute(
 				"ObjectiveSpawned"
 			) == true
-			and (
-				encounterId == nil
+				and (
+					encounterId == nil
 					or model:GetAttribute(
 						"ObjectiveEncounterId"
 					) == encounterId
-			)
+				)
 		then
 			model:SetAttribute(
 				"SimulationActive",
@@ -4058,13 +4114,13 @@ function MonsterSpawner.DespawnObjectiveMonsters(
 	for model in pairs(activeMonsters) do
 		if model:GetAttribute(
 			"ObjectiveSpawned"
-		) == true
-			and (
-				encounterId == nil
+			) == true
+				and (
+					encounterId == nil
 					or model:GetAttribute(
 						"ObjectiveEncounterId"
 					) == encounterId
-			)
+				)
 		then
 			table.insert(targets, model)
 		end
@@ -4096,9 +4152,9 @@ function MonsterSpawner.DamageMonster(
 		runtimeModel = runtimeModel.Parent
 		entry =
 			runtimeModel
-				and activeMonsters[
-					runtimeModel
-				]
+			and activeMonsters[
+		runtimeModel
+		]
 	end
 
 	if not entry
@@ -4130,7 +4186,7 @@ function MonsterSpawner.GetCombatTargets()
 
 	for model, entry in pairs(
 		activeMonsters
-	) do
+		) do
 		if model.Parent
 			and entry.Root
 			and entry.Root.Parent
@@ -4162,8 +4218,8 @@ function MonsterSpawner.GetIslandPlan(
 	else
 		plan =
 			plansByIndex[
-				cleanIndex(islandOrIndex)
-			]
+		cleanIndex(islandOrIndex)
+		]
 	end
 
 	if not plan then
@@ -4207,24 +4263,24 @@ function MonsterSpawner.GetIslandPlan(
 			table.clone(plan.Roster),
 		ThreatBudget =
 			plan.RosterSnapshot
-				and plan.RosterSnapshot.ThreatBudget
-				or nil,
+			and plan.RosterSnapshot.ThreatBudget
+			or nil,
 		ThreatUsed =
 			plan.RosterSnapshot
-				and plan.RosterSnapshot.ThreatUsed
-				or nil,
+			and plan.RosterSnapshot.ThreatUsed
+			or nil,
 		GreenCount =
 			plan.RosterSnapshot
-				and plan.RosterSnapshot.GreenCount
-				or nil,
+			and plan.RosterSnapshot.GreenCount
+			or nil,
 		RangedCount =
 			plan.RosterSnapshot
-				and plan.RosterSnapshot.RangedCount
-				or nil,
+			and plan.RosterSnapshot.RangedCount
+			or nil,
 		SpecialCount =
 			plan.RosterSnapshot
-				and plan.RosterSnapshot.SpecialCount
-				or nil,
+			and plan.RosterSnapshot.SpecialCount
+			or nil,
 		MaximumAlive =
 			plan.MaxAlive,
 		ActiveAlive =
@@ -4233,7 +4289,7 @@ function MonsterSpawner.GetIslandPlan(
 			math.max(
 				0,
 				plan.MaxAlive
-					- plan.Alive
+				- plan.Alive
 			),
 		SpawnPresentation =
 			"SkyDrop",
@@ -4243,7 +4299,7 @@ function MonsterSpawner.GetIslandPlan(
 			plan.DefaultTargetCount,
 		EarlyGamePacingApplied =
 			plan.EarlyPacingOverride
-				~= nil,
+			~= nil,
 		EarlyGamePacingVersion =
 			EarlyGamePacingConfig.Version,
 	}

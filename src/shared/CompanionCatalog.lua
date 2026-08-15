@@ -35,28 +35,43 @@ CompanionCatalog.UpgradeOrder = table.freeze({
 CompanionCatalog.Upgrades = table.freeze({
 	Damage = table.freeze({
 		DisplayName = "Poder",
+		CardKind = "DANO",
+		AttributeLabel = "+5% DANO",
 		Description = "+5% de dano por ponto",
 		MaxPoints = 15,
 		BonusPerPoint = 0.05,
 	}),
 	AttackSpeed = table.freeze({
 		DisplayName = "Velocidade de ataque",
+		CardKind = "ATAQUE",
+		AttributeLabel = "-3% RECARGA",
 		Description = "-3% de recarga por ponto",
 		MaxPoints = 15,
 		BonusPerPoint = 0.03,
 	}),
 	MoveSpeed = table.freeze({
 		DisplayName = "Agilidade",
+		CardKind = "MOVIMENTO",
+		AttributeLabel = "+4% MOVIMENTO",
 		Description = "+4% de movimento por ponto",
 		MaxPoints = 15,
 		BonusPerPoint = 0.04,
 	}),
 	Range = table.freeze({
 		DisplayName = "Alcance",
+		CardKind = "DISTÂNCIA",
+		AttributeLabel = "+0,6 STUD",
 		Description = "+0,6 stud por ponto",
 		MaxPoints = 15,
 		BonusPerPoint = 0.6,
 	}),
+})
+
+CompanionCatalog.UpgradeOrder = table.freeze({
+	"Damage",
+	"AttackSpeed",
+	"MoveSpeed",
+	"Range",
 })
 
 -- Espaco reservado para todas as variantes atualmente conhecidas.

@@ -163,6 +163,10 @@ local function beginCooldown(island, record)
 		return
 	end
 
+	if not occupied(record.Index) then
+		return
+	end
+
 	record.CooldownActive = true
 	record.RefillLocked = true
 	record.CooldownToken += 1

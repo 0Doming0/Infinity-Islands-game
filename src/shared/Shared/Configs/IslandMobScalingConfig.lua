@@ -1,6 +1,6 @@
 --[[
 	Infinity Islands - Task 05 + Task 07 + Task 13
-	IslandMobScalingConfig V4
+	IslandMobScalingConfig V5
 
 	Difficulty belongs to the island.
 
@@ -32,10 +32,14 @@
 
 local IslandMobScalingConfig = {}
 
-IslandMobScalingConfig.Version = "CyclePositionMobCountV4"
+IslandMobScalingConfig.Version = "StrongerPerLevelAndBaseV5"
 
-IslandMobScalingConfig.HealthPerLevel = 0.16
-IslandMobScalingConfig.DamagePerLevel = 0.10
+-- A base reforcada deixa ate o primeiro nivel numerado mais perigoso. A curva
+-- de 18% faz o nivel 12 chegar a 4.023x antes do multiplicador de ciclo.
+IslandMobScalingConfig.BaseHealthMultiplier = 1.35
+IslandMobScalingConfig.BaseDamageMultiplier = 1.35
+IslandMobScalingConfig.HealthPerLevel = 0.18
+IslandMobScalingConfig.DamagePerLevel = 0.18
 IslandMobScalingConfig.HealthPerCycle = 3
 IslandMobScalingConfig.DamagePerCycle = 3
 IslandMobScalingConfig.SpeedPerCycle = 2
@@ -96,17 +100,23 @@ end
 function IslandMobScalingConfig.GetHealthMultiplier(mobLevel)
 	local level = cleanLevel(mobLevel)
 
-	return 1
-		+ IslandMobScalingConfig.HealthPerLevel
-			* (level - 1)
+	return IslandMobScalingConfig.BaseHealthMultiplier
+		* (
+			1
+				+ IslandMobScalingConfig.HealthPerLevel
+					* (level - 1)
+		)
 end
 
 function IslandMobScalingConfig.GetDamageMultiplier(mobLevel)
 	local level = cleanLevel(mobLevel)
 
-	return 1
-		+ IslandMobScalingConfig.DamagePerLevel
-			* (level - 1)
+	return IslandMobScalingConfig.BaseDamageMultiplier
+		* (
+			1
+				+ IslandMobScalingConfig.DamagePerLevel
+					* (level - 1)
+		)
 end
 
 function IslandMobScalingConfig.GetCycleMultipliers(cycleIndex)
@@ -156,6 +166,16 @@ function IslandMobScalingConfig.Validate()
 	local cycle3 =
 		IslandMobScalingConfig.GetCycleMultipliers(3)
 
+	assert(
+		math.abs(IslandMobScalingConfig.GetHealthMultiplier(1) - 1.35) < 0.0001
+			and math.abs(IslandMobScalingConfig.GetDamageMultiplier(1) - 1.35) < 0.0001,
+		"Nivel 1 precisa aplicar o reforco base de 1.35x"
+	)
+	assert(
+		math.abs(IslandMobScalingConfig.GetHealthMultiplier(12) - 4.023) < 0.0001
+			and math.abs(IslandMobScalingConfig.GetDamageMultiplier(12) - 4.023) < 0.0001,
+		"Nivel 12 precisa chegar a 4.023x de vida e dano"
+	)
 	assert(
 		cycle1.Health == 1
 			and cycle1.Damage == 1

@@ -42,6 +42,7 @@ end
 local entryProfile = preferredInputName()
 local mobileDungeonMode = entryProfile == "Touch"
 local previousOrientation = playerGui.ScreenOrientation
+local MOBILE_ORIENTATION = Enum.ScreenOrientation.LandscapeSensor
 
 local function publishCurrentProfile()
 	local current = preferredInputName()
@@ -53,28 +54,28 @@ end
 local function applyEntryPresentation()
 	player:SetAttribute("DungeonEntryInputProfile", entryProfile)
 	player:SetAttribute("DungeonMobileMode", mobileDungeonMode)
-	player:SetAttribute("DungeonMobilePortraitRequested", mobileDungeonMode)
+	player:SetAttribute("DungeonMobileLandscapeRequested", mobileDungeonMode)
 	player:SetAttribute("DungeonInputProfileVersion", VERSION)
 
 	playerGui:SetAttribute("DungeonEntryInputProfile", entryProfile)
 	playerGui:SetAttribute("DungeonMobileMode", mobileDungeonMode)
-	playerGui:SetAttribute("DungeonMobilePortraitRequested", mobileDungeonMode)
+	playerGui:SetAttribute("DungeonMobileLandscapeRequested", mobileDungeonMode)
 	playerGui:SetAttribute("DungeonInputProfileVersion", VERSION)
 
 	if mobileDungeonMode then
 		local success, err = pcall(function()
-			playerGui.ScreenOrientation = Enum.ScreenOrientation.Portrait
+			playerGui.ScreenOrientation = MOBILE_ORIENTATION
 		end)
-		player:SetAttribute("DungeonMobilePortraitApplied", success)
-		playerGui:SetAttribute("DungeonMobilePortraitApplied", success)
+		player:SetAttribute("DungeonMobileLandscapeApplied", success)
+		playerGui:SetAttribute("DungeonMobileLandscapeApplied", success)
 		if not success then
 			warn("[InputProfileController] Falha ao solicitar portrait: " .. tostring(err))
 		end
 	else
 		-- Nao forca landscape em teclado/gamepad. Preserva a orientacao definida
 		-- pela plataforma/experiencia para PC, console e dispositivos hibridos.
-		player:SetAttribute("DungeonMobilePortraitApplied", false)
-		playerGui:SetAttribute("DungeonMobilePortraitApplied", false)
+		player:SetAttribute("DungeonMobileLandscapeApplied", false)
+		playerGui:SetAttribute("DungeonMobileLandscapeApplied", false)
 	end
 end
 
