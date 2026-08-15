@@ -8,8 +8,9 @@ local POLICY = "PlayerFollowRouteCameraMobileV5"
 local CAMERA_HEIGHT = 28
 local CAMERA_DISTANCE = 22
 local CAMERA_FOV = 70
-local POSITION_SMOOTH_SPEED = 10
-local ROTATION_SMOOTH_SPEED = 12
+local POSITION_SMOOTH_SPEED = 7
+local ROTATION_SMOOTH_SPEED = 8
+local FOV_SMOOTH_SPEED = 6
 local MIN_ROUTE_LENGTH = 0.05
 local OBSTRUCTION_PADDING = 1.5
 local FOCUS_TOWARD_TARGET_FRACTION = 0.2
@@ -17,6 +18,7 @@ local FOCUS_TOWARD_TARGET_FRACTION = 0.2
 local active = false
 local renderBound = false
 local cameraCFrame
+local cameraFocusPosition
 local savedCameraType
 local savedCameraSubject
 local savedCameraFov
@@ -246,6 +248,7 @@ local function restoreCamera()
 		camera.FieldOfView = savedCameraFov
 	end
 	cameraCFrame = nil
+	cameraFocusPosition = nil
 end
 
 local function prepareCamera(camera)
@@ -258,8 +261,19 @@ local function prepareCamera(camera)
 		savedCameraFov = camera.FieldOfView
 	end
 	camera.CameraType = Enum.CameraType.Scriptable
-	camera.FieldOfView = CAMERA_FOV
 	return true
+end
+
+local function captureCameraBlendStart(camera)
+	if cameraCFrame and cameraFocusPosition then
+		return
+	end
+	cameraCFrame = camera.CFrame
+	local focus = camera.Focus.Position
+	if (focus - camera.CFrame.Position).Magnitude < 0.1 then
+		focus = camera.CFrame.Position + camera.CFrame.LookVector * CAMERA_DISTANCE
+	end
+	cameraFocusPosition = focus
 end
 
 local function updateCamera(deltaTime)
@@ -272,22 +286,24 @@ local function updateCamera(deltaTime)
 	if not camera or not root or not prepareCamera(camera) then
 		return
 	end
+	captureCameraBlendStart(camera)
 
 	local direction, focus, sideCenter, playerPosition = getCameraTarget(root)
 	local desiredPosition = getCameraPosition(root, direction, focus)
-	local desiredCFrame = CFrame.lookAt(desiredPosition, focus, Vector3.new(0, 1, 0))
 
 	local positionAlpha = 1 - math.exp(-POSITION_SMOOTH_SPEED * math.max(deltaTime, 0))
-	local position
-	if cameraCFrame then
-		position = cameraCFrame.Position:Lerp(desiredPosition, positionAlpha)
-	else
-		position = desiredPosition
+	local rotationAlpha = 1 - math.exp(-ROTATION_SMOOTH_SPEED * math.max(deltaTime, 0))
+	local fovAlpha = 1 - math.exp(-FOV_SMOOTH_SPEED * math.max(deltaTime, 0))
+	local position = cameraCFrame.Position:Lerp(desiredPosition, positionAlpha)
+	cameraFocusPosition = cameraFocusPosition:Lerp(focus, rotationAlpha)
+	if (cameraFocusPosition - position).Magnitude < 0.1 then
+		cameraFocusPosition = position + cameraCFrame.LookVector * CAMERA_DISTANCE
 	end
 
-	cameraCFrame = CFrame.lookAt(position, focus, Vector3.new(0, 1, 0))
+	cameraCFrame = CFrame.lookAt(position, cameraFocusPosition, Vector3.new(0, 1, 0))
 	camera.CFrame = cameraCFrame
-	camera.Focus = CFrame.new(focus)
+	camera.Focus = CFrame.new(cameraFocusPosition)
+	camera.FieldOfView += (CAMERA_FOV - camera.FieldOfView) * fovAlpha
 
 	player:SetAttribute("DungeonMobileCameraActive", true)
 	player:SetAttribute("DungeonMobileCameraMode", "RouteFollowScriptable")
@@ -295,7 +311,7 @@ local function updateCamera(deltaTime)
 	player:SetAttribute("DungeonMobileCameraRotationPolicy", "LockedToExitSideCenter")
 	player:SetAttribute("DungeonMobileCameraTouchRotationDisabled", true)
 	player:SetAttribute("DungeonMobileCameraForward", direction)
-	player:SetAttribute("DungeonMobileCameraFocusWorld", focus)
+	player:SetAttribute("DungeonMobileCameraFocusWorld", cameraFocusPosition)
 	player:SetAttribute("DungeonMobileCameraSideCenterWorld", sideCenter)
 	player:SetAttribute("DungeonMobileCameraPlayerPositionWorld", playerPosition)
 end
@@ -309,6 +325,7 @@ local function bindCharacter(character)
 		if child:IsA("Humanoid") then
 			task.defer(function()
 				cameraCFrame = nil
+				cameraFocusPosition = nil
 			end)
 		end
 	end))
@@ -340,6 +357,7 @@ local function deactivate()
 	active = false
 	lastRouteDirection = nil
 	lastRouteSideCenter = nil
+	cameraFocusPosition = nil
 	disconnectCharacterConnections()
 	restoreCamera()
 	savedCameraType = nil
@@ -375,6 +393,7 @@ end
 player.CharacterAdded:Connect(function(character)
 	bindCharacter(character)
 	cameraCFrame = nil
+	cameraFocusPosition = nil
 	lastRouteDirection = nil
 	lastRouteSideCenter = nil
 	if active then
@@ -394,6 +413,7 @@ player:GetAttributeChangedSignal("CurrentGlobalIslandIndex"):Connect(refreshActi
 Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
 	if active then
 		cameraCFrame = nil
+		cameraFocusPosition = nil
 	end
 end)
 

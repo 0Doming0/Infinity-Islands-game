@@ -71,14 +71,6 @@ local function restoreChoiceProtection(player)
 	end
 	protectedStates[player] = nil
 	player:SetAttribute("OrbChoiceProtected", false)
-	workspace:SetAttribute(
-		"DungeonCombatReacquireSerial",
-		(tonumber(workspace:GetAttribute("DungeonCombatReacquireSerial")) or 0) + 1
-	)
-	player:SetAttribute(
-		"DungeonCombatReacquireUserId",
-		player.UserId
-	)
 end
 
 local function applyChoiceProtection(player)
@@ -302,7 +294,6 @@ choiceRequest.OnServerEvent:Connect(function(player, request)
 	player:SetAttribute("LastOrbChoiceUpgradeId", choiceType == "SpecializedUpgrade" and upgrade.Id or nil)
 	player:SetAttribute("LastOrbChoiceLevel", currentLevel + 1)
 	player:SetAttribute("LastOrbChoiceAt", workspace:GetServerTimeNow())
-	workspace:SetAttribute("DungeonCombatReacquireSerial", (workspace:GetAttribute("DungeonCombatReacquireSerial") or 0) + 1)
 	player:SetAttribute("PendingOrbChoiceLevel", 0)
 	player:SetAttribute("OrbChoiceState", "Selected")
 	restoreChoiceProtection(player)

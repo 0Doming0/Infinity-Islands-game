@@ -48,6 +48,10 @@ local FOLLOW_JUMP_LANDING_DISTANCE = 3
 local FOLLOW_JUMP_FAILURE_DELAY = 1.35
 local FOLLOW_JUMP_SAMPLE_SPACING = 1.25
 local FOLLOW_STEP_HEIGHT = 1.6
+-- O companheiro acompanha a recompensa real do mob, mas em ritmo proprio.
+-- 25% deixa a evolucao perceptivel sem fazer o companheiro subir de nivel a
+-- cada slime das primeiras ilhas.
+local COMPANION_XP_FROM_MOB_REWARD_RATIO = 0.25
 
 local FORMATION_OFFSETS = {
 	Vector3.new(3.5, 0, 3.8),
@@ -1380,14 +1384,27 @@ local function enqueueCompanionLevelUp(player, result)
 	end
 end
 
-function CompanionService.RecordDefeat(player, monster)
+function CompanionService.RecordDefeat(player, monster, playerMobXP)
 	if not player or player.Parent ~= Players or not monster then
 		return
 	end
 	PlayerDataService.Load(player)
 	local _, equippedBefore = PlayerDataService.GetCompanions(player)
-	local xp = math.max(1, math.floor(tonumber(monster:GetAttribute("CompanionXPValue")) or 1))
+	-- playerMobXP e a recompensa final ja calculada para este jogador: ela inclui
+	-- nivel do mob, ciclo da ilha e bonus de risco. Mobs legados (como Mimic)
+	-- ainda podem chamar sem esse argumento e preservam seu CompanionXPValue.
+	local mobReward = tonumber(playerMobXP)
+	local xp
+	if mobReward ~= nil then
+		xp = math.max(1, math.floor(mobReward * COMPANION_XP_FROM_MOB_REWARD_RATIO + 0.5))
+	else
+		xp = math.max(1, math.floor(tonumber(monster:GetAttribute("CompanionXPValue")) or 1))
+		mobReward = xp
+	end
 	local progress = PlayerDataService.AddEquippedCompanionsXP(player, xp)
+	player:SetAttribute("LastCompanionXPReward", xp)
+	player:SetAttribute("LastCompanionXPSource", math.max(1, math.floor(mobReward + 0.5)))
+	player:SetAttribute("CompanionXPRewardRatio", COMPANION_XP_FROM_MOB_REWARD_RATIO)
 	local firstLevelUp
 	for _, result in ipairs(progress) do
 		refreshState(player, result.InstanceId, result.Record)

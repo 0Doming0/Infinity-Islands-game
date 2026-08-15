@@ -3,10 +3,12 @@
 -- combate; este controlador apenas expressa a intencao de ataque.
 --
 -- Mobile Dungeon Mode / Task 05:
--- no modo mobile, Begin inicia Hold-to-Attack e End/Cancel encerra.
+-- no modo mobile, um toque inicia a aproximação/ataque automático do inimigo
+-- vivo mais próximo; o próximo toque cancela.
 -- SwordInputClient continua sendo responsavel por combo, windup e recovery.
 
 local ContextActionService = game:GetService("ContextActionService")
+local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -14,11 +16,19 @@ local player = Players.LocalPlayer
 local CombatConfig = require(ReplicatedStorage:WaitForChild("SwordCombat"):WaitForChild("CombatConfig"))
 local ACTION_NAME = "SkyDungeonAttack"
 local HOLD_RETRY_INTERVAL = math.clamp(CombatConfig.InputBufferTime * 0.5, 0.04, 0.08)
+local AUTO_ENGAGE_RADIUS = 36
+local AUTO_ENGAGE_MAX_VERTICAL_DISTANCE = 10
+local AUTO_ENGAGE_ATTACK_DISTANCE = 5.25
+local AUTO_ENGAGE_MOVE_REFRESH_INTERVAL = 0.14
+local TARGET_INDICATOR_NAME = "MobileAutoEngageTargetIndicator"
 
 local equippedSword
 local holdSerial = 0
 local attackHeld = false
 local lastHoldStopReason = "NotStarted"
+local guidedTarget
+local targetIndicator
+local lastMoveAt = 0
 
 local function isMobileDungeon()
 	return player:GetAttribute("DungeonMobileMode") == true
@@ -48,6 +58,152 @@ local function canAttack(sword)
 	return sword ~= nil and sword.Parent == character and CombatConfig.IsSword(sword)
 end
 
+local function targetRoot(model)
+	if not model or not model:IsA("Model") or not model.Parent then
+		return nil
+	end
+	local root = model:FindFirstChild("HumanoidRootPart", true)
+		or model.PrimaryPart
+		or model:FindFirstChildWhichIsA("BasePart", true)
+	return root and root:IsA("BasePart") and root or nil
+end
+
+local function validAutoEngageTarget(model, character, characterRoot)
+	if not model
+		or not model:IsA("Model")
+		or not model.Parent
+		or model == character
+		or model:GetAttribute("Peaceful") == true
+		or model:GetAttribute("Invulnerable") == true
+		or model:GetAttribute("NoSwordDamage") == true
+		or model:GetAttribute("ObjectiveTargetCompleted") == true
+	then
+		return false
+	end
+
+	local humanoid = model:FindFirstChildWhichIsA("Humanoid", true)
+	local root = targetRoot(model)
+	if not humanoid or humanoid.Health <= 0 or not root then
+		return false
+	end
+
+	local offset = root.Position - characterRoot.Position
+	local horizontalDistance = Vector2.new(offset.X, offset.Z).Magnitude
+	return math.abs(offset.Y) <= AUTO_ENGAGE_MAX_VERTICAL_DISTANCE
+		and horizontalDistance <= AUTO_ENGAGE_RADIUS
+end
+
+local function ensureTargetIndicator()
+	if targetIndicator and targetIndicator.Parent then
+		return targetIndicator
+	end
+
+	local old = (workspace.CurrentCamera and workspace.CurrentCamera:FindFirstChild(TARGET_INDICATOR_NAME))
+		or workspace:FindFirstChild(TARGET_INDICATOR_NAME)
+	if old and old:IsA("Highlight") then
+		targetIndicator = old
+		return targetIndicator
+	end
+
+	targetIndicator = Instance.new("Highlight")
+	targetIndicator.Name = TARGET_INDICATOR_NAME
+	targetIndicator.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	targetIndicator.FillColor = Color3.fromRGB(255, 226, 99)
+	targetIndicator.FillTransparency = 0.88
+	targetIndicator.OutlineColor = Color3.fromRGB(255, 255, 255)
+	targetIndicator.OutlineTransparency = 0.04
+	targetIndicator.Enabled = false
+	targetIndicator.Parent = workspace.CurrentCamera or workspace
+	return targetIndicator
+end
+
+local function clearGuidedTarget(reason)
+	guidedTarget = nil
+	if targetIndicator and targetIndicator.Parent then
+		targetIndicator.Adornee = nil
+		targetIndicator.Enabled = false
+	end
+	player:SetAttribute("DungeonMobileAutoEngageTarget", nil)
+	player:SetAttribute("DungeonMobileAutoEngageDistance", nil)
+	player:SetAttribute("DungeonMobileAutoEngageState", reason or "Idle")
+end
+
+local function findNearestTarget()
+	local character = player.Character
+	local characterRoot = character and character:FindFirstChild("HumanoidRootPart")
+	if not character or not characterRoot or not characterRoot:IsA("BasePart") then
+		return nil
+	end
+
+	local nearest
+	local nearestDistance = math.huge
+	local seen = {}
+	for _, taggedInstance in ipairs(CollectionService:GetTagged(CombatConfig.TargetTag)) do
+		local model = taggedInstance:IsA("Model") and taggedInstance
+			or taggedInstance:FindFirstAncestorOfClass("Model")
+		if model and not seen[model] then
+			seen[model] = true
+			if validAutoEngageTarget(model, character, characterRoot) then
+				local root = targetRoot(model)
+				local offset = root.Position - characterRoot.Position
+				local distance = Vector2.new(offset.X, offset.Z).Magnitude
+				if distance < nearestDistance then
+					nearest = model
+					nearestDistance = distance
+				end
+			end
+		end
+	end
+
+	return nearest, nearestDistance
+end
+
+local function guideToNearestTarget()
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not character or not humanoid or humanoid.Health <= 0 or not root then
+		clearGuidedTarget("CharacterUnavailable")
+		return false
+	end
+
+	local target, distance = findNearestTarget()
+	if not target then
+		clearGuidedTarget("NoNearbyTarget")
+		return false
+	end
+
+	guidedTarget = target
+	local targetPart = targetRoot(target)
+	if not targetPart then
+		clearGuidedTarget("TargetLost")
+		return false
+	end
+	local indicator = ensureTargetIndicator()
+	indicator.Adornee = target
+	indicator.Enabled = true
+	player:SetAttribute("DungeonMobileAutoEngageTarget", target.Name)
+	player:SetAttribute("DungeonMobileAutoEngageDistance", distance)
+
+	local targetPosition = Vector3.new(targetPart.Position.X, root.Position.Y, targetPart.Position.Z)
+	if distance > AUTO_ENGAGE_ATTACK_DISTANCE then
+		player:SetAttribute("DungeonMobileAutoEngageState", "Approaching")
+		if os.clock() - lastMoveAt >= AUTO_ENGAGE_MOVE_REFRESH_INTERVAL then
+			lastMoveAt = os.clock()
+			humanoid:MoveTo(targetPosition)
+		end
+		return false
+	end
+
+	player:SetAttribute("DungeonMobileAutoEngageState", "Attacking")
+	humanoid:Move(Vector3.zero)
+	local direction = targetPosition - root.Position
+	if direction.Magnitude > 0.05 then
+		root.CFrame = CFrame.lookAt(root.Position, targetPosition)
+	end
+	return true
+end
+
 local function setHeldState(held, reason)
 	attackHeld = held == true
 	lastHoldStopReason = tostring(reason or (attackHeld and "Holding" or "Released"))
@@ -70,6 +226,12 @@ end
 local function stopHold(reason)
 	holdSerial += 1
 	setHeldState(false, reason or "Stopped")
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		humanoid:Move(Vector3.zero)
+	end
+	clearGuidedTarget(reason or "Stopped")
 end
 
 local function activateEquippedSword()
@@ -95,6 +257,15 @@ local function beginHold()
 			if not isMobileDungeon() then
 				stopHold("MobileModeEnded")
 				break
+			end
+
+			if not guideToNearestTarget() then
+				if player:GetAttribute("DungeonMobileAutoEngageState") ~= "Approaching" then
+					stopHold(player:GetAttribute("DungeonMobileAutoEngageState") or "TargetUnavailable")
+					break
+				end
+				task.wait(HOLD_RETRY_INTERVAL)
+				continue
 			end
 
 			if not activateEquippedSword() then
@@ -129,6 +300,9 @@ local function attackAction(_, inputState)
 	if inputState == Enum.UserInputState.End
 		or inputState == Enum.UserInputState.Cancel
 	then
+		if isMobileDungeon() then
+			return Enum.ContextActionResult.Sink
+		end
 		if attackHeld then
 			stopHold(inputState == Enum.UserInputState.Cancel and "Cancelled" or "Released")
 			return Enum.ContextActionResult.Sink
@@ -147,14 +321,18 @@ local function attackAction(_, inputState)
 		return Enum.ContextActionResult.Sink
 	end
 
-	-- Hold-to-Attack e exclusivo da apresentacao Mobile Dungeon.
-	-- KeyboardMouse/Gamepad fora do modo mobile preservam um ataque por Begin.
+	-- No celular, um toque liga/desliga o auto-engage do alvo mais proximo.
+	-- KeyboardMouse/Gamepad preservam um ataque por Begin.
 	if isMobileDungeon() then
 		if not canAttack(equippedSword or findEquippedSword()) then
 			stopHold("NoSword")
 			return Enum.ContextActionResult.Pass
 		end
-		beginHold()
+		if attackHeld then
+			stopHold("PlayerCancelled")
+		else
+			beginHold()
+		end
 		return Enum.ContextActionResult.Sink
 	end
 
@@ -256,6 +434,8 @@ player:GetAttributeChangedSignal("DungeonMobileMode"):Connect(function()
 end)
 
 player:SetAttribute("DungeonMobileHoldAttackReady", true)
-player:SetAttribute("DungeonMobileHoldAttackPolicy", "HoldIntentToolActivatedV1")
+player:SetAttribute("DungeonMobileHoldAttackPolicy", "TapToGuideNearestTargetV2")
 player:SetAttribute("DungeonMobileAttackHeld", false)
 player:SetAttribute("DungeonMobileAttackHoldRetryInterval", HOLD_RETRY_INTERVAL)
+player:SetAttribute("DungeonMobileAutoEngageRadius", AUTO_ENGAGE_RADIUS)
+player:SetAttribute("DungeonMobileAutoEngageAttackDistance", AUTO_ENGAGE_ATTACK_DISTANCE)

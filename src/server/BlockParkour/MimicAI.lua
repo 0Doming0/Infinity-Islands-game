@@ -462,7 +462,6 @@ local function nearestPlayer(position, maximumDistance, state)
 		if
 			player:GetAttribute("IsDowned") == true
 			or player:GetAttribute("InvisibleToEnemies") == true
-			or player:GetAttribute("DungeonAssistedTransportActive") == true
 		then
 			continue
 		end

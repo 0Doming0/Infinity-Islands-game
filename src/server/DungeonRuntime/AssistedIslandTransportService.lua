@@ -1,6 +1,5 @@
 -- Transporte autoritativo para a proxima ilha adequada ao PlayerLevel.
 
-local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -194,45 +193,11 @@ local function resolveGuidanceRoute(player)
 	}
 end
 
-local function clearMobAggro(player)
-	for _, model in ipairs(CollectionService:GetTagged("CombatTarget")) do
-		if model:IsA("Model") then
-			for _, attribute in ipairs({
-				"AggroUserId",
-				"TargetUserId",
-				"ResponsiveChaseTargetUserId",
-			}) do
-				if tonumber(model:GetAttribute(attribute)) == player.UserId then
-					model:SetAttribute(attribute, nil)
-				end
-			end
-			if tonumber(model:GetAttribute("ResponsiveChaseTargetUserId")) == nil then
-				model:SetAttribute("ResponsiveChaseActive", false)
-			end
-		end
-	end
-end
-
 local function setProtected(player, state, active)
 	if active then
-		state.PreviousInvisibleToEnemies = player:GetAttribute("InvisibleToEnemies")
 		player:SetAttribute("DungeonAssistedTransportActive", true)
-		player:SetAttribute("InvisibleToEnemies", true)
-		clearMobAggro(player)
 	else
 		player:SetAttribute("DungeonAssistedTransportActive", nil)
-		if player:GetAttribute("InvisibleToEnemies") == true then
-			player:SetAttribute("InvisibleToEnemies", state.PreviousInvisibleToEnemies)
-		end
-		state.PreviousInvisibleToEnemies = nil
-		workspace:SetAttribute(
-			"DungeonCombatReacquireSerial",
-			(tonumber(workspace:GetAttribute("DungeonCombatReacquireSerial")) or 0) + 1
-		)
-		player:SetAttribute(
-			"DungeonCombatReacquireUserId",
-			player.UserId
-		)
 	end
 end
 

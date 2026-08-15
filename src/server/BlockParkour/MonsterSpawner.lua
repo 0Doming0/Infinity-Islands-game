@@ -1059,7 +1059,8 @@ local function awardManagedMobXP(
 			local companionOk, companionError = pcall(
 				CompanionService.RecordDefeat,
 				player,
-				model
+				model,
+				amount
 			)
 			if not companionOk then
 				warn("[MonsterSpawner] Falha ao processar companheiro: " .. tostring(companionError))
@@ -2276,10 +2277,6 @@ local function spawnClone(
 			clone,
 			damager
 		)
-
-		if damager and current.IslandCombatManaged == true then
-			pcall(CompanionService.RecordDefeat, damager, clone)
-		end
 
 		unregisterMonster(clone)
 

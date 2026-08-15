@@ -105,6 +105,7 @@ if not title or not title:IsA("TextLabel") then
 	title.Parent = banner
 end
 title.Text = "AVANÇO PARA A PRÓXIMA ILHA"
+title.TextColor3 = Color3.fromRGB(255, 255, 255)
 
 local description = banner:FindFirstChild("Description")
 if not description or not description:IsA("TextLabel") then
@@ -120,6 +121,7 @@ if not description or not description:IsA("TextLabel") then
 	description.Parent = banner
 end
 description.Text = "TRANSPORTE EM 8"
+description.TextColor3 = Color3.fromRGB(255, 255, 255)
 
 local landingCount = gui:FindFirstChild("LandingCountdown")
 if not landingCount or not landingCount:IsA("TextLabel") then
@@ -138,6 +140,7 @@ if not landingCount or not landingCount:IsA("TextLabel") then
 	landingCount.Parent = gui
 end
 landingCount.Text = ""
+landingCount.TextColor3 = Color3.fromRGB(255, 255, 255)
 landingCount.Visible = false
 
 -- Indicador 3D inteiramente local. Nao depende de modelos no ReplicatedStorage.
@@ -218,7 +221,7 @@ worldLabelText.BackgroundTransparency = 0.18
 worldLabelText.BorderSizePixel = 0
 worldLabelText.Font = Enum.Font.GothamBold
 worldLabelText.Text = "PRÓXIMA ILHA"
-worldLabelText.TextColor3 = Color3.fromRGB(255, 240, 190)
+worldLabelText.TextColor3 = Color3.fromRGB(255, 255, 255)
 worldLabelText.TextScaled = true
 worldLabelText.TextStrokeTransparency = 0.65
 worldLabelText.Parent = worldLabel

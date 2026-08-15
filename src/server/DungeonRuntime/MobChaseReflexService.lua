@@ -78,7 +78,6 @@ local function livingRoot(player)
 
 	if player:GetAttribute("IsDowned") == true
 		or player:GetAttribute("InvisibleToEnemies") == true
-		or player:GetAttribute("DungeonAssistedTransportActive") == true
 	then
 		return nil
 	end

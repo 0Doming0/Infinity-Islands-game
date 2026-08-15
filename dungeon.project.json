@@ -37,6 +37,9 @@
           },
           "$path": "src/client/AdaptivePerformanceController.client.luau"
         },
+        "AssistedIslandTransportController": {
+          "$path": "src/client/AssistedIslandTransportController.client.luau"
+        },
         "DungeonArtHUDController": {
           "$attributes": {
             "_lemonadeUniqueId": "vrORjdDTvrOR"
@@ -67,6 +70,9 @@
           },
           "$path": "src/client/IslandEffectCulling.client.luau"
         },
+        "EnemyCombatFeedback": {
+          "$path": "src/client/EnemyCombatFeedback.client.luau"
+        },
         "LevelUpPanelAnimation": {
           "$attributes": {
             "_lemonadeUniqueId": "wcB9xxWIwcB9"
@@ -84,6 +90,15 @@
             "_lemonadeUniqueId": "HYj1CVLnHYj1"
           },
           "$path": "src/client/MobilityPerksController.client.luau"
+        },
+        "MobHitScaleClient": {
+          "$path": "src/client/MobHitScaleClient.client.luau"
+        },
+        "MobileControls": {
+          "$path": "src/client/MobileControls.client.luau"
+        },
+        "OrbChoiceClient": {
+          "$path": "src/client/OrbChoiceClient.client.luau"
         },
         "OrbCombatClient": {
           "$attributes": {
