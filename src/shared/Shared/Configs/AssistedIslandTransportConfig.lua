@@ -2,7 +2,7 @@
 
 local Config = {}
 
-Config.Version = "ManualAdvanceIslandTransitV8"
+Config.Version = "ManualAdvanceIslandTransitV9_ReleaseCountdown"
 
 -- O servico automatico legado fica desligado. ManualIslandAdvance.server.luau
 -- passa a ser a autoridade do avanco normal entre arenas: limpa a missao,
@@ -18,7 +18,8 @@ Config.EarlyIslandIdleSeconds = 0.25
 -- Depois que o jogador toca em AVANCAR, usamos apenas um aviso curto antes do voo.
 Config.LevelUpDelaySeconds = 0.45
 Config.FlightDurationSeconds = 1.35
-Config.LandingCountdownSeconds = 0.35
+-- O jogador pousa, ve 3...2...1 e somente depois recebe o controle novamente.
+Config.LandingCountdownSeconds = 3
 Config.ReleaseProtectionSeconds = 0.25
 Config.CooldownSeconds = 0
 Config.DestinationReadyTimeoutSeconds = 5
