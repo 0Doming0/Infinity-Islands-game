@@ -1,12 +1,10 @@
--- Assistencia de combate mobile por PRESS-AND-HOLD.
--- Enquanto o jogador segura o botao de ataque, o personagem procura o mob
--- valido mais proximo, anda ate ele e continua emitindo ataques quando entra
--- no alcance. Soltar o botao devolve o movimento imediatamente ao jogador.
---
--- O layout continua 100% no Roblox Studio: este script nunca altera
--- Position, Size ou AnchorPoint de nenhum botao.
+-- Ataque mobile linear: SEGURAR o botao persegue e ataca o mob mais proximo.
+-- Soltar interrompe imediatamente o auto-walk. O alvo atual recebe o contorno
+-- branco local que existia no combate mobile. O layout do botao continua 100%
+-- definido no Roblox Studio.
 
 local CollectionService = game:GetService("CollectionService")
+local GuiService = game:GetService("GuiService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -18,10 +16,10 @@ local CombatConfig = require(
 	ReplicatedStorage:WaitForChild("SwordCombat"):WaitForChild("CombatConfig")
 )
 
-local VERSION = "MobileAttackAutoWalkHoldV2"
+local VERSION = "MobileAttackHoldLinearV5_WhiteTargetOutline"
 local RENDER_BIND = "DungeonMobileAttackAutoWalk"
-local AUTO_RADIUS = 48
-local MAX_VERTICAL = 12
+local AUTO_RADIUS = 52
+local MAX_VERTICAL = 14
 local ATTACK_DISTANCE = 5.6
 local RETARGET_INTERVAL = 0.08
 local ATTACK_RETRY = math.clamp(
@@ -45,8 +43,18 @@ local lastTargetSearch = 0
 local lastAttackAt = 0
 local boundButtons = setmetatable({}, { __mode = "k" })
 
+local outline = Instance.new("Highlight")
+outline.Name = "DungeonMobileAttackTargetOutline"
+outline.Enabled = false
+outline.FillTransparency = 1
+outline.OutlineColor = Color3.new(1, 1, 1)
+outline.OutlineTransparency = 0
+outline.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+outline.Parent = Workspace or workspace
+
 local function isMobile()
 	return player:GetAttribute("DungeonMobileMode") == true
+		or UserInputService.TouchEnabled == true
 end
 
 local function characterParts()
@@ -114,6 +122,9 @@ local function validTarget(model, character, characterRoot)
 			or model:GetAttribute("GlobalIslandIndex")
 	)
 	local currentIsland = tonumber(player:GetAttribute("CurrentGlobalIslandIndex"))
+	if currentIsland and currentIsland <= 0 then
+		currentIsland = 1
+	end
 	if targetIsland and currentIsland
 		and math.floor(targetIsland) ~= math.floor(currentIsland)
 	then
@@ -143,12 +154,34 @@ local function nearestTarget(character, characterRoot)
 					nearestDistance = distance
 				end
 			end
+		end
 	end
 	return nearest, nearestDistance
 end
 
+local function setOutlinedTarget(model)
+	if model and model.Parent then
+		outline.Adornee = model
+		outline.Enabled = true
+	else
+		outline.Enabled = false
+		outline.Adornee = nil
+	end
+	player:SetAttribute("DungeonMobileAttackTargetOutlined", model ~= nil)
+end
+
+local function setTarget(model, distance, state)
+	if currentTarget ~= model then
+		currentTarget = model
+		setOutlinedTarget(model)
+	end
+	player:SetAttribute("DungeonMobileAutoEngageTarget", model and model.Name or nil)
+	player:SetAttribute("DungeonMobileAutoEngageDistance", distance)
+	player:SetAttribute("DungeonMobileAutoEngageState", state)
+end
+
 local function clearMovement()
-	local character, humanoid, root = characterParts()
+	local _, humanoid, root = characterParts()
 	if humanoid then
 		humanoid:Move(Vector3.zero, false)
 		if root then
@@ -157,25 +190,15 @@ local function clearMovement()
 	end
 end
 
-local function setTargetAttributes(model, distance, state)
-	player:SetAttribute(
-		"DungeonMobileAutoEngageTarget",
-		model and model.Name or nil
-	)
-	player:SetAttribute("DungeonMobileAutoEngageDistance", distance)
-	player:SetAttribute("DungeonMobileAutoEngageState", state)
-end
-
 local function stop(reason)
 	if held then
 		held = false
 		RunService:UnbindFromRenderStep(RENDER_BIND)
 	end
 	heldInput = nil
-	currentTarget = nil
 	clearMovement()
+	setTarget(nil, nil, reason or "Released")
 	player:SetAttribute("DungeonMobileAttackHeld", false)
-	setTargetAttributes(nil, nil, reason or "Released")
 end
 
 local function stepAutoWalk()
@@ -207,37 +230,34 @@ local function stepAutoWalk()
 	if not currentTarget or not validTarget(currentTarget, character, root) then
 		if os.clock() - lastTargetSearch >= RETARGET_INTERVAL then
 			lastTargetSearch = os.clock()
-			currentTarget = nearestTarget(character, root)
+			local target = nearestTarget(character, root)
+			setTarget(target, nil, target and "TargetLocked" or "Searching")
 		end
 	end
 
 	if not currentTarget then
-		-- Nao encerra o hold: se um mob estiver terminando de spawnar, o mesmo
-		-- toque passa a persegui-lo assim que ele se tornar um CombatTarget.
 		humanoid:Move(Vector3.zero, false)
-		setTargetAttributes(nil, nil, "Searching")
+		player:SetAttribute("DungeonMobileAutoEngageState", "Searching")
 		return
 	end
 
 	local targetPart = rootOf(currentTarget)
 	if not targetPart then
-		currentTarget = nil
+		setTarget(nil, nil, "Retargeting")
 		return
 	end
 
 	local offset = targetPart.Position - root.Position
 	local flatOffset = Vector3.new(offset.X, 0, offset.Z)
 	local distance = flatOffset.Magnitude
-	setTargetAttributes(
-		currentTarget,
-		distance,
-		distance > ATTACK_DISTANCE and "Approaching" or "Attacking"
-	)
+	local state = distance > ATTACK_DISTANCE and "Approaching" or "Attacking"
+	player:SetAttribute("DungeonMobileAutoEngageDistance", distance)
+	player:SetAttribute("DungeonMobileAutoEngageState", state)
 
 	if distance > ATTACK_DISTANCE then
 		if distance > 0.05 then
-			-- Aplicado depois do PlayerModule para que o joystick neutro nao
-			-- cancele a aproximacao automatica enquanto o botao estiver segurado.
+			-- RenderPriority.Character + 5 roda depois do controle padrao e evita
+			-- que o joystick neutro cancele o auto-walk durante o hold.
 			humanoid:Move(flatOffset.Unit, false)
 			humanoid:MoveTo(Vector3.new(
 				targetPart.Position.X,
@@ -257,7 +277,6 @@ local function stepAutoWalk()
 	if (flatTarget - root.Position).Magnitude > 0.05 then
 		root.CFrame = CFrame.lookAt(root.Position, flatTarget)
 	end
-
 	if os.clock() - lastAttackAt >= ATTACK_RETRY then
 		lastAttackAt = os.clock()
 		sword:Activate()
@@ -275,43 +294,45 @@ local function begin(input)
 		return
 	end
 	if not equippedSword() then
-		setTargetAttributes(nil, nil, "NoSword")
+		player:SetAttribute("DungeonMobileAutoEngageState", "NoSword")
 		return
 	end
 
 	held = true
 	heldInput = input
-	currentTarget = nil
 	lastTargetSearch = 0
 	lastAttackAt = 0
 	player:SetAttribute("DungeonMobileAttackHeld", true)
 	player:SetAttribute("DungeonMobileAttackHoldStartedAt", workspace:GetServerTimeNow())
-	setTargetAttributes(nil, nil, "Searching")
+	setTarget(nil, nil, "Searching")
 
 	RunService:UnbindFromRenderStep(RENDER_BIND)
 	RunService:BindToRenderStep(
 		RENDER_BIND,
-		Enum.RenderPriority.Input.Value + 20,
+		Enum.RenderPriority.Character.Value + 5,
 		stepAutoWalk
 	)
-	-- Executa uma vez imediatamente para nao esperar o proximo frame perceptivel.
 	stepAutoWalk()
-end
-
-local function isPressInput(input)
-	return input.UserInputType == Enum.UserInputType.Touch
-		or input.UserInputType == Enum.UserInputType.MouseButton1
 end
 
 local function isAttackButton(button)
 	if not button or not button:IsA("GuiButton") then
 		return false
 	end
-	if BUTTON_NAMES[string.lower(button.Name)] then
+	if button:GetAttribute("DungeonAuthoredAttackButtonBound") == true then
 		return true
 	end
-	local parent = button.Parent
-	return parent and BUTTON_NAMES[string.lower(parent.Name)] == true
+	local current = button
+	for _ = 1, 3 do
+		if not current then
+			break
+		end
+		if BUTTON_NAMES[string.lower(current.Name)] then
+			return true
+		end
+		current = current.Parent
+	end
+	return false
 end
 
 local function bindButton(button)
@@ -323,7 +344,9 @@ local function bindButton(button)
 	button:SetAttribute("DungeonMobileAttackHoldBound", true)
 
 	button.InputBegan:Connect(function(input)
-		if isPressInput(input) then
+		if input.UserInputType == Enum.UserInputType.Touch
+			or input.UserInputType == Enum.UserInputType.MouseButton1
+		then
 			begin(input)
 		end
 	end)
@@ -334,14 +357,56 @@ local function bindButton(button)
 	end)
 end
 
-local function scan()
+local function scanButtons()
 	for _, descendant in ipairs(playerGui:GetDescendants()) do
 		bindButton(descendant)
 	end
 end
 
--- InputEnded global cobre o caso em que o dedo sai dos limites do botao antes
--- de ser solto.
+local function inputTouchesAttackButton(input)
+	local position = input.Position
+	local ok, objects = pcall(
+		GuiService.GetGuiObjectsAtPosition,
+		GuiService,
+		math.floor(position.X),
+		math.floor(position.Y)
+	)
+	if not ok then
+		return false
+	end
+	for _, object in ipairs(objects) do
+		local current = object
+		for _ = 1, 5 do
+			if not current then
+				break
+			end
+			if current:IsA("GuiButton") and isAttackButton(current) then
+				bindButton(current)
+				return current.Visible
+			end
+			current = current.Parent
+		end
+	end
+	return false
+end
+
+-- Fallback global: funciona mesmo quando outro LocalScript/overlay interfere
+-- nos eventos InputBegan do GuiButton. E especialmente importante no emulador
+-- mobile do Studio.
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+	if held or not isMobile() then
+		return
+	end
+	if input.UserInputType ~= Enum.UserInputType.Touch
+		and input.UserInputType ~= Enum.UserInputType.MouseButton1
+	then
+		return
+	end
+	if inputTouchesAttackButton(input) then
+		begin(input)
+	end
+end)
+
 UserInputService.InputEnded:Connect(function(input)
 	if heldInput == input then
 		stop("ButtonReleased")
@@ -355,7 +420,7 @@ player:GetAttributeChangedSignal("DungeonMobileMode"):Connect(function()
 	if not isMobile() then
 		stop("MobileModeEnded")
 	end
-	task.defer(scan)
+	task.defer(scanButtons)
 end)
 player:GetAttributeChangedSignal("IsDowned"):Connect(function()
 	if player:GetAttribute("IsDowned") == true then
@@ -376,8 +441,13 @@ player.CharacterAdded:Connect(function(character)
 	end)
 end)
 
-task.defer(scan)
+task.defer(scanButtons)
 player:SetAttribute("DungeonMobileAutoWalkReady", true)
 player:SetAttribute("DungeonMobileHoldAttackReady", true)
 player:SetAttribute("DungeonMobileAutoWalkVersion", VERSION)
-player:SetAttribute("DungeonMobileHoldAttackPolicy", "HoldToApproachAndAttackNearestTargetV4")
+player:SetAttribute("DungeonMobileHoldAttackPolicy", "HoldToApproachAttackAndOutlineNearestTargetV5")
+
+script.Destroying:Connect(function()
+	stop("Destroyed")
+	outline:Destroy()
+end)
