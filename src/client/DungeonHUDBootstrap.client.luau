@@ -1,20 +1,12 @@
 --[[
-	Infinity Islands - DungeonHUDBootstrap V1
+	Infinity Islands - DungeonHUDBootstrap
 
-	Single responsibility:
-	Guarantee the designer-authored StarterGui.DungeonHUD exists in PlayerGui
-	before DungeonArtHUDController performs its binding.
+	Responsabilidades:
+	1. garantir que o DungeonHUD autorado no Studio exista em PlayerGui;
+	2. respeitar o atributo GUI `invisible = true` como override autoral.
 
-	This script DOES NOT create visual elements.
-	It only clones the complete authored ScreenGui if Roblox has not copied it yet.
-
-	Expected Studio hierarchy:
-	StarterGui
-	└── DungeonHUD [ScreenGui]
-	    ├── ObjectivePanel
-	    ├── PlayerStatus
-	    ├── MiniMap
-	    └── MissionsPanel (optional)
+	Nenhum elemento visual e criado aqui alem do clone completo do DungeonHUD
+	quando o Roblox ainda nao o copiou para PlayerGui.
 ]]
 
 local Players = game:GetService("Players")
@@ -22,6 +14,68 @@ local StarterGui = game:GetService("StarterGui")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
+
+local visibilityBindings = setmetatable({}, { __mode = "k" })
+
+local function isVisibilityObject(instance)
+	return instance:IsA("GuiObject") or instance:IsA("LayerCollector")
+end
+
+local function forceInvisibleIfRequested(instance)
+	if not instance or not instance.Parent or not isVisibilityObject(instance) then
+		return
+	end
+	if instance:GetAttribute("invisible") ~= true then
+		return
+	end
+
+	if instance:IsA("GuiObject") then
+		if instance.Visible then
+			instance.Visible = false
+		end
+	elseif instance:IsA("LayerCollector") then
+		if instance.Enabled then
+			instance.Enabled = false
+		end
+	end
+end
+
+local function bindVisibilityAttribute(instance)
+	if not isVisibilityObject(instance) then
+		return
+	end
+
+	if visibilityBindings[instance] then
+		forceInvisibleIfRequested(instance)
+		return
+	end
+
+	local connections = {}
+	visibilityBindings[instance] = connections
+
+	table.insert(connections, instance:GetAttributeChangedSignal("invisible"):Connect(function()
+		forceInvisibleIfRequested(instance)
+	end))
+
+	if instance:IsA("GuiObject") then
+		table.insert(connections, instance:GetPropertyChangedSignal("Visible"):Connect(function()
+			forceInvisibleIfRequested(instance)
+		end))
+	elseif instance:IsA("LayerCollector") then
+		table.insert(connections, instance:GetPropertyChangedSignal("Enabled"):Connect(function()
+			forceInvisibleIfRequested(instance)
+		end))
+	end
+
+	forceInvisibleIfRequested(instance)
+end
+
+local function scanVisibilityAttributes(root)
+	bindVisibilityAttribute(root)
+	for _, descendant in ipairs(root:GetDescendants()) do
+		bindVisibilityAttribute(descendant)
+	end
+end
 
 local function validHud(instance)
 	return instance
@@ -34,6 +88,7 @@ local function configure(hud)
 	hud.ResetOnSpawn = false
 	hud:SetAttribute("ResponsiveGenericOptOut", true)
 	hud:SetAttribute("DungeonHUDBootstrapReady", true)
+	scanVisibilityAttributes(hud)
 	return hud
 end
 
@@ -79,13 +134,18 @@ local function ensureHud()
 	return clone
 end
 
--- Resolve immediately.
+-- Aplica a politica tambem a GUIs que nao pertencem ao DungeonHUD.
+scanVisibilityAttributes(playerGui)
+playerGui.DescendantAdded:Connect(function(instance)
+	task.defer(bindVisibilityAttribute, instance)
+end)
+
+-- Resolve o HUD imediatamente.
 local hud = ensureHud()
 
--- StarterGui can arrive a few frames later in Studio/Rojo.
+-- StarterGui pode chegar alguns frames depois no Studio/Rojo.
 if not hud then
 	local deadline = os.clock() + 30
-
 	while not hud and os.clock() < deadline do
 		task.wait(0.05)
 		hud = ensureHud()
@@ -95,10 +155,10 @@ end
 if hud then
 	player:SetAttribute("DungeonHUDBootstrapReady", true)
 	player:SetAttribute("DungeonHUDBootstrapError", nil)
+	player:SetAttribute("DungeonGUIInvisibleAttributePolicy", "invisible=true => hidden")
 
 	print(
-		"[DungeonHUDBootstrap] DungeonHUD pronto em PlayerGui. "
-			.. "DungeonArtHUDController pode fazer o binding."
+		"[DungeonHUDBootstrap] DungeonHUD pronto; atributo invisible=true respeitado."
 	)
 else
 	player:SetAttribute("DungeonHUDBootstrapReady", false)
@@ -113,8 +173,10 @@ else
 	)
 end
 
--- Prevent duplicate automatic StarterGui copy after character loading.
+-- Evita uma segunda copia automatica do DungeonHUD apos o carregamento.
 playerGui.ChildAdded:Connect(function(child)
+	bindVisibilityAttribute(child)
+
 	if not validHud(child) then
 		return
 	end
