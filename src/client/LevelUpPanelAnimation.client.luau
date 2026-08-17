@@ -1,6 +1,7 @@
--- Experience Polish: level up nunca deve interromper combate.
--- O antigo LevelUpPanel permanece no HUD apenas como asset legado, mas este
--- controller o mantem oculto e usa somente notificacoes curtas e nao modais.
+-- Progressao visual do MVP linear.
+-- Nenhum level-up abre painel ou captura input: jogador, Orb e companion usam
+-- apenas um toast curto. Upgrades de companion sao confirmados automaticamente
+-- usando a primeira melhoria valida oferecida pelo servidor.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -9,7 +10,7 @@ local TweenService = game:GetService("TweenService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local VERSION = "NonBlockingProgressionToastV1"
+local VERSION = "LinearNonBlockingProgressionToastV2"
 local TOAST_GUI_NAME = "ProgressionLevelToastGui"
 local DISPLAY_SECONDS = 1.35
 local FADE_SECONDS = 0.18
@@ -25,17 +26,14 @@ local function suppressLevelUpPanel(root)
 	if not root then
 		return
 	end
-
 	local panel = root:FindFirstChild("LevelUpPanel", true)
 	if not panel or not panel:IsA("GuiObject") then
 		return
 	end
-
 	panel.Visible = false
 	if panelConnections[panel] then
 		return
 	end
-
 	panelConnections[panel] = panel:GetPropertyChangedSignal("Visible"):Connect(function()
 		if panel.Parent and panel.Visible then
 			panel.Visible = false
@@ -55,7 +53,6 @@ local function ensureToast()
 	if toastGui and toastGui.Parent and toastLabel and toastLabel.Parent then
 		return toastLabel
 	end
-
 	local old = playerGui:FindFirstChild(TOAST_GUI_NAME)
 	if old then
 		old:Destroy()
@@ -87,11 +84,10 @@ local function ensureToast()
 	toastLabel.ZIndex = 181
 	toastLabel.Parent = toastGui
 
-	local sizeConstraint = Instance.new("UITextSizeConstraint")
-	sizeConstraint.MinTextSize = 16
-	sizeConstraint.MaxTextSize = 32
-	sizeConstraint.Parent = toastLabel
-
+	local constraint = Instance.new("UITextSizeConstraint")
+	constraint.MinTextSize = 16
+	constraint.MaxTextSize = 32
+	constraint.Parent = toastLabel
 	return toastLabel
 end
 
@@ -99,7 +95,6 @@ local function showToast(message, color)
 	if type(message) ~= "string" or message == "" then
 		return
 	end
-
 	local label = ensureToast()
 	toastSerial += 1
 	local serial = toastSerial
@@ -110,31 +105,23 @@ local function showToast(message, color)
 	label.TextStrokeTransparency = 1
 	label.Visible = true
 
-	local fadeIn = TweenService:Create(
+	TweenService:Create(
 		label,
 		TweenInfo.new(FADE_SECONDS, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-		{
-			TextTransparency = 0,
-			TextStrokeTransparency = 0.18,
-		}
-	)
-	fadeIn:Play()
+		{ TextTransparency = 0, TextStrokeTransparency = 0.18 }
+	):Play()
 
 	task.delay(DISPLAY_SECONDS, function()
 		if serial ~= toastSerial or not label.Parent then
 			return
 		end
-
-		local fadeOut = TweenService:Create(
+		local fade = TweenService:Create(
 			label,
 			TweenInfo.new(FADE_SECONDS, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
-			{
-				TextTransparency = 1,
-				TextStrokeTransparency = 1,
-			}
+			{ TextTransparency = 1, TextStrokeTransparency = 1 }
 		)
-		fadeOut:Play()
-		fadeOut.Completed:Wait()
+		fade:Play()
+		fade.Completed:Wait()
 		if serial == toastSerial and label.Parent then
 			label.Visible = false
 		end
@@ -147,7 +134,6 @@ local function onPlayerLevelUp()
 		return
 	end
 	lastPlayerLevelSerial = serial
-
 	local level = math.max(
 		1,
 		math.floor(
@@ -160,14 +146,13 @@ local function onPlayerLevelUp()
 end
 
 local function bindOrbLevelNotifications()
-	local orbFolder = ReplicatedStorage:FindFirstChild("OrbCombat")
-	local configModule = orbFolder and orbFolder:FindFirstChild("OrbConfig")
-	if not configModule or not configModule:IsA("ModuleScript") then
+	local folder = ReplicatedStorage:FindFirstChild("OrbCombat")
+	local module = folder and folder:FindFirstChild("OrbConfig")
+	if not module or not module:IsA("ModuleScript") then
 		return
 	end
-
-	local success, OrbConfig = pcall(require, configModule)
-	if not success or type(OrbConfig) ~= "table" then
+	local ok, OrbConfig = pcall(require, module)
+	if not ok or type(OrbConfig) ~= "table" then
 		return
 	end
 
@@ -176,14 +161,25 @@ local function bindOrbLevelNotifications()
 			and OrbConfig.GetLevelAttribute(orbName)
 			or nil
 		if type(attribute) == "string" and attribute ~= "" then
-			lastOrbLevels[attribute] = math.max(0, math.floor(tonumber(player:GetAttribute(attribute)) or 0))
+			lastOrbLevels[attribute] = math.max(
+				0,
+				math.floor(tonumber(player:GetAttribute(attribute)) or 0)
+			)
 			player:GetAttributeChangedSignal(attribute):Connect(function()
 				local previous = lastOrbLevels[attribute] or 0
 				local current = math.max(0, math.floor(tonumber(player:GetAttribute(attribute)) or 0))
 				lastOrbLevels[attribute] = current
-				if current > previous and previous > 0 then
-					local definition = type(OrbConfig.GetOrb) == "function" and OrbConfig.GetOrb(orbName) or nil
-					local displayName = definition and definition.DisplayName or orbName
+				if current <= previous or current <= 0 then
+					return
+				end
+				local definition = type(OrbConfig.GetOrb) == "function" and OrbConfig.GetOrb(orbName) or nil
+				local displayName = definition and definition.DisplayName or orbName
+				if previous <= 0 then
+					showToast(
+						string.format("%s DESBLOQUEADO!", tostring(displayName)),
+						Color3.fromRGB(255, 167, 92)
+					)
+				else
 					showToast(
 						string.format("%s • NÍVEL %d", tostring(displayName), current),
 						Color3.fromRGB(255, 167, 92)
@@ -194,38 +190,72 @@ local function bindOrbLevelNotifications()
 	end
 end
 
-local function bindCompanionNotification()
-	local remote = ReplicatedStorage:FindFirstChild("CompanionLevelUpEvent")
-	if not remote or not remote:IsA("RemoteEvent") then
-		return false
+local companionOfferSerials = {}
+
+local function autoAcceptCompanionOffer(payload, request)
+	local serial = math.floor(tonumber(payload.Serial) or 0)
+	local instanceId = payload.InstanceId
+	if serial <= 0 or type(instanceId) ~= "string" or companionOfferSerials[serial] then
+		return
 	end
 
-	if remote:GetAttribute("NonBlockingToastBound") == true then
+	local chosen
+	for _, option in ipairs(payload.Options or {}) do
+		if type(option) == "table"
+			and option.Available ~= false
+			and type(option.UpgradeId) == "string"
+			and option.UpgradeId ~= ""
+		then
+			chosen = option
+			break
+		end
+	end
+	if not chosen then
+		return
+	end
+
+	companionOfferSerials[serial] = true
+	request:FireServer({
+		Serial = serial,
+		InstanceId = instanceId,
+		UpgradeId = chosen.UpgradeId,
+	})
+end
+
+local function bindCompanionProgression()
+	local event = ReplicatedStorage:FindFirstChild("CompanionLevelUpEvent")
+	local request = ReplicatedStorage:FindFirstChild("CompanionLevelUpRequest")
+	if not event or not event:IsA("RemoteEvent")
+		or not request or not request:IsA("RemoteEvent")
+	then
+		return false
+	end
+	if event:GetAttribute("LinearAutoUpgradeBound") == true then
 		return true
 	end
-	remote:SetAttribute("NonBlockingToastBound", true)
-	remote.OnClientEvent:Connect(function(payload)
-		if type(payload) ~= "table" or payload.Action ~= "Offer" then
+
+	event:SetAttribute("LinearAutoUpgradeBound", true)
+	event.OnClientEvent:Connect(function(payload)
+		if type(payload) ~= "table" then
 			return
 		end
-		local level = math.max(1, math.floor(tonumber(payload.Level) or 1))
-		local name = payload.CompanionName or payload.SpeciesName or "Companheiro"
-		showToast(
-			string.format("%s • NÍVEL %d", tostring(name), level),
-			Color3.fromRGB(126, 255, 176)
-		)
+		if payload.Action == "Offer" then
+			local level = math.max(1, math.floor(tonumber(payload.Level) or 1))
+			local name = payload.CompanionName or payload.SpeciesName or "Companheiro"
+			showToast(
+				string.format("%s • NÍVEL %d", tostring(name), level),
+				Color3.fromRGB(126, 255, 176)
+			)
+			autoAcceptCompanionOffer(payload, request)
+		end
 	end)
 	return true
 end
 
 player:GetAttributeChangedSignal("PlayerLevelUpSerial"):Connect(onPlayerLevelUp)
-
 playerGui.ChildAdded:Connect(function(child)
-	task.defer(function()
-		suppressLevelUpPanel(child)
-	end)
+	task.defer(suppressLevelUpPanel, child)
 end)
-
 playerGui.DescendantAdded:Connect(function(descendant)
 	if descendant.Name == "LevelUpPanel" and descendant:IsA("GuiObject") then
 		task.defer(suppressAllLegacyPanels)
@@ -237,12 +267,11 @@ task.defer(function()
 	ensureToast()
 	bindOrbLevelNotifications()
 
-	if not bindCompanionNotification() then
-		-- O remote e criado pelo CompanionService. Esperamos sem bloquear o boot.
+	if not bindCompanionProgression() then
 		task.spawn(function()
 			for _ = 1, 60 do
 				task.wait(0.5)
-				if bindCompanionNotification() then
+				if bindCompanionProgression() then
 					break
 				end
 			end
@@ -252,3 +281,4 @@ end)
 
 player:SetAttribute("DungeonProgressionToastVersion", VERSION)
 player:SetAttribute("DungeonBlockingLevelUpPanelDisabled", true)
+player:SetAttribute("DungeonCompanionLevelUpChoicePolicy", "AutomaticFirstAvailableUpgrade")
