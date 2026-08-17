@@ -1,9 +1,9 @@
 --[[
-	Infinity Islands - Initial Island Camera Intro V1
+	Infinity Islands - Initial Island Camera Intro V2
 
-	A primeira entrada mostra a ilha a partir de uma camera alta voltada para o
-	ExitAnchor. A transicao e apenas local: nao move o personagem e nao interfere
-	com checkpoints. Durante a apresentacao, movimento e ataque ficam bloqueados.
+	Desktop/gamepad preservam a apresentacao cinematografica inicial.
+	No mobile ela e pulada: a camera inteligente da primeira ilha deve assumir
+	desde o spawn e o jogador nao deve perder os primeiros segundos de controle.
 ]]
 
 local ContextActionService = game:GetService("ContextActionService")
@@ -13,7 +13,7 @@ local Workspace = game:GetService("Workspace")
 
 local player = Players.LocalPlayer
 
-local VERSION = "InitialIslandCameraIntroV1"
+local VERSION = "InitialIslandCameraIntroV2_MobileSmartCameraFirst"
 local CAMERA_BIND = "DungeonInitialCameraIntro"
 local INPUT_ACTION = "DungeonInitialCameraIntroBlock"
 local INPUT_PRIORITY = 10000
@@ -204,7 +204,9 @@ local function playIntro(character, humanoid, root, exit)
 	end
 	away = away.Unit
 
-	local startPosition = root.Position + away * START_BACK_DISTANCE + Vector3.new(0, START_HEIGHT, 0)
+	local startPosition = root.Position
+		+ away * START_BACK_DISTANCE
+		+ Vector3.new(0, START_HEIGHT, 0)
 	local startCFrame = CFrame.lookAt(startPosition, exitPosition, Vector3.yAxis)
 	local startFocus = CFrame.new(exitPosition)
 
@@ -216,27 +218,60 @@ local function playIntro(character, humanoid, root, exit)
 	camera.CameraType = Enum.CameraType.Scriptable
 
 	local startedAt = os.clock()
-	RunService:BindToRenderStep(CAMERA_BIND, Enum.RenderPriority.Camera.Value + 30, function()
-		local elapsed = os.clock() - startedAt
-		local alpha = smoothstep(elapsed / INTRO_DURATION_SECONDS)
-		camera.CFrame = startCFrame:Lerp(saved.CFrame, alpha)
-		camera.Focus = startFocus:Lerp(saved.Focus, alpha)
-		camera.FieldOfView = saved.FieldOfView
-	end)
+	RunService:BindToRenderStep(
+		CAMERA_BIND,
+		Enum.RenderPriority.Camera.Value + 30,
+		function()
+			local elapsed = os.clock() - startedAt
+			local alpha = smoothstep(elapsed / INTRO_DURATION_SECONDS)
+			camera.CFrame = startCFrame:Lerp(saved.CFrame, alpha)
+			camera.Focus = startFocus:Lerp(saved.Focus, alpha)
+			camera.FieldOfView = saved.FieldOfView
+		end
+	)
 
-	while character.Parent and player.Character == character and os.clock() - startedAt < INTRO_DURATION_SECONDS do
+	while character.Parent
+		and player.Character == character
+		and os.clock() - startedAt < INTRO_DURATION_SECONDS
+	do
 		RunService.RenderStepped:Wait()
 	end
 
 	RunService:UnbindFromRenderStep(CAMERA_BIND)
 	if camera.Parent then
 		camera.FieldOfView = saved.FieldOfView
-		camera.CameraType = saved.CameraType == Enum.CameraType.Scriptable and Enum.CameraType.Custom or saved.CameraType
-		camera.CameraSubject = (saved.CameraSubject and saved.CameraSubject.Parent and saved.CameraSubject) or humanoid
+		camera.CameraType = saved.CameraType == Enum.CameraType.Scriptable
+			and Enum.CameraType.Custom
+			or saved.CameraType
+		camera.CameraSubject = (
+			saved.CameraSubject
+			and saved.CameraSubject.Parent
+			and saved.CameraSubject
+		) or humanoid
 	end
 
 	setControlsBlocked(character, false)
 	player:SetAttribute("DungeonInitialCameraIntroState", "Completed")
+	player:SetAttribute("DungeonInitialCameraIntroCompletedAt", Workspace:GetServerTimeNow())
+	return true
+end
+
+local function waitForInputProfile()
+	local deadline = os.clock() + 1.5
+	while player:GetAttribute("DungeonMobileMode") == nil
+		and player:GetAttribute("DungeonInputProfileReady") ~= true
+		and os.clock() < deadline
+	do
+		task.wait(0.03)
+	end
+end
+
+local function skipForMobile()
+	if player:GetAttribute("DungeonMobileMode") ~= true then
+		return false
+	end
+	setControlsBlocked(player.Character, false)
+	player:SetAttribute("DungeonInitialCameraIntroState", "SkippedForMobileSmartCamera")
 	player:SetAttribute("DungeonInitialCameraIntroCompletedAt", Workspace:GetServerTimeNow())
 	return true
 end
@@ -246,10 +281,22 @@ local function startOnce()
 		return
 	end
 	played = true
+
+	waitForInputProfile()
+	if skipForMobile() then
+		return
+	end
+
 	player:SetAttribute("DungeonInitialCameraIntroState", "WaitingForInitialIsland")
 
 	local deadline = os.clock() + TARGET_WAIT_SECONDS
 	repeat
+		-- Se o perfil mobile chegar atrasado, ainda assim nunca iniciamos a
+		-- cinematica por cima da camera inteligente.
+		if skipForMobile() then
+			return
+		end
+
 		local character, humanoid, root, exit = findIntroTarget()
 		if character and humanoid and root and exit then
 			playIntro(character, humanoid, root, exit)
