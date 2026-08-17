@@ -1,5 +1,7 @@
--- Botao temporario de avanco entre arenas.
--- O servidor so oferece este botao quando a missao atual esta concluida.
+-- Botao de progressao linear.
+-- SITUAÇÃO ATUAL concluida -> AVANÇAR. O estado replicado do Player e a fonte
+-- de recuperacao, portanto o botao aparece mesmo que o LocalScript tenha perdido
+-- o RemoteEvent ReadyToAdvance durante o carregamento.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -10,9 +12,10 @@ local playerGui = player:WaitForChild("PlayerGui")
 local RemoteRegistry = require(ReplicatedStorage.Shared.Utilities.RemoteRegistry)
 local remote = RemoteRegistry.Get("Navigation", "AssistedIslandTransport", "RemoteEvent")
 
-local VERSION = "AdvanceIslandButtonV1"
+local VERSION = "AdvanceIslandButtonLinearV2"
 local readyToken
 local submitting = false
+local shownToken
 
 local gui = Instance.new("ScreenGui")
 gui.Name = "AdvanceIslandButtonGui"
@@ -68,30 +71,51 @@ scale.Parent = button
 
 local function hide()
 	readyToken = nil
+	shownToken = nil
 	submitting = false
 	gui.Enabled = false
 	scale.Scale = 1
 	player:SetAttribute("DungeonAdvanceButtonVisible", false)
 end
 
-local function show(payload)
-	readyToken = tonumber(payload.ReadyToken)
-	if not readyToken then
+local function show(token, destinationIndex, animate)
+	token = tonumber(token)
+	if not token then
 		hide()
 		return
 	end
+
+	readyToken = token
 	submitting = false
 	button.Text = "AVANÇAR  ▶"
 	gui.Enabled = true
 	player:SetAttribute("DungeonAdvanceButtonVisible", true)
-	player:SetAttribute("DungeonAdvanceButtonDestination", tonumber(payload.DestinationIndex))
+	player:SetAttribute("DungeonAdvanceButtonDestination", tonumber(destinationIndex))
 
-	scale.Scale = 0.88
-	TweenService:Create(
-		scale,
-		TweenInfo.new(0.16, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
-		{ Scale = 1 }
-	):Play()
+	if animate and shownToken ~= token then
+		shownToken = token
+		scale.Scale = 0.88
+		TweenService:Create(
+			scale,
+			TweenInfo.new(0.16, Enum.EasingStyle.Back, Enum.EasingDirection.Out),
+			{ Scale = 1 }
+		):Play()
+	else
+		shownToken = token
+		scale.Scale = 1
+	end
+end
+
+local function syncFromPlayerState(animate)
+	if player:GetAttribute("DungeonManualAdvanceReady") ~= true then
+		hide()
+		return
+	end
+	show(
+		player:GetAttribute("DungeonManualAdvanceReadyToken"),
+		player:GetAttribute("DungeonAssistedTransportDestination"),
+		animate
+	)
 end
 
 button.Activated:Connect(function()
@@ -104,8 +128,6 @@ button.Activated:Connect(function()
 		Action = "AdvanceRequest",
 		ReadyToken = readyToken,
 	})
-	-- Some imediatamente; o Warning/voo do controller de transporte assume a tela.
-	task.delay(0.05, hide)
 end)
 
 remote.OnClientEvent:Connect(function(payload)
@@ -113,7 +135,7 @@ remote.OnClientEvent:Connect(function(payload)
 		return
 	end
 	if payload.Action == "ReadyToAdvance" then
-		show(payload)
+		show(payload.ReadyToken, payload.DestinationIndex, true)
 	elseif payload.Action == "AdvanceUnavailable"
 		or payload.Action == "Warning"
 		or payload.Action == "BeginFlight"
@@ -125,6 +147,17 @@ remote.OnClientEvent:Connect(function(payload)
 	end
 end)
 
+for _, attribute in ipairs({
+	"DungeonManualAdvanceReady",
+	"DungeonManualAdvanceReadyToken",
+	"DungeonAssistedTransportDestination",
+}) do
+	player:GetAttributeChangedSignal(attribute):Connect(function()
+		task.defer(syncFromPlayerState, true)
+	end)
+end
+
 player.CharacterRemoving:Connect(hide)
 player:SetAttribute("DungeonAdvanceButtonReady", true)
 player:SetAttribute("DungeonAdvanceButtonVersion", VERSION)
+task.defer(syncFromPlayerState, false)
