@@ -46,8 +46,11 @@ local gui = Instance.new("ScreenGui")
 gui.Name = "DungeonShopUI"
 gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
-gui.DisplayOrder = 45
+gui.DisplayOrder = 1100
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui:SetAttribute("DungeonShopOverlayPolicy", "TopGameplayScreenGui")
+gui:SetAttribute("DungeonShopDisplayOrder", 1100)
+player:SetAttribute("DungeonShopUIDisplayOrder", 1100)
 gui.Parent = playerGui
 
 local backdrop = Instance.new("TextButton")
