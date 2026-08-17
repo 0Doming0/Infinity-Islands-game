@@ -80,6 +80,10 @@ local function publish(island, record)
 	local defeated = defeatedCount(island)
 	local spawned = spawnedCount(island)
 
+	-- These compatibility attributes are deliberately reasserted whenever the
+	-- legacy spawner republishes its concurrency data. That keeps diagnostics
+	-- consistent with the actual finite policy instead of briefly advertising
+	-- a refill that will never be allowed to happen.
 	island:SetAttribute("MobIndividualRefillEnabled", false)
 	island:SetAttribute("MobInfiniteRespawnEnabled", false)
 	island:SetAttribute("InfiniteMobRespawnEnabled", false)
@@ -166,6 +170,10 @@ local function trackIsland(island)
 		"MobTargetCount",
 		"MobLifetimeSpawnedCount",
 		"MobSpawnedCount",
+		"MobActiveAliveCount",
+		"MobRespawnPendingCount",
+		"MobInfiniteRespawnEnabled",
+		"InfiniteMobRespawnEnabled",
 	}) do
 		table.insert(
 			record.Connections,
