@@ -3,12 +3,13 @@
 -- Politica hibrida de interacao de baus:
 --   PC/gamepad: ProximityPrompt nativo do Roblox.
 --   Mobile: MobileChestProximityUI troca o Style localmente para Custom e mostra
---   um botao fixo na HUD quando o personagem entra no alcance fisico do bau.
+--   um BillboardGui tocavel acima do bau mais proximo quando o personagem entra
+--   no alcance fisico.
 --
 -- Os servicos de bau continuam sendo a unica autoridade de recompensa/abertura.
 -- Este script apenas garante uma configuracao base consistente dos prompts.
 
-local VERSION = "ChestPromptBaseV2_NativeDesktopMobileProximityUI"
+local VERSION = "ChestPromptBaseV3_NativeDesktopMobileDistanceBillboard"
 
 local observed = setmetatable({}, { __mode = "k" })
 
@@ -23,9 +24,9 @@ local function applyBaseMode(prompt)
 		return
 	end
 
-	-- O servidor publica Default como base. Em dispositivos touch, o cliente
-	-- MobileChestProximityUI esconde esse visual localmente (Style=Custom) e usa
-	-- um botao de tela baseado exclusivamente em distancia do personagem.
+	-- O servidor publica Default como base para PC/gamepad. Em dispositivos
+	-- touch, MobileChestProximityUI esconde esse visual localmente (Style=Custom)
+	-- e desenha um BillboardGui acima do bau escolhido somente por distancia.
 	prompt.Style = Enum.ProximityPromptStyle.Default
 	prompt.KeyboardKeyCode = Enum.KeyCode.E
 	prompt.GamepadKeyCode = Enum.KeyCode.ButtonX
@@ -66,6 +67,7 @@ workspace.DescendantAdded:Connect(function(descendant)
 end)
 
 workspace:SetAttribute("DungeonChestInteractionVersion", VERSION)
-workspace:SetAttribute("DungeonChestInteractionPolicy", "NativeDesktop_MobileDistanceButton")
+workspace:SetAttribute("DungeonChestInteractionPolicy", "NativeDesktop_MobileDistanceBillboard")
 workspace:SetAttribute("DungeonChestMobileCameraDependency", false)
 workspace:SetAttribute("DungeonChestMobileProximityUIExpected", true)
+workspace:SetAttribute("DungeonChestMobileFixedHUD", false)
