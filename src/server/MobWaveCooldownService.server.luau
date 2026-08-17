@@ -1,45 +1,34 @@
 --[[
-	Infinity Islands - MobWaveCooldownService V1
+	Infinity Islands - Finite Mob Encounter Guard
 
-	Por que existe:
-	O MonsterSpawner legado faz refill imediato quando plan.Alive < MaxAlive.
-	Ele so faz isso quando CombatState == "Active".
+	The legacy MonsterSpawner still tries to refill plan.Alive back to MaxAlive
+	whenever CombatState == "Active". For the linear MVP that is undesirable.
 
-	Este servico:
-	1) deixa a primeira leva nascer normalmente;
-	2) ao primeiro mob morto, bloqueia refill individual;
-	3) deixa os mobs restantes da leva continuarem vivos/atacando;
-	4) quando Alive chega a 0, entra em RespawnCooldown;
-	5) espera WaveRespawnCooldownSeconds;
-	6) devolve CombatState = Active para o MonsterSpawner gerar a proxima leva.
+	Rule:
+	- the initial fixed quota spawns once;
+	- after the first defeated mob, this guard changes the public CombatState
+	  away from "Active" so MonsterSpawner cannot refill killed mobs;
+	- IslandCombatService keeps its own authoritative record Active internally,
+	  so kill counting and clear still work;
+	- if another service republishes "Active" after a death/respawn, the guard
+	  immediately restores the finite state;
+	- once Cleared, the final state stays Cleared.
 
-	Nao altera XP, dano, IA ou RecommendedLevel.
+	No cooldown and no second wave exist in the MVP.
 ]]
 
 local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-
-local Config = require(
-	ReplicatedStorage
-		:WaitForChild("Shared")
-		:WaitForChild("Configs")
-		:WaitForChild("IslandMobSpawnConfig")
-)
 
 local records = setmetatable({}, { __mode = "k" })
-
-local function now()
-	return workspace:GetServerTimeNow()
-end
+local FINITE_ACTIVE_STATE = "FiniteActive"
 
 local function cleanIndex(value)
-	local n = tonumber(value)
-	if not n then
+	local number = tonumber(value)
+	if not number then
 		return nil
 	end
-
-	n = math.floor(n)
-	return n >= 1 and n or nil
+	number = math.floor(number)
+	return number >= 1 and number or nil
 end
 
 local function isCombatIsland(island)
@@ -58,248 +47,103 @@ local function islandIndex(island)
 	)
 end
 
-local function occupied(index)
-	if not index then
-		return false
+local function targetCount(island)
+	return math.max(
+		0,
+		math.floor(tonumber(island:GetAttribute("MobTargetCount")) or 0)
+	)
+end
+
+local function defeatedCount(island)
+	return math.max(
+		0,
+		math.floor(tonumber(island:GetAttribute("MobDefeatedCount")) or 0)
+	)
+end
+
+local function spawnedCount(island)
+	return math.max(
+		0,
+		math.floor(tonumber(
+			island:GetAttribute("MobLifetimeSpawnedCount")
+				or island:GetAttribute("MobSpawnedCount")
+		) or 0)
+	)
+end
+
+local function publish(island, record)
+	if not island.Parent then
+		return
 	end
 
-	for _, player in ipairs(Players:GetPlayers()) do
-		if cleanIndex(
-			player:GetAttribute("CurrentGlobalIslandIndex")
-		) == index
-		then
-			return true
+	local target = targetCount(island)
+	local defeated = defeatedCount(island)
+	local spawned = spawnedCount(island)
+
+	island:SetAttribute("MobIndividualRefillEnabled", false)
+	island:SetAttribute("MobInfiniteRespawnEnabled", false)
+	island:SetAttribute("InfiniteMobRespawnEnabled", false)
+	island:SetAttribute("MobWaveCooldownActive", false)
+	island:SetAttribute("MobWaveRefillLocked", record.Locked == true)
+	island:SetAttribute("MobRespawnPendingCount", 0)
+	island:SetAttribute("MobRespawnPolicy", "FixedFiniteQuota")
+	island:SetAttribute("MobFiniteEncounter", true)
+	island:SetAttribute("MobFiniteTargetCount", target)
+	island:SetAttribute("MobFiniteDefeatedCount", defeated)
+	island:SetAttribute("MobFiniteSpawnedCount", spawned)
+	island:SetAttribute(
+		"MobFiniteRemainingCount",
+		math.max(0, target - defeated)
+	)
+end
+
+local function enforce(island, record)
+	if not island.Parent or record.Enforcing then
+		return
+	end
+
+	if island:GetAttribute("Cleared") == true then
+		record.Completed = true
+		record.Locked = true
+		publish(island, record)
+		if island:GetAttribute("CombatState") ~= "Cleared" then
+			record.Enforcing = true
+			island:SetAttribute("CombatState", "Cleared")
+			record.Enforcing = false
 		end
-	end
-
-	return false
-end
-
-local function setWaveAttributes(island, record)
-	island:SetAttribute(
-		"MobWaveRespawnCooldownSeconds",
-		Config.WaveRespawnCooldownSeconds
-	)
-	island:SetAttribute(
-		"MobRespawnPolicy",
-		record.Completed == true
-			and "StopAfterIslandClear"
-			or "BoundedWaveAfterCooldown"
-	)
-	island:SetAttribute(
-		"MobIndividualRefillEnabled",
-		false
-	)
-	island:SetAttribute(
-		"MobWaveRefillLocked",
-		record.RefillLocked == true
-	)
-	island:SetAttribute(
-		"MobWaveCooldownActive",
-		record.CooldownActive == true
-	)
-	island:SetAttribute(
-		"MobWaveNumber",
-		record.WaveNumber
-	)
-end
-
-local function stopAfterIslandClear(island, record)
-	if island:GetAttribute("Cleared") ~= true then
-		return false
-	end
-
-	-- A completion can happen during the same death callback that started a
-	-- wave cooldown. Invalidating its token makes that delayed callback inert.
-	record.Completed = true
-	record.RefillLocked = true
-	record.CooldownActive = false
-	record.CooldownToken += 1
-	island:SetAttribute("MobWaveCooldownEndsAt", nil)
-	setWaveAttributes(island, record)
-
-	if island:GetAttribute("CombatState") ~= "Cleared" then
-		island:SetAttribute("CombatState", "Cleared")
-	end
-
-	return true
-end
-
-local function desiredBlockedState(record)
-	if record.CooldownActive then
-		return "RespawnCooldown"
-	end
-
-	if record.RefillLocked then
-		return "WaveActive"
-	end
-
-	return nil
-end
-
-local function enforceBlockedState(island, record)
-	if stopAfterIslandClear(island, record) then
 		return
 	end
 
-	if record.Enforcing then
+	if not record.Locked then
+		publish(island, record)
 		return
 	end
 
-	local desired = desiredBlockedState(record)
+	publish(island, record)
 
-	if not desired then
-		return
+	-- MonsterSpawner only refills while the attribute is exactly "Active".
+	-- IslandCombatService's internal record remains Active and keeps counting
+	-- deaths, so this is only a spawn gate, not a second combat state machine.
+	if island:GetAttribute("CombatState") == "Active" then
+		record.Enforcing = true
+		island:SetAttribute("CombatState", FINITE_ACTIVE_STATE)
+		record.Enforcing = false
 	end
-
-	if island:GetAttribute("CombatState") == desired then
-		return
-	end
-
-	record.Enforcing = true
-	island:SetAttribute("CombatState", desired)
-	record.Enforcing = false
-end
-
-local function finishCooldown(island, record, token)
-	if not island.Parent
-		or records[island] ~= record
-		or record.CooldownToken ~= token
-	then
-		return
-	end
-
-	if stopAfterIslandClear(island, record) then
-		return
-	end
-
-	record.CooldownActive = false
-	record.RefillLocked = false
-	record.WaveNumber += 1
-
-	island:SetAttribute("MobWaveCooldownEndsAt", nil)
-	island:SetAttribute("MobWaveLastRespawnAt", now())
-
-	setWaveAttributes(island, record)
-
-	-- So ativa a nova leva se ainda houver jogador nessa ilha.
-	-- Caso contrario, IslandCombatService ativa novamente quando alguem retornar.
-	if occupied(record.Index) then
-		island:SetAttribute("CombatState", "Active")
-	end
-end
-
-local function beginCooldown(island, record)
-	if stopAfterIslandClear(island, record) then
-		return
-	end
-
-	if record.CooldownActive then
-		return
-	end
-
-	if not occupied(record.Index) then
-		return
-	end
-
-	record.CooldownActive = true
-	record.RefillLocked = true
-	record.CooldownToken += 1
-
-	local token = record.CooldownToken
-	local seconds = math.max(
-		1,
-		tonumber(Config.WaveRespawnCooldownSeconds) or 4
-	)
-
-	island:SetAttribute(
-		"MobWaveCooldownStartedAt",
-		now()
-	)
-	island:SetAttribute(
-		"MobWaveCooldownEndsAt",
-		now() + seconds
-	)
-
-	setWaveAttributes(island, record)
-	enforceBlockedState(island, record)
-
-	task.delay(seconds, function()
-		finishCooldown(island, record, token)
-	end)
 end
 
 local function onDefeatedChanged(island, record)
-	if stopAfterIslandClear(island, record) then
+	if island:GetAttribute("Cleared") == true then
+		enforce(island, record)
 		return
 	end
 
-	local defeated = math.max(
-		0,
-		math.floor(
-			tonumber(
-				island:GetAttribute("MobDefeatedCount")
-			) or 0
-		)
-	)
-
-	if defeated <= record.LastDefeatedCount then
-		return
+	local defeated = defeatedCount(island)
+	if defeated > record.LastDefeatedCount then
+		record.LastDefeatedCount = defeated
+		record.Locked = true
 	end
 
-	record.LastDefeatedCount = defeated
-
-	-- Assim que a leva comeca a morrer, bloqueia qualquer refill por vaga.
-	-- Os mobs que ainda estao vivos continuam normalmente.
-	if not record.CooldownActive then
-		record.RefillLocked = true
-		setWaveAttributes(island, record)
-		enforceBlockedState(island, record)
-	end
-end
-
-local function onAliveChanged(island, record)
-	if stopAfterIslandClear(island, record) then
-		return
-	end
-	local alive = math.max(
-		0,
-		math.floor(
-			tonumber(
-				island:GetAttribute("MobAliveCount")
-					or island:GetAttribute("MobActiveAliveCount")
-			) or 0
-		)
-	)
-
-	local lifetimeSpawned = math.max(
-		0,
-		math.floor(
-			tonumber(
-				island:GetAttribute("MobLifetimeSpawnedCount")
-					or island:GetAttribute("MobSpawnedCount")
-			) or 0
-		)
-	)
-
-	-- Primeira leva detectada.
-	if alive > 0 and lifetimeSpawned > 0 then
-		if record.WaveNumber <= 0 then
-			record.WaveNumber = 1
-		end
-
-		setWaveAttributes(island, record)
-		return
-	end
-
-	-- So inicia cooldown depois que houve morte nesta leva.
-	if alive == 0
-		and lifetimeSpawned > 0
-		and record.RefillLocked
-		and not record.CooldownActive
-	then
-		beginCooldown(island, record)
-	end
+	enforce(island, record)
 end
 
 local function trackIsland(island)
@@ -309,85 +153,62 @@ local function trackIsland(island)
 
 	local record = {
 		Index = islandIndex(island),
-		RefillLocked = false,
-		CooldownActive = false,
-		CooldownToken = 0,
+		Locked = defeatedCount(island) > 0,
 		Completed = island:GetAttribute("Cleared") == true,
-		WaveNumber = 0,
-		LastDefeatedCount = math.max(
-			0,
-			math.floor(
-				tonumber(
-					island:GetAttribute("MobDefeatedCount")
-				) or 0
-			)
-		),
+		LastDefeatedCount = defeatedCount(island),
 		Enforcing = false,
 		Connections = {},
 	}
-
 	records[island] = record
-	setWaveAttributes(island, record)
 
-	table.insert(
-		record.Connections,
-		island:GetAttributeChangedSignal(
-			"MobDefeatedCount"
-		):Connect(function()
-			onDefeatedChanged(island, record)
-		end)
-	)
-
-	-- IslandCombatService publishes CombatState before Cleared. Watching the
-	-- explicit completion flag ensures a cooldown already queued by that same
-	-- final death can never revive the arena afterward.
-	table.insert(
-		record.Connections,
-		island:GetAttributeChangedSignal("Cleared"):Connect(function()
-			stopAfterIslandClear(island, record)
-		end)
-	)
-
-	for _, name in ipairs({
-		"MobAliveCount",
-		"MobActiveAliveCount",
+	for _, attributeName in ipairs({
+		"MobDefeatedCount",
+		"MobTargetCount",
+		"MobLifetimeSpawnedCount",
+		"MobSpawnedCount",
 	}) do
 		table.insert(
 			record.Connections,
-			island:GetAttributeChangedSignal(name):Connect(function()
-				onAliveChanged(island, record)
+			island:GetAttributeChangedSignal(attributeName):Connect(function()
+				if attributeName == "MobDefeatedCount" then
+					onDefeatedChanged(island, record)
+				else
+					publish(island, record)
+				end
 			end)
 		)
 	end
 
 	table.insert(
 		record.Connections,
-		island:GetAttributeChangedSignal(
-			"CombatState"
-		):Connect(function()
-			-- IslandCombatService pode republicar "Active".
-			-- Enquanto a leva estiver travada/cooldown, trocamos de volta
-			-- de forma sincrona antes do task.defer do MonsterSpawner rodar.
-			enforceBlockedState(island, record)
+		island:GetAttributeChangedSignal("Cleared"):Connect(function()
+			enforce(island, record)
+		end)
+	)
+
+	table.insert(
+		record.Connections,
+		island:GetAttributeChangedSignal("CombatState"):Connect(function()
+			if not record.Enforcing then
+				enforce(island, record)
+			end
 		end)
 	)
 
 	table.insert(
 		record.Connections,
 		island.AncestryChanged:Connect(function(_, parent)
-			if not parent then
-				for _, connection in ipairs(record.Connections) do
-					connection:Disconnect()
-				end
-				records[island] = nil
+			if parent then
+				return
 			end
+			for _, connection in ipairs(record.Connections) do
+				connection:Disconnect()
+			end
+			records[island] = nil
 		end)
 	)
 
-	task.defer(function()
-		stopAfterIslandClear(island, record)
-		onAliveChanged(island, record)
-	end)
+	task.defer(enforce, island, record)
 end
 
 local function scan()
@@ -408,34 +229,42 @@ workspace.DescendantAdded:Connect(function(instance)
 			if not instance.Parent then
 				return
 			end
-
 			if isCombatIsland(instance) then
 				trackIsland(instance)
 				return
 			end
-
 			task.wait(0.05)
 		end
 	end)
 end)
 
+-- If a player dies and returns, IslandCombatService can publish Active again.
+-- The island record above survives normal soft-unloads; this extra listener
+-- makes the intent explicit and re-enforces the finite gate on re-entry.
+local function bindPlayer(player)
+	player:GetAttributeChangedSignal("CurrentGlobalIslandIndex"):Connect(function()
+		local index = cleanIndex(player:GetAttribute("CurrentGlobalIslandIndex"))
+		if not index then
+			return
+		end
+		for island, record in pairs(records) do
+			if record.Index == index then
+				task.defer(enforce, island, record)
+			end
+		end
+	end)
+end
+
+Players.PlayerAdded:Connect(bindPlayer)
+for _, player in ipairs(Players:GetPlayers()) do
+	bindPlayer(player)
+end
+
 scan()
 
-workspace:SetAttribute(
-	"DungeonMobWaveCooldownServiceReady",
-	true
-)
-workspace:SetAttribute(
-	"DungeonMobWaveRespawnPolicy",
-	"BoundedWaveAfterCooldown"
-)
-workspace:SetAttribute(
-	"DungeonMobWaveRespawnCooldownSeconds",
-	Config.WaveRespawnCooldownSeconds
-)
+workspace:SetAttribute("DungeonMobWaveCooldownServiceReady", true)
+workspace:SetAttribute("DungeonMobWaveRespawnPolicy", "FixedFiniteQuota")
+workspace:SetAttribute("DungeonMobWaveRespawnCooldownSeconds", 0)
+workspace:SetAttribute("DungeonMobInfiniteRespawnEnabled", false)
 
-print(
-	"[MobWaveCooldown] Ready - bounded wave cooldown = "
-		.. tostring(Config.WaveRespawnCooldownSeconds)
-		.. "s"
-)
+print("[FiniteMobEncounter] Ready - mobs mortos nao sao repostos")
