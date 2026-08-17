@@ -2,14 +2,14 @@
 --
 -- Politica hibrida de interacao de baus:
 --   PC/gamepad: ProximityPrompt nativo do Roblox.
---   Mobile: MobileChestProximityUI troca o Style localmente para Custom e mostra
---   um BillboardGui tocavel acima do bau mais proximo quando o personagem entra
---   no alcance fisico.
+--   Mobile: MobileChestProximityUI troca o Style localmente para Custom, mostra
+--   um BillboardGui acima do bau mais proximo e abre automaticamente quando o
+--   personagem encosta no volume do bau.
 --
 -- Os servicos de bau continuam sendo a unica autoridade de recompensa/abertura.
 -- Este script apenas garante uma configuracao base consistente dos prompts.
 
-local VERSION = "ChestPromptBaseV3_NativeDesktopMobileDistanceBillboard"
+local VERSION = "ChestPromptBaseV4_NativeDesktopMobileAutoContact"
 
 local observed = setmetatable({}, { __mode = "k" })
 
@@ -25,8 +25,8 @@ local function applyBaseMode(prompt)
 	end
 
 	-- O servidor publica Default como base para PC/gamepad. Em dispositivos
-	-- touch, MobileChestProximityUI esconde esse visual localmente (Style=Custom)
-	-- e desenha um BillboardGui acima do bau escolhido somente por distancia.
+	-- touch, MobileChestProximityUI esconde esse visual localmente (Style=Custom),
+	-- desenha o BillboardGui por distancia e usa contato fisico para abrir.
 	prompt.Style = Enum.ProximityPromptStyle.Default
 	prompt.KeyboardKeyCode = Enum.KeyCode.E
 	prompt.GamepadKeyCode = Enum.KeyCode.ButtonX
@@ -67,7 +67,8 @@ workspace.DescendantAdded:Connect(function(descendant)
 end)
 
 workspace:SetAttribute("DungeonChestInteractionVersion", VERSION)
-workspace:SetAttribute("DungeonChestInteractionPolicy", "NativeDesktop_MobileDistanceBillboard")
+workspace:SetAttribute("DungeonChestInteractionPolicy", "NativeDesktop_MobileDistanceBillboardAutoContact")
 workspace:SetAttribute("DungeonChestMobileCameraDependency", false)
 workspace:SetAttribute("DungeonChestMobileProximityUIExpected", true)
 workspace:SetAttribute("DungeonChestMobileFixedHUD", false)
+workspace:SetAttribute("DungeonChestMobileRequiresTap", false)
