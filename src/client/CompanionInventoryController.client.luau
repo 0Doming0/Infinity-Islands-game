@@ -1,14 +1,23 @@
 -- CompanionInventoryController.client.luau
 --
--- Conecta a CompanionInventoryGui criada manualmente no Studio ao sistema
--- persistente de companions. Este script NAO cria layout, moldura, botoes ou
--- imagens: ele apenas preenche e clona o CompanionCardTemplate ja existente.
+-- Conecta a CompanionInventoryGui autorada no Studio ao CompanionService.
+-- O layout continua sendo do Studio: este controller apenas ativa o launcher,
+-- torna o MainFrame responsivo, renderiza os dados e envia as acoes ao servidor.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Workspace = game:GetService("Workspace")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
+
+local VERSION = "AuthoredRealtimeResponsiveV3"
+local RESPONSIVE_SCALE_NAME = "CompanionResponsiveScale"
+local VIEWPORT_PADDING = Vector2.new(28, 28)
+local MAX_RESPONSIVE_SCALE = 1.12
+local MIN_RESPONSIVE_SCALE = 0.25
+local FALLBACK_MAIN_WIDTH = 629
+local FALLBACK_MAIN_HEIGHT = 317
 
 -- A abertura da GUI nao depende dos remotes. Eles podem ser criados alguns
 -- segundos depois pelo servidor; nesse caso a tela abre normalmente e os
@@ -91,8 +100,7 @@ local function setText(instance, value)
 end
 
 local function setImage(instance, imageId)
-	-- Enquanto os PNGs ainda nao tiverem sido enviados ao Roblox, preserva a
-	-- imagem que voce colocou manualmente como placeholder no template.
+	-- Preserva o placeholder autorado quando o catalogo nao possuir imagem.
 	if isImageObject(instance) and type(imageId) == "string" and imageId ~= "" then
 		instance.Image = imageId
 	end
@@ -161,9 +169,7 @@ local function renderStats(panel, stats)
 		return
 	end
 
-	-- O sistema de combate atual nao usa Vida/Defesa para companions. Em vez de
-	-- exibir numeros falsos, os quatro espacos mostram os quatro atributos que
-	-- realmente alteram o combate: dano, recarga, alcance e movimento.
+	-- Mostra somente atributos que realmente alteram o CompanionCombat.
 	setStatRow(
 		statRow(panel, { "AttackStat", "DamageStat", "AtaqueStat" }),
 		"DANO",
@@ -197,6 +203,10 @@ local cardConnections = {}
 local guiConnections = {}
 local boundOpenButtons = setmetatable({}, { __mode = "k" })
 local isMutating = false
+local snapshotSerial = 0
+local responsiveScale
+local responsiveBaseWidth
+local responsiveBaseHeight
 
 local function disconnectAll(connections)
 	for _, connection in ipairs(connections) do
@@ -258,36 +268,15 @@ local function renderSelected(entry)
 	local xp = math.max(0, math.floor(tonumber(entry.XP) or 0))
 	local required = math.max(0, math.floor(tonumber(entry.XPRequired) or 0))
 	local progress = required > 0 and xp / required or 1
-	setText(findText(selectedPanel, { "LevelXP", "XPValue", "XPText", "XPAmount" }), required > 0 and string.format("%d / %d", xp, required) or "MAX")
+	setText(
+		findText(selectedPanel, { "LevelXP", "XPValue", "XPText", "XPAmount" }),
+		required > 0 and string.format("%d / %d", xp, required) or "MAX"
+	)
 	setXPFill(findNamedDescendant(selectedPanel, { "XPBarFill" }), progress)
 
 	renderStats(findNamedDescendant(selectedPanel, { "StatsPanel" }), entry.Stats)
 	setVisible(findNamedDescendant(selectedPanel, { "EquipButton" }), entry.Equipped ~= true)
 	setVisible(findNamedDescendant(selectedPanel, { "UnequipButton" }), entry.Equipped == true)
-end
-
-local function invoke(action, first, second)
-	if not request then
-		warn("[CompanionInventory] O sistema de companions ainda esta carregando.")
-		return
-	end
-	if isMutating then
-		return
-	end
-	isMutating = true
-	local success, response = pcall(function()
-		return request:InvokeServer(action, first, second)
-	end)
-	isMutating = false
-
-	if not success then
-		warn("[CompanionInventory] Falha ao falar com o servidor:", response)
-		return
-	end
-
-	if type(response) == "table" and type(response.Snapshot) == "table" then
-		currentSnapshot = response.Snapshot
-	end
 end
 
 local function render()
@@ -330,22 +319,69 @@ local function render()
 
 	setVisible(findNamedDescendant(mainFrame, { "EmptyText" }), #entries == 0)
 	renderSelected(getEntry(selectedId))
+
+	if inventoryGui then
+		inventoryGui:SetAttribute("CompanionSnapshotCount", #entries)
+		inventoryGui:SetAttribute("CompanionSelectedInstanceId", selectedId)
+	end
+end
+
+local function applySnapshot(snapshot, source)
+	if type(snapshot) ~= "table" then
+		return false
+	end
+	currentSnapshot = snapshot
+	snapshotSerial += 1
+
+	if inventoryGui then
+		inventoryGui:SetAttribute("CompanionInventoryStatus", "SnapshotLoaded")
+		inventoryGui:SetAttribute("CompanionSnapshotSource", tostring(source or "Unknown"))
+		inventoryGui:SetAttribute("CompanionSnapshotSerial", snapshotSerial)
+	end
+
+	render()
+	return true
+end
+
+local function invoke(action, first, second)
+	if not request then
+		warn("[CompanionInventory] O sistema de companions ainda esta carregando.")
+		return false
+	end
+	if isMutating then
+		return false
+	end
+
+	isMutating = true
+	local success, response = pcall(function()
+		return request:InvokeServer(action, first, second)
+	end)
+	isMutating = false
+
+	if not success then
+		warn("[CompanionInventory] Falha ao falar com o servidor:", response)
+		return false
+	end
+
+	if type(response) == "table" and type(response.Snapshot) == "table" then
+		applySnapshot(response.Snapshot, "Mutation:" .. tostring(action))
+	end
+	return type(response) == "table" and response.Success ~= false
 end
 
 local function requestSnapshot()
 	if not request then
+		if inventoryGui then
+			inventoryGui:SetAttribute("CompanionInventoryStatus", "WaitingForServer")
+		end
 		return
 	end
+
 	local success, response = pcall(function()
 		return request:InvokeServer("Get")
 	end)
 	if success and type(response) == "table" and type(response.Snapshot) == "table" then
-		currentSnapshot = response.Snapshot
-		if inventoryGui then
-			inventoryGui:SetAttribute("CompanionSnapshotCount", #(currentSnapshot.Entries or {}))
-			inventoryGui:SetAttribute("CompanionInventoryStatus", "SnapshotLoaded")
-		end
-		render()
+		applySnapshot(response.Snapshot, "Request")
 	elseif not success then
 		if inventoryGui then
 			inventoryGui:SetAttribute("CompanionInventoryStatus", "SnapshotFailed")
@@ -354,16 +390,105 @@ local function requestSnapshot()
 	end
 end
 
+local function updateResponsiveScale()
+	if not mainFrame or not mainFrame.Parent or not responsiveScale then
+		return
+	end
+
+	local camera = Workspace.CurrentCamera
+	local viewport = camera and camera.ViewportSize or Vector2.new(1280, 720)
+	local availableWidth = math.max(1, viewport.X - VIEWPORT_PADDING.X * 2)
+	local availableHeight = math.max(1, viewport.Y - VIEWPORT_PADDING.Y * 2)
+	local width = math.max(1, tonumber(responsiveBaseWidth) or FALLBACK_MAIN_WIDTH)
+	local height = math.max(1, tonumber(responsiveBaseHeight) or FALLBACK_MAIN_HEIGHT)
+
+	local scale = math.min(availableWidth / width, availableHeight / height)
+	scale = math.clamp(scale, MIN_RESPONSIVE_SCALE, MAX_RESPONSIVE_SCALE)
+	responsiveScale.Scale = scale
+
+	mainFrame:SetAttribute("CompanionResponsiveScale", scale)
+	mainFrame:SetAttribute("CompanionResponsiveViewportWidth", math.floor(viewport.X + 0.5))
+	mainFrame:SetAttribute("CompanionResponsiveViewportHeight", math.floor(viewport.Y + 0.5))
+	player:SetAttribute("DungeonCompanionInventoryResponsiveScale", scale)
+end
+
+local function bindResponsiveMainFrame()
+	if not mainFrame or not mainFrame:IsA("GuiObject") then
+		return
+	end
+
+	responsiveBaseWidth = tonumber(mainFrame:GetAttribute("CompanionResponsiveBaseWidth"))
+	responsiveBaseHeight = tonumber(mainFrame:GetAttribute("CompanionResponsiveBaseHeight"))
+
+	if not responsiveBaseWidth or responsiveBaseWidth <= 0 then
+		responsiveBaseWidth = math.abs(mainFrame.Size.X.Offset)
+		if responsiveBaseWidth <= 0 then
+			responsiveBaseWidth = mainFrame.AbsoluteSize.X
+		end
+		if responsiveBaseWidth <= 0 then
+			responsiveBaseWidth = FALLBACK_MAIN_WIDTH
+		end
+		mainFrame:SetAttribute("CompanionResponsiveBaseWidth", responsiveBaseWidth)
+	end
+	if not responsiveBaseHeight or responsiveBaseHeight <= 0 then
+		responsiveBaseHeight = math.abs(mainFrame.Size.Y.Offset)
+		if responsiveBaseHeight <= 0 then
+			responsiveBaseHeight = mainFrame.AbsoluteSize.Y
+		end
+		if responsiveBaseHeight <= 0 then
+			responsiveBaseHeight = FALLBACK_MAIN_HEIGHT
+		end
+		mainFrame:SetAttribute("CompanionResponsiveBaseHeight", responsiveBaseHeight)
+	end
+
+	-- Se o frame foi autorado em Scale, fixa a aparencia atual como referencia.
+	-- O UIScale abaixo passa a redimensionar toda a arvore, inclusive offsets.
+	if mainFrame.Size.X.Scale ~= 0 or mainFrame.Size.Y.Scale ~= 0 then
+		mainFrame.Size = UDim2.fromOffset(
+			math.floor(responsiveBaseWidth + 0.5),
+			math.floor(responsiveBaseHeight + 0.5)
+		)
+	end
+
+	responsiveScale = mainFrame:FindFirstChild(RESPONSIVE_SCALE_NAME)
+	if responsiveScale and not responsiveScale:IsA("UIScale") then
+		responsiveScale:Destroy()
+		responsiveScale = nil
+	end
+	if not responsiveScale then
+		responsiveScale = Instance.new("UIScale")
+		responsiveScale.Name = RESPONSIVE_SCALE_NAME
+		responsiveScale.Parent = mainFrame
+	end
+
+	local function bindCamera(camera)
+		if camera then
+			table.insert(guiConnections, camera:GetPropertyChangedSignal("ViewportSize"):Connect(updateResponsiveScale))
+		end
+		updateResponsiveScale()
+	end
+
+	bindCamera(Workspace.CurrentCamera)
+	table.insert(guiConnections, Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+		bindCamera(Workspace.CurrentCamera)
+	end))
+
+	mainFrame:SetAttribute("CompanionResponsivePolicy", "UIScaleFitViewport")
+	player:SetAttribute("DungeonCompanionInventoryResponsive", true)
+end
+
 local function showInventory()
 	if mainFrame then
 		mainFrame.Visible = true
 		requestSnapshot()
+		player:SetAttribute("DungeonCompanionInventoryOpen", true)
 	end
 end
 
 local function hideInventory()
 	if mainFrame then
 		mainFrame.Visible = false
+		player:SetAttribute("DungeonCompanionInventoryOpen", false)
 	end
 end
 
@@ -373,6 +498,48 @@ local function connectButton(button, callback)
 	end
 end
 
+local function activateGuiObject(instance)
+	if not instance then
+		return
+	end
+	if instance:GetAttribute("invisible") == true then
+		instance:SetAttribute("invisible", nil)
+	end
+	if instance:IsA("GuiObject") then
+		instance.Visible = true
+	end
+	if instance:IsA("GuiButton") then
+		instance.Active = true
+	end
+end
+
+local function activateCompanionLauncher(instance)
+	if not instance then
+		return
+	end
+
+	local ownName = string.lower(instance.Name)
+	local parent = instance.Parent
+	local parentName = parent and string.lower(parent.Name) or ""
+	if not OPEN_BUTTON_NAMES[ownName] and not OPEN_BUTTON_NAMES[parentName] then
+		return
+	end
+
+	if OPEN_BUTTON_NAMES[ownName] then
+		activateGuiObject(instance)
+		for _, descendant in ipairs(instance:GetDescendants()) do
+			if descendant:IsA("GuiObject") then
+				activateGuiObject(descendant)
+			end
+		end
+	elseif OPEN_BUTTON_NAMES[parentName] then
+		activateGuiObject(parent)
+		activateGuiObject(instance)
+	end
+
+	player:SetAttribute("DungeonCompanionButtonActive", true)
+end
+
 local function isOpenButton(button)
 	if not button or not button:IsA("GuiButton") then
 		return false
@@ -380,25 +547,26 @@ local function isOpenButton(button)
 	if OPEN_BUTTON_NAMES[string.lower(button.Name)] then
 		return true
 	end
-	-- Estrutura manual atual: DungeonHUD > CompanionButton (Frame) > ImageButton.
-	-- Assim o artista pode manter o ImageButton com o nome padrao do Studio.
 	local parent = button.Parent
 	return parent and OPEN_BUTTON_NAMES[string.lower(parent.Name)] == true
 end
 
 local function connectOpenButton(button)
-	if not isOpenButton(button)
-		or button:IsDescendantOf(inventoryGui)
-		or boundOpenButtons[button]
-	then
+	activateCompanionLauncher(button)
+	if not isOpenButton(button) or boundOpenButtons[button] then
 		return
 	end
+	if inventoryGui and button:IsDescendantOf(inventoryGui) then
+		return
+	end
+
 	boundOpenButtons[button] = true
 	connectButton(button, showInventory)
 end
 
 local function bindOpenButtons()
 	for _, descendant in ipairs(playerGui:GetDescendants()) do
+		activateCompanionLauncher(descendant)
 		connectOpenButton(descendant)
 	end
 end
@@ -409,7 +577,10 @@ local function findInventoryGui()
 		return direct
 	end
 	for _, child in ipairs(playerGui:GetChildren()) do
-		if child:IsA("ScreenGui") and child:FindFirstChild("MainFrame") and string.find(string.lower(child.Name), "companion") then
+		if child:IsA("ScreenGui")
+			and child:FindFirstChild("MainFrame", true)
+			and string.find(string.lower(child.Name), "companion")
+		then
 			return child
 		end
 	end
@@ -422,43 +593,52 @@ local function bindInventoryGui(gui)
 	boundOpenButtons = setmetatable({}, { __mode = "k" })
 
 	inventoryGui = gui
-	mainFrame = gui:FindFirstChild("MainFrame")
+	inventoryGui:SetAttribute("invisible", nil)
+	inventoryGui.Enabled = true
+	inventoryGui.ResetOnSpawn = false
+	inventoryGui:SetAttribute("CompanionInventoryControllerVersion", VERSION)
+
+	mainFrame = findNamedDescendant(gui, { "MainFrame" })
 	companionList = findNamedDescendant(mainFrame, { "CompanionList" })
 	cardTemplate = findNamedDescendant(companionList, { "CompanionCardTemplate" })
 	selectedPanel = findNamedDescendant(mainFrame, { "SelectedCompanion" })
 	selectedId = nil
-	currentSnapshot = nil
 
 	if not mainFrame or not companionList or not cardTemplate or not selectedPanel then
+		inventoryGui:SetAttribute("CompanionInventoryStatus", "HierarchyIncomplete")
 		warn("[CompanionInventory] Hierarquia incompleta. Sao necessarios MainFrame, CompanionList, CompanionCardTemplate e SelectedCompanion.")
 		return
 	end
 
-	if not companionList:IsA("ScrollingFrame") then
-		warn("[CompanionInventory] CompanionList deve ser um ScrollingFrame.")
-	else
-		-- Garante que a lista continue rolando quando o jogador possuir muitos
-		-- companions, sem mudar o tamanho ou a grade que voce desenhou.
+	mainFrame:SetAttribute("invisible", nil)
+	mainFrame.Visible = false
+	player:SetAttribute("DungeonCompanionInventoryOpen", false)
+
+	if companionList:IsA("ScrollingFrame") then
 		companionList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	elseif not companionList:IsA("GuiObject") then
+		warn("[CompanionInventory] CompanionList precisa ser um GuiObject.")
 	end
 
+	bindResponsiveMainFrame()
 	connectButton(findNamedDescendant(mainFrame, { "CloseButton" }), hideInventory)
 	connectButton(findNamedDescendant(selectedPanel, { "EquipButton" }), function()
 		local entry = getEntry(selectedId)
 		if entry then
 			invoke("SetEquipped", entry.InstanceId, true)
-			render()
 		end
 	end)
 	connectButton(findNamedDescendant(selectedPanel, { "UnequipButton" }), function()
 		local entry = getEntry(selectedId)
 		if entry then
 			invoke("SetEquipped", entry.InstanceId, false)
-			render()
 		end
 	end)
 
 	bindOpenButtons()
+	if currentSnapshot then
+		render()
+	end
 	requestSnapshot()
 end
 
@@ -468,18 +648,27 @@ if initialGui then
 end
 
 playerGui.ChildAdded:Connect(function(child)
-	if child:IsA("ScreenGui") and (child.Name == "CompanionInventoryGui" or (child:FindFirstChild("MainFrame") and string.find(string.lower(child.Name), "companion"))) then
+	if child:IsA("ScreenGui")
+		and (child.Name == "CompanionInventoryGui"
+			or (child:FindFirstChild("MainFrame", true) and string.find(string.lower(child.Name), "companion")))
+	then
 		bindInventoryGui(child)
 		return
 	end
 
+	activateCompanionLauncher(child)
 	connectOpenButton(child)
 end)
 
--- DungeonHUD e CompanionInventoryGui podem ser copiados para PlayerGui em
--- ordens diferentes. Observando descendentes, o ImageButton recebe o clique
--- mesmo quando o DungeonHUD chegar depois do inventario.
-playerGui.DescendantAdded:Connect(connectOpenButton)
+-- DungeonHUD e CompanionInventoryGui podem chegar em ordens diferentes.
+playerGui.DescendantAdded:Connect(function(instance)
+	activateCompanionLauncher(instance)
+	connectOpenButton(instance)
+end)
+
+-- Ativa o CompanionButton imediatamente, inclusive quando ele e um Frame que
+-- contem um ImageButton com nome generico.
+bindOpenButtons()
 
 task.spawn(function()
 	local remoteRequest = ReplicatedStorage:WaitForChild("CompanionRequest")
@@ -491,11 +680,15 @@ task.spawn(function()
 
 	request = remoteRequest
 	event = remoteEvent
+	player:SetAttribute("DungeonCompanionInventoryServerConnected", true)
+
 	event.OnClientEvent:Connect(function(payload)
 		if type(payload) == "table" and type(payload.Snapshot) == "table" then
-			currentSnapshot = payload.Snapshot
-			render()
+			applySnapshot(payload.Snapshot, "CompanionEvent")
 		end
 	end)
+
 	requestSnapshot()
 end)
+
+player:SetAttribute("DungeonCompanionInventoryControllerVersion", VERSION)
