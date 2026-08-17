@@ -1,36 +1,29 @@
 --[[
-	Infinity Islands - Task 22
-	CombatArrivalSafetyConfig V1
+	Infinity Islands - Combat Arrival Safety
 
-	Short server-side protection against unfair damage during:
-	- first character spawn;
-	- respawn;
-	- first forward entry into a new Combat Island.
-
-	This is NOT a tutorial and NOT a permanent safe zone.
+	Protecao curta e autoritativa contra dano injusto ao chegar em combate.
+	O servico usa ForceField invisivel + guarda de Health para tambem cobrir
+	codigo legado que escreve Humanoid.Health diretamente.
 ]]
 
 local Config = {}
 
-Config.Version = "CombatArrivalSafetyV1"
+Config.Version = "CombatArrivalSafetyV2_ThreeSecondLanding"
 Config.Policy = "ShortArrivalProtection"
 
 Config.InitialSpawnSeconds = 3.0
 Config.RespawnSeconds = 2.0
-Config.NewIslandSeconds = 1.0
+-- Toda entrada progressiva em uma nova ilha recebe 3 segundos de protecao.
+Config.NewIslandSeconds = 3.0
 
 Config.MinimumProtectionSeconds = 0.25
 Config.MaximumProtectionSeconds = 4.0
 
--- Prevents crossing backwards/forwards repeatedly to farm immunity.
+-- Impede atravessar para tras/frente repetidamente para farmar imunidade.
 Config.NewIslandProtectionOnlyWhenProgressingForward = true
 
--- 90-second retention diagnostic window.
 Config.TelemetryWindowSeconds = 90
-
 Config.ForceFieldName = "_DungeonArrivalSafety"
-
--- Invisible: gameplay protection only.
 Config.ForceFieldVisible = false
 
 return table.freeze(Config)
