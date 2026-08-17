@@ -1,6 +1,7 @@
 -- Interacao de bau por plataforma.
--- PC preserva o hint [E] no mundo. Mobile usa um botao de tela independente
--- de PromptShown: ele aparece pela distancia real ate o ProximityPrompt do bau.
+-- PC preserva o hint [E] no mundo.
+-- Mobile usa um BillboardGui tocavel acima do proprio bau, descoberto pela
+-- distancia real ate o ProximityPrompt para nao depender de PromptShown.
 
 local Players = game:GetService("Players")
 local ProximityPromptService = game:GetService("ProximityPromptService")
@@ -10,18 +11,14 @@ local UserInputService = game:GetService("UserInputService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local VERSION = "ChestPromptV3_MobileDistanceCTA"
-local MOBILE_GUI_NAME = "MobileChestInteractionGui"
+local VERSION = "ChestPromptV4_MobileWorldTap"
 local MOBILE_SCAN_INTERVAL = 0.10
 local MOBILE_DISTANCE_PADDING = 1.5
 
 local desktopViews = setmetatable({}, { __mode = "k" })
+local mobileViews = setmetatable({}, { __mode = "k" })
 local trackedPrompts = setmetatable({}, { __mode = "k" })
-local currentMobilePrompt
 local scanAccumulator = 0
-
-local mobileGui
-local mobileButton
 
 local function isChestPrompt(prompt)
 	return prompt:IsA("ProximityPrompt")
@@ -97,6 +94,14 @@ local function destroyDesktopView(prompt)
 	end
 end
 
+local function destroyMobileView(prompt)
+	local view = mobileViews[prompt]
+	if view then
+		mobileViews[prompt] = nil
+		view:Destroy()
+	end
+end
+
 local function createDesktopView(prompt)
 	if not isChestPrompt(prompt) or desktopViews[prompt] then
 		return
@@ -148,111 +153,103 @@ local function createDesktopView(prompt)
 	desktopViews[prompt] = billboard
 end
 
-local function ensureMobileGui()
-	if mobileGui and mobileGui.Parent and mobileButton and mobileButton.Parent then
+local function createMobileView(prompt)
+	if not UserInputService.TouchEnabled or not promptInMobileRange(prompt) or mobileViews[prompt] then
 		return
 	end
 
-	local old = playerGui:FindFirstChild(MOBILE_GUI_NAME)
-	if old then
-		old:Destroy()
+	local adornee = promptAdornee(prompt)
+	if not adornee then
+		return
 	end
 
-	mobileGui = Instance.new("ScreenGui")
-	mobileGui.Name = MOBILE_GUI_NAME
-	mobileGui.ResetOnSpawn = false
-	mobileGui.IgnoreGuiInset = true
-	mobileGui.DisplayOrder = 260
-	mobileGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-	mobileGui.Parent = playerGui
+	local rare = prompt:GetAttribute("ChestPromptRare") == true
+	local label = tostring(prompt:GetAttribute("ChestPromptLabel") or prompt.ObjectText or "Baú")
+	local upperLabel = string.upper(label)
 
-	mobileButton = Instance.new("TextButton")
-	mobileButton.Name = "OpenChestButton"
-	mobileButton.AnchorPoint = Vector2.new(0.5, 1)
-	mobileButton.Position = UDim2.fromScale(0.5, 0.84)
-	mobileButton.Size = UDim2.fromOffset(220, 64)
-	mobileButton.BackgroundColor3 = Color3.fromRGB(24, 47, 73)
-	mobileButton.BackgroundTransparency = 0.04
-	mobileButton.BorderSizePixel = 0
-	mobileButton.AutoButtonColor = true
-	mobileButton.Font = Enum.Font.GothamBlack
-	mobileButton.Text = "ABRIR BAÚ"
-	mobileButton.TextColor3 = Color3.new(1, 1, 1)
-	mobileButton.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
-	mobileButton.TextStrokeTransparency = 0.35
-	mobileButton.TextScaled = true
-	mobileButton.Visible = false
-	mobileButton.ZIndex = 261
-	mobileButton.Parent = mobileGui
+	local billboard = Instance.new("BillboardGui")
+	billboard.Name = "MobileChestPrompt"
+	billboard.Adornee = adornee
+	billboard.AlwaysOnTop = true
+	billboard.LightInfluence = 0
+	billboard.MaxDistance = prompt.MaxActivationDistance + MOBILE_DISTANCE_PADDING + 2
+	billboard.Size = UDim2.fromOffset(176, 54)
+	billboard.StudsOffsetWorldSpace = Vector3.new(0, 2.45, 0)
+	billboard.Parent = playerGui
+
+	local button = Instance.new("TextButton")
+	button.Name = "TapToOpen"
+	button.Size = UDim2.fromScale(1, 1)
+	button.BackgroundColor3 = rare and Color3.fromRGB(83, 61, 19) or Color3.fromRGB(25, 43, 67)
+	button.BackgroundTransparency = 0.08
+	button.BorderSizePixel = 0
+	button.AutoButtonColor = true
+	button.Font = Enum.Font.GothamBlack
+	button.Text = "ABRIR " .. upperLabel
+	button.TextColor3 = rare and Color3.fromRGB(255, 229, 125) or Color3.fromRGB(255, 255, 255)
+	button.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	button.TextStrokeTransparency = 0.3
+	button.TextScaled = true
+	button.ZIndex = 10
+	button.Parent = billboard
 
 	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 14)
-	corner.Parent = mobileButton
+	corner.CornerRadius = UDim.new(0, 12)
+	corner.Parent = button
 
 	local stroke = Instance.new("UIStroke")
-	stroke.Color = Color3.fromRGB(154, 220, 255)
-	stroke.Thickness = 2
+	stroke.Color = rare and Color3.fromRGB(255, 215, 76) or Color3.fromRGB(151, 218, 255)
+	stroke.Thickness = 1.5
 	stroke.Transparency = 0.1
-	stroke.Parent = mobileButton
+	stroke.Parent = button
+
+	local padding = Instance.new("UIPadding")
+	padding.PaddingLeft = UDim.new(0, 10)
+	padding.PaddingRight = UDim.new(0, 10)
+	padding.PaddingTop = UDim.new(0, 5)
+	padding.PaddingBottom = UDim.new(0, 5)
+	padding.Parent = button
 
 	local constraint = Instance.new("UITextSizeConstraint")
-	constraint.MinTextSize = 16
-	constraint.MaxTextSize = 24
-	constraint.Parent = mobileButton
+	constraint.MinTextSize = 13
+	constraint.MaxTextSize = 19
+	constraint.Parent = button
 
-	mobileButton.Activated:Connect(function()
-		local prompt = currentMobilePrompt
-		if prompt then
+	button.Activated:Connect(function()
+		if promptInMobileRange(prompt) then
 			triggerPrompt(prompt)
 		end
 	end)
+
+	billboard:SetAttribute("ChestPromptInputMode", "WorldTouchButton")
+	mobileViews[prompt] = billboard
 end
 
-local function hideMobileButton()
-	currentMobilePrompt = nil
-	if mobileButton then
-		mobileButton.Visible = false
-	end
-	player:SetAttribute("DungeonChestMobileTarget", nil)
-end
-
-local function updateMobileButton()
+local function updateMobileViews()
 	if not UserInputService.TouchEnabled then
-		hideMobileButton()
+		for prompt in pairs(mobileViews) do
+			destroyMobileView(prompt)
+		end
 		return
 	end
 
-	ensureMobileGui()
-	local nearest
+	local visibleCount = 0
 	local nearestDistance = math.huge
-
 	for prompt in pairs(trackedPrompts) do
 		if prompt.Parent and promptInMobileRange(prompt) then
-			local distance = distanceToPrompt(prompt)
-			if distance < nearestDistance then
-				nearest = prompt
-				nearestDistance = distance
-			end
+			createMobileView(prompt)
+			visibleCount += 1
+			nearestDistance = math.min(nearestDistance, distanceToPrompt(prompt))
+		else
+			destroyMobileView(prompt)
 		end
 	end
 
-	if not nearest then
-		hideMobileButton()
-		return
-	end
-
-	currentMobilePrompt = nearest
-	local rare = nearest:GetAttribute("ChestPromptRare") == true
-	local label = tostring(nearest:GetAttribute("ChestPromptLabel") or nearest.ObjectText or "Baú")
-	mobileButton.Text = "ABRIR " .. string.upper(label)
-	mobileButton.BackgroundColor3 = rare and Color3.fromRGB(91, 65, 17) or Color3.fromRGB(24, 47, 73)
-	local stroke = mobileButton:FindFirstChildOfClass("UIStroke")
-	if stroke then
-		stroke.Color = rare and Color3.fromRGB(255, 218, 79) or Color3.fromRGB(154, 220, 255)
-	end
-	mobileButton.Visible = true
-	player:SetAttribute("DungeonChestMobileTarget", nearest:GetFullName())
-	player:SetAttribute("DungeonChestMobileTargetDistance", math.floor(nearestDistance * 10 + 0.5) / 10)
+	player:SetAttribute("DungeonChestMobileWorldPromptCount", visibleCount)
+	player:SetAttribute(
+		"DungeonChestMobileNearestDistance",
+		nearestDistance < math.huge and math.floor(nearestDistance * 10 + 0.5) / 10 or nil
+	)
 end
 
 local function trackPrompt(prompt)
@@ -269,9 +266,7 @@ local function trackPrompt(prompt)
 		else
 			trackedPrompts[prompt] = nil
 			destroyDesktopView(prompt)
-			if currentMobilePrompt == prompt then
-				hideMobileButton()
-			end
+			destroyMobileView(prompt)
 		end
 	end)
 end
@@ -286,16 +281,14 @@ end)
 ProximityPromptService.PromptHidden:Connect(function(prompt)
 	if isChestPrompt(prompt) then
 		destroyDesktopView(prompt)
-		-- Mobile nao depende deste evento; a distancia real decide quando ocultar.
+		-- Mobile nao depende deste evento; a distancia real controla o BillboardGui.
 	end
 end)
 
 ProximityPromptService.PromptTriggered:Connect(function(prompt)
 	if isChestPrompt(prompt) then
 		destroyDesktopView(prompt)
-		if currentMobilePrompt == prompt then
-			hideMobileButton()
-		end
+		destroyMobileView(prompt)
 	end
 end)
 
@@ -310,9 +303,7 @@ workspace.DescendantRemoving:Connect(function(descendant)
 	if descendant:IsA("ProximityPrompt") then
 		trackedPrompts[descendant] = nil
 		destroyDesktopView(descendant)
-		if currentMobilePrompt == descendant then
-			hideMobileButton()
-		end
+		destroyMobileView(descendant)
 	end
 end)
 
@@ -322,13 +313,9 @@ RunService.Heartbeat:Connect(function(dt)
 		return
 	end
 	scanAccumulator = 0
-	updateMobileButton()
+	updateMobileViews()
 end)
 
-if UserInputService.TouchEnabled then
-	ensureMobileGui()
-end
-
 player:SetAttribute("DungeonChestPromptVersion", VERSION)
-player:SetAttribute("DungeonChestMobileInteraction", "ScreenButtonByRealDistance")
+player:SetAttribute("DungeonChestMobileInteraction", "WorldBillboardTapByRealDistance")
 player:SetAttribute("DungeonChestDesktopInteraction", "KeyboardE")
