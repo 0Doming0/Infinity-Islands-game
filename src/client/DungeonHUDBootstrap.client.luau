@@ -5,7 +5,8 @@
 	1. garantir que o DungeonHUD autorado no Studio exista em PlayerGui;
 	2. respeitar o atributo GUI `invisible = true` como override autoral;
 	3. aplicar pequenos ajustes visuais globais em GUIs temporarias do gameplay;
-	4. manter PlayerStatus.LevelText sincronizado com o nivel atual do jogador.
+	4. manter PlayerStatus.LevelText sincronizado com o nivel atual do jogador;
+	5. remover o Portrait obsoleto de PlayerStatus.
 
 	Nenhum elemento visual e criado aqui alem do clone completo do DungeonHUD
 	quando o Roblox ainda nao o copiou para PlayerGui.
@@ -159,6 +160,38 @@ local function validHud(instance)
 		and instance.Name == "DungeonHUD"
 end
 
+local function playerStatus(hud)
+	if not validHud(hud) then
+		return nil
+	end
+
+	local status = hud:FindFirstChild("PlayerStatus", true)
+	if status and status:IsA("GuiObject") then
+		return status
+	end
+	return nil
+end
+
+local function removeObsoletePlayerPortrait(hud)
+	local status = playerStatus(hud)
+	if not status then
+		return false
+	end
+
+	-- O retrato/avatar do jogador nao faz mais parte do HUD do MVP.
+	-- Removemos somente o componente autorado chamado Portrait para nao tocar
+	-- em fundos, barras ou outras imagens legitimas de PlayerStatus.
+	local portrait = status:FindFirstChild("Portrait")
+	if portrait then
+		portrait:Destroy()
+		player:SetAttribute("DungeonPlayerStatusPortraitRemoved", true)
+		return true
+	end
+
+	player:SetAttribute("DungeonPlayerStatusPortraitRemoved", false)
+	return false
+end
+
 local function currentPlayerLevel()
 	return math.max(
 		1,
@@ -171,19 +204,14 @@ local function currentPlayerLevel()
 end
 
 local function directPlayerStatusLevelText(hud)
-	if not validHud(hud) then
-		return nil
-	end
-
-	local playerStatus = hud:FindFirstChild("PlayerStatus", true)
-	if not playerStatus or not playerStatus:IsA("GuiObject") then
+	local status = playerStatus(hud)
+	if not status then
 		return nil
 	end
 
 	-- IMPORTANTE: FindFirstChild sem recursive=true. O LevelText autorado e filho
-	-- direto de PlayerStatus; nao devemos capturar outro LevelText do Portrait,
-	-- minimapa ou qualquer outro componente do HUD.
-	local levelText = playerStatus:FindFirstChild("LevelText")
+	-- direto de PlayerStatus; nao devemos capturar outro LevelText do HUD.
+	local levelText = status:FindFirstChild("LevelText")
 	if levelText and (
 		levelText:IsA("TextLabel")
 		or levelText:IsA("TextButton")
@@ -214,6 +242,7 @@ local function bindPlayerStatusLevelText(hud)
 		return
 	end
 
+	removeObsoletePlayerPortrait(hud)
 	updatePlayerStatusLevelText(hud)
 	if levelTextBindings[hud] then
 		return
@@ -222,11 +251,16 @@ local function bindPlayerStatusLevelText(hud)
 	local connections = {}
 	levelTextBindings[hud] = connections
 
-	-- Se o LevelText/PlayerStatus chegar alguns frames depois por clone/sync,
-	-- sincroniza assim que entrar no HUD.
+	-- Se componentes autorados chegarem alguns frames depois por clone/sync,
+	-- mantemos LevelText ligado e removemos Portrait caso reapareca.
 	table.insert(connections, hud.DescendantAdded:Connect(function(instance)
-		if instance.Name == "LevelText" or instance.Name == "PlayerStatus" then
-			task.defer(updatePlayerStatusLevelText, hud)
+		if instance.Name == "Portrait" then
+			task.defer(removeObsoletePlayerPortrait, hud)
+		elseif instance.Name == "LevelText" or instance.Name == "PlayerStatus" then
+			task.defer(function()
+				removeObsoletePlayerPortrait(hud)
+				updatePlayerStatusLevelText(hud)
+			end)
 		end
 	end))
 end
@@ -305,10 +339,11 @@ if hud then
 	player:SetAttribute("DungeonHUDBootstrapReady", true)
 	player:SetAttribute("DungeonHUDBootstrapError", nil)
 	player:SetAttribute("DungeonGUIInvisibleAttributePolicy", "invisible=true => hidden")
+	removeObsoletePlayerPortrait(hud)
 	updatePlayerStatusLevelText(hud)
 
 	print(
-		"[DungeonHUDBootstrap] DungeonHUD pronto; atributo invisible=true respeitado."
+		"[DungeonHUDBootstrap] DungeonHUD pronto; Portrait removido e invisible=true respeitado."
 	)
 else
 	player:SetAttribute("DungeonHUDBootstrapReady", false)
