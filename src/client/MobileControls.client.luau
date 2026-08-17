@@ -3,11 +3,12 @@
 -- O Roblox Studio e a autoridade visual dos controles de toque.
 -- Este script NAO cria botao mobile, NAO define Position/Size/AnchorPoint e
 -- NAO move o personagem. Ele conecta os botoes de ataque existentes ao
--- Tool.Activated; MobileAttackAutoWalk adiciona a aproximacao enquanto segura.
+-- Tool.Activated e publica um sinal local Begin/End para o assistente de hold.
 
 local ContextActionService = game:GetService("ContextActionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -18,7 +19,7 @@ local CombatConfig = require(
 )
 
 local ACTION_NAME = "SkyDungeonAttack"
-local VERSION = "AuthoredMobileAttackLayoutV2"
+local VERSION = "AuthoredMobileAttackLayoutV3_HoldSignal"
 
 local ATTACK_BUTTON_NAMES = {
 	swordattackbutton = true,
@@ -30,9 +31,22 @@ local ATTACK_BUTTON_NAMES = {
 
 local equippedSword
 local boundButtons = setmetatable({}, { __mode = "k" })
+local pressingButtons = setmetatable({}, { __mode = "k" })
+
+local holdSignal = playerGui:FindFirstChild("DungeonMobileAttackHoldSignal")
+if holdSignal and not holdSignal:IsA("BindableEvent") then
+	holdSignal:Destroy()
+	holdSignal = nil
+end
+if not holdSignal then
+	holdSignal = Instance.new("BindableEvent")
+	holdSignal.Name = "DungeonMobileAttackHoldSignal"
+	holdSignal.Parent = playerGui
+end
 
 local function isMobileDungeon()
 	return player:GetAttribute("DungeonMobileMode") == true
+		or UserInputService.TouchEnabled == true
 end
 
 local function findEquippedSword()
@@ -97,8 +111,6 @@ local function refreshButton(button)
 		return
 	end
 
-	-- Visibilidade e a unica propriedade visual tocada aqui.
-	-- Position, Size e AnchorPoint pertencem exclusivamente ao Studio.
 	button.Visible = isMobileDungeon()
 		and equippedSword ~= nil
 		and player:GetAttribute("IsDowned") ~= true
@@ -108,6 +120,30 @@ local function refreshButton(button)
 		)
 end
 
+local function publishHold(button, phase, input)
+	if not isMobileDungeon() or not button or not button.Parent then
+		return
+	end
+
+	if phase == "Begin" then
+		if pressingButtons[button] then
+			return
+		end
+		pressingButtons[button] = true
+		button:SetAttribute("DungeonMobileAttackPressed", true)
+	else
+		if not pressingButtons[button] then
+			return
+		end
+		pressingButtons[button] = nil
+		button:SetAttribute("DungeonMobileAttackPressed", false)
+	end
+
+	holdSignal:Fire(phase, button, input)
+	player:SetAttribute("DungeonMobileAttackHoldSignalPhase", phase)
+	player:SetAttribute("DungeonMobileAttackHoldSignalAt", workspace:GetServerTimeNow())
+end
+
 local function bindAttackButton(button)
 	if not isAttackButton(button) or boundButtons[button] then
 		return
@@ -115,6 +151,31 @@ local function bindAttackButton(button)
 
 	boundButtons[button] = true
 	button:SetAttribute("DungeonAuthoredAttackButtonBound", true)
+
+	button.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.Touch
+			or input.UserInputType == Enum.UserInputType.MouseButton1
+		then
+			publishHold(button, "Begin", input)
+		end
+	end)
+	button.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.Touch
+			or input.UserInputType == Enum.UserInputType.MouseButton1
+		then
+			publishHold(button, "End", input)
+		end
+	end)
+
+	-- Eventos de GuiButton servem como redundancia em aparelhos/emuladores onde
+	-- InputBegan/InputEnded podem ser interceptados por outro overlay.
+	button.MouseButton1Down:Connect(function()
+		publishHold(button, "Begin", nil)
+	end)
+	button.MouseButton1Up:Connect(function()
+		publishHold(button, "End", nil)
+	end)
+
 	button.Activated:Connect(function()
 		activateEquippedSword()
 	end)
@@ -150,8 +211,6 @@ local function attackAction(_, inputState)
 	return Enum.ContextActionResult.Pass
 end
 
--- Keyboard/gamepad continuam funcionais, mas false impede o ContextActionService
--- de fabricar um botao de toque com posicao controlada por codigo.
 ContextActionService:BindAction(
 	ACTION_NAME,
 	attackAction,
@@ -203,6 +262,6 @@ end
 
 task.defer(scanButtons)
 
--- Nao sobrescrever mais os estados publicados pelo MobileAttackAutoWalk.
 player:SetAttribute("DungeonMobileAttackLayoutOwnedByStudio", true)
 player:SetAttribute("DungeonMobileAttackControllerVersion", VERSION)
+player:SetAttribute("DungeonMobileAttackHoldSignalReady", true)
