@@ -34,7 +34,6 @@ local billboard
 local touchButton
 local titleLabel
 local subtitleLabel
-local uiScale
 
 local function isMobileTouch()
 	return UserInputService.TouchEnabled == true
@@ -167,10 +166,6 @@ local function ensureUI()
 	billboard.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 	billboard.Parent = playerGui
 
-	uiScale = Instance.new("UIScale")
-	uiScale.Scale = 0.9
-	uiScale.Parent = billboard
-
 	-- O botao ocupa uma area maior que o texto, mas permanece invisivel. Isso
 	-- deixa o toque confortavel no celular sem desenhar uma caixa na tela.
 	touchButton = Instance.new("TextButton")
@@ -259,9 +254,6 @@ local function hideUI(immediate)
 			subtitleLabel.TextTransparency = 1
 			subtitleLabel.TextStrokeTransparency = 1
 		end
-		if uiScale then
-			uiScale.Scale = 0.9
-		end
 		return
 	end
 
@@ -273,7 +265,6 @@ local function hideUI(immediate)
 		TextTransparency = 1,
 		TextStrokeTransparency = 1,
 	}):Play()
-	TweenService:Create(uiScale, TweenInfo.new(HIDE_TIME), { Scale = 0.92 }):Play()
 
 	task.delay(HIDE_TIME, function()
 		if visualSerial ~= serial or activePrompt ~= nil then
@@ -304,7 +295,6 @@ local function showUI(prompt, distance)
 	titleLabel.TextStrokeTransparency = 1
 	subtitleLabel.TextTransparency = 1
 	subtitleLabel.TextStrokeTransparency = 1
-	uiScale.Scale = 0.9
 
 	TweenService:Create(titleLabel, TweenInfo.new(SHOW_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
 		TextTransparency = 0,
@@ -313,9 +303,6 @@ local function showUI(prompt, distance)
 	TweenService:Create(subtitleLabel, TweenInfo.new(SHOW_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
 		TextTransparency = 0,
 		TextStrokeTransparency = 0.35,
-	}):Play()
-	TweenService:Create(uiScale, TweenInfo.new(SHOW_TIME, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-		Scale = 1,
 	}):Play()
 
 	player:SetAttribute("DungeonMobileChestVisible", true)
