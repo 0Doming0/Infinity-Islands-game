@@ -1,7 +1,7 @@
 -- Ataque mobile linear: SEGURAR o botao persegue e ataca o mob mais proximo.
--- Soltar interrompe imediatamente o auto-walk. O alvo atual recebe o contorno
--- branco local que existia no combate mobile. O layout do botao continua 100%
--- definido no Roblox Studio.
+-- Soltar interrompe imediatamente o auto-walk. Enquanto o hold esta ativo, o
+-- alvo atual recebe um contorno branco local. A ilha inicial usa a mesma regra,
+-- inclusive quando seus slimes ainda estao passivos antes do primeiro golpe.
 
 local CollectionService = game:GetService("CollectionService")
 local GuiService = game:GetService("GuiService")
@@ -9,6 +9,7 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
@@ -16,12 +17,12 @@ local CombatConfig = require(
 	ReplicatedStorage:WaitForChild("SwordCombat"):WaitForChild("CombatConfig")
 )
 
-local VERSION = "MobileAttackHoldLinearV5_WhiteTargetOutline"
-local RENDER_BIND = "DungeonMobileAttackAutoWalk"
-local AUTO_RADIUS = 52
-local MAX_VERTICAL = 14
+local VERSION = "MobileAttackHoldLinearV6_InitialIslandChase"
+local AUTO_RADIUS = 90
+local MAX_VERTICAL = 18
 local ATTACK_DISTANCE = 5.6
-local RETARGET_INTERVAL = 0.08
+local RETARGET_INTERVAL = 0.06
+local MOVE_TO_REFRESH = 0.10
 local ATTACK_RETRY = math.clamp(
 	(tonumber(CombatConfig.InputBufferTime) or 0.16) * 0.5,
 	0.045,
@@ -38,9 +39,12 @@ local BUTTON_NAMES = {
 
 local held = false
 local heldInput
+local heldButton
 local currentTarget
 local lastTargetSearch = 0
+local lastMoveTo = 0
 local lastAttackAt = 0
+local simulationConnection
 local boundButtons = setmetatable({}, { __mode = "k" })
 
 local outline = Instance.new("Highlight")
@@ -50,11 +54,29 @@ outline.FillTransparency = 1
 outline.OutlineColor = Color3.new(1, 1, 1)
 outline.OutlineTransparency = 0
 outline.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-outline.Parent = Workspace or workspace
+outline.Parent = Workspace
+
+local holdSignal = playerGui:FindFirstChild("DungeonMobileAttackHoldSignal")
+if holdSignal and not holdSignal:IsA("BindableEvent") then
+	holdSignal = nil
+end
+if not holdSignal then
+	holdSignal = Instance.new("BindableEvent")
+	holdSignal.Name = "DungeonMobileAttackHoldSignal"
+	holdSignal.Parent = playerGui
+end
 
 local function isMobile()
 	return player:GetAttribute("DungeonMobileMode") == true
 		or UserInputService.TouchEnabled == true
+end
+
+local function currentIslandIndex()
+	local value = tonumber(player:GetAttribute("CurrentGlobalIslandIndex"))
+	if not value or value <= 0 then
+		return 1
+	end
+	return math.max(1, math.floor(value))
 end
 
 local function characterParts()
@@ -90,24 +112,53 @@ local function rootOf(model)
 	return root and root:IsA("BasePart") and root or nil
 end
 
-local function initialPassiveCanBeAttacked(model)
-	return model:GetAttribute("PassiveUntilAttacked") == true
-		or model:GetAttribute("IsInitialIslandMob") == true
+local function isInitialMob(model)
+	if not model then
+		return false
+	end
+	if model:GetAttribute("IsInitialIslandMob") == true
+		or model:GetAttribute("PassiveUntilAttacked") == true
 		or model:GetAttribute("TutorialPassive") == true
+	then
+		return true
+	end
+	local globalIndex = tonumber(model:GetAttribute("GlobalIslandIndex"))
+	return globalIndex ~= nil and math.floor(globalIndex) == 1
+end
+
+local function targetIslandIndex(model)
+	-- GlobalIslandIndex representa a rota linear. CombatIslandIndex/indices
+	-- numerados legados podem ser 0 especificamente na ilha inicial.
+	local value = tonumber(model:GetAttribute("GlobalIslandIndex"))
+		or tonumber(model:GetAttribute("CombatIslandIndex"))
+		or tonumber(model:GetAttribute("ProgressionIslandIndex"))
+	if not value then
+		return isInitialMob(model) and 1 or nil
+	end
+	if value <= 0 and isInitialMob(model) then
+		return 1
+	end
+	return math.floor(value)
 end
 
 local function validTarget(model, character, characterRoot)
 	if not model or not model:IsA("Model") or not model.Parent or model == character then
 		return false
 	end
+
+	local initialMob = isInitialMob(model)
 	if model:GetAttribute("Invulnerable") == true
 		or model:GetAttribute("NoSwordDamage") == true
 		or model:GetAttribute("ObjectiveTargetCompleted") == true
-		or model:GetAttribute("SimulationActive") == false
 	then
 		return false
 	end
-	if model:GetAttribute("Peaceful") == true and not initialPassiveCanBeAttacked(model) then
+	-- A inicial pode atravessar um breve estado de simulacao/passividade durante
+	-- o onboarding; isso nao deve impedir o jogador de seleciona-la/persegui-la.
+	if model:GetAttribute("SimulationActive") == false and not initialMob then
+		return false
+	end
+	if model:GetAttribute("Peaceful") == true and not initialMob then
 		return false
 	end
 
@@ -117,17 +168,9 @@ local function validTarget(model, character, characterRoot)
 		return false
 	end
 
-	local targetIsland = tonumber(
-		model:GetAttribute("CombatIslandIndex")
-			or model:GetAttribute("GlobalIslandIndex")
-	)
-	local currentIsland = tonumber(player:GetAttribute("CurrentGlobalIslandIndex"))
-	if currentIsland and currentIsland <= 0 then
-		currentIsland = 1
-	end
-	if targetIsland and currentIsland
-		and math.floor(targetIsland) ~= math.floor(currentIsland)
-	then
+	local targetIndex = targetIslandIndex(model)
+	local playerIndex = currentIslandIndex()
+	if targetIndex and targetIndex > 0 and targetIndex ~= playerIndex then
 		return false
 	end
 
@@ -136,27 +179,54 @@ local function validTarget(model, character, characterRoot)
 	return math.abs(offset.Y) <= MAX_VERTICAL and horizontal <= AUTO_RADIUS
 end
 
+local function considerCandidate(model, character, characterRoot, seen, best)
+	if not model or seen[model] then
+		return best
+	end
+	seen[model] = true
+	if not validTarget(model, character, characterRoot) then
+		return best
+	end
+	local part = rootOf(model)
+	local offset = part.Position - characterRoot.Position
+	local distance = Vector2.new(offset.X, offset.Z).Magnitude
+	if not best or distance < best.Distance then
+		return { Model = model, Distance = distance }
+	end
+	return best
+end
+
 local function nearestTarget(character, characterRoot)
-	local nearest
-	local nearestDistance = math.huge
 	local seen = {}
+	local best
+
+	-- Caminho normal de todas as arenas.
 	for _, tagged in ipairs(CollectionService:GetTagged(CombatConfig.TargetTag)) do
 		local model = tagged:IsA("Model") and tagged
 			or tagged:FindFirstAncestorOfClass("Model")
-		if model and not seen[model] then
-			seen[model] = true
-			if validTarget(model, character, characterRoot) then
-				local part = rootOf(model)
-				local offset = part.Position - characterRoot.Position
-				local distance = Vector2.new(offset.X, offset.Z).Magnitude
-				if distance < nearestDistance then
-					nearest = model
-					nearestDistance = distance
-				end
+		best = considerCandidate(model, character, characterRoot, seen, best)
+	end
+
+	-- Fallback explicito da ilha inicial. O adaptador de onboarding pode mudar
+	-- atributos/tags alguns frames depois do spawn; o hold nao deve depender
+	-- dessa corrida para encontrar os slimes que ja estao visiveis ao jogador.
+	if currentIslandIndex() == 1 then
+		for _, descendant in ipairs(Workspace:GetDescendants()) do
+			if descendant:IsA("Model")
+				and (
+					descendant:GetAttribute("IsInitialIslandMob") == true
+					or (
+						descendant:GetAttribute("IslandCombatManaged") == true
+						and targetIslandIndex(descendant) == 1
+					)
+				)
+			then
+				best = considerCandidate(descendant, character, characterRoot, seen, best)
 			end
 		end
 	end
-	return nearest, nearestDistance
+
+	return best and best.Model or nil, best and best.Distance or nil
 end
 
 local function setOutlinedTarget(model)
@@ -190,12 +260,18 @@ local function clearMovement()
 	end
 end
 
-local function stop(reason)
-	if held then
-		held = false
-		RunService:UnbindFromRenderStep(RENDER_BIND)
+local function disconnectSimulation()
+	if simulationConnection then
+		simulationConnection:Disconnect()
+		simulationConnection = nil
 	end
+end
+
+local function stop(reason)
+	held = false
 	heldInput = nil
+	heldButton = nil
+	disconnectSimulation()
 	clearMovement()
 	setTarget(nil, nil, reason or "Released")
 	player:SetAttribute("DungeonMobileAttackHeld", false)
@@ -230,14 +306,13 @@ local function stepAutoWalk()
 	if not currentTarget or not validTarget(currentTarget, character, root) then
 		if os.clock() - lastTargetSearch >= RETARGET_INTERVAL then
 			lastTargetSearch = os.clock()
-			local target = nearestTarget(character, root)
-			setTarget(target, nil, target and "TargetLocked" or "Searching")
+			local target, distance = nearestTarget(character, root)
+			setTarget(target, distance, target and "TargetLocked" or "Searching")
 		end
 	end
 
 	if not currentTarget then
 		humanoid:Move(Vector3.zero, false)
-		player:SetAttribute("DungeonMobileAutoEngageState", "Searching")
 		return
 	end
 
@@ -250,24 +325,27 @@ local function stepAutoWalk()
 	local offset = targetPart.Position - root.Position
 	local flatOffset = Vector3.new(offset.X, 0, offset.Z)
 	local distance = flatOffset.Magnitude
-	local state = distance > ATTACK_DISTANCE and "Approaching" or "Attacking"
 	player:SetAttribute("DungeonMobileAutoEngageDistance", distance)
-	player:SetAttribute("DungeonMobileAutoEngageState", state)
 
 	if distance > ATTACK_DISTANCE then
+		player:SetAttribute("DungeonMobileAutoEngageState", "Approaching")
 		if distance > 0.05 then
-			-- RenderPriority.Character + 5 roda depois do controle padrao e evita
-			-- que o joystick neutro cancele o auto-walk durante o hold.
+			-- PreSimulation roda imediatamente antes da fisica e vence o vetor
+			-- neutro que o PlayerModule publica quando o polegar esta no ataque.
 			humanoid:Move(flatOffset.Unit, false)
-			humanoid:MoveTo(Vector3.new(
-				targetPart.Position.X,
-				root.Position.Y,
-				targetPart.Position.Z
-			))
+			if os.clock() - lastMoveTo >= MOVE_TO_REFRESH then
+				lastMoveTo = os.clock()
+				humanoid:MoveTo(Vector3.new(
+					targetPart.Position.X,
+					root.Position.Y,
+					targetPart.Position.Z
+				))
+			end
 		end
 		return
 	end
 
+	player:SetAttribute("DungeonMobileAutoEngageState", "Attacking")
 	humanoid:Move(Vector3.zero, false)
 	local flatTarget = Vector3.new(
 		targetPart.Position.X,
@@ -283,7 +361,7 @@ local function stepAutoWalk()
 	end
 end
 
-local function begin(input)
+local function begin(input, button)
 	if held or not isMobile() then
 		return
 	end
@@ -300,18 +378,17 @@ local function begin(input)
 
 	held = true
 	heldInput = input
+	heldButton = button
 	lastTargetSearch = 0
+	lastMoveTo = 0
 	lastAttackAt = 0
 	player:SetAttribute("DungeonMobileAttackHeld", true)
-	player:SetAttribute("DungeonMobileAttackHoldStartedAt", workspace:GetServerTimeNow())
+	player:SetAttribute("DungeonMobileAttackHoldStartedAt", Workspace:GetServerTimeNow())
 	setTarget(nil, nil, "Searching")
 
-	RunService:UnbindFromRenderStep(RENDER_BIND)
-	RunService:BindToRenderStep(
-		RENDER_BIND,
-		Enum.RenderPriority.Character.Value + 5,
-		stepAutoWalk
-	)
+	disconnectSimulation()
+	simulationConnection = RunService.PreSimulation:Connect(stepAutoWalk)
+	-- Seleciona/destaca imediatamente, antes mesmo do primeiro frame de fisica.
 	stepAutoWalk()
 end
 
@@ -343,15 +420,17 @@ local function bindButton(button)
 	button:SetAttribute("DungeonMobileAutoWalkBound", true)
 	button:SetAttribute("DungeonMobileAttackHoldBound", true)
 
+	-- Fallback local. A fonte preferida e o BindableEvent publicado por
+	-- MobileControls, porque ele ja conhece exatamente o botao usado no Studio.
 	button.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.Touch
 			or input.UserInputType == Enum.UserInputType.MouseButton1
 		then
-			begin(input)
+			begin(input, button)
 		end
 	end)
 	button.InputEnded:Connect(function(input)
-		if heldInput == input then
+		if held and (heldInput == input or heldButton == button) then
 			stop("ButtonReleased")
 		end
 	end)
@@ -372,7 +451,7 @@ local function inputTouchesAttackButton(input)
 		math.floor(position.Y)
 	)
 	if not ok then
-		return false
+		return nil
 	end
 	for _, object in ipairs(objects) do
 		local current = object
@@ -380,20 +459,26 @@ local function inputTouchesAttackButton(input)
 			if not current then
 				break
 			end
-			if current:IsA("GuiButton") and isAttackButton(current) then
+			if current:IsA("GuiButton") and isAttackButton(current) and current.Visible then
 				bindButton(current)
-				return current.Visible
+				return current
 			end
 			current = current.Parent
 		end
 	end
-	return false
+	return nil
 end
 
--- Fallback global: funciona mesmo quando outro LocalScript/overlay interfere
--- nos eventos InputBegan do GuiButton. E especialmente importante no emulador
--- mobile do Studio.
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
+holdSignal.Event:Connect(function(phase, button, input)
+	if phase == "Begin" then
+		begin(input, button)
+	elseif phase == "End" and held and (not heldButton or heldButton == button) then
+		stop("ButtonReleased")
+	end
+end)
+
+-- Ultima redundancia para emulador/overlays que bloqueiem o evento do GuiButton.
+UserInputService.InputBegan:Connect(function(input)
 	if held or not isMobile() then
 		return
 	end
@@ -402,13 +487,14 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	then
 		return
 	end
-	if inputTouchesAttackButton(input) then
-		begin(input)
+	local button = inputTouchesAttackButton(input)
+	if button then
+		begin(input, button)
 	end
 end)
 
 UserInputService.InputEnded:Connect(function(input)
-	if heldInput == input then
+	if held and heldInput == input then
 		stop("ButtonReleased")
 	end
 end)
@@ -445,7 +531,7 @@ task.defer(scanButtons)
 player:SetAttribute("DungeonMobileAutoWalkReady", true)
 player:SetAttribute("DungeonMobileHoldAttackReady", true)
 player:SetAttribute("DungeonMobileAutoWalkVersion", VERSION)
-player:SetAttribute("DungeonMobileHoldAttackPolicy", "HoldToApproachAttackAndOutlineNearestTargetV5")
+player:SetAttribute("DungeonMobileHoldAttackPolicy", "HoldChasesNearestMobIncludingInitialIslandV6")
 
 script.Destroying:Connect(function()
 	stop("Destroyed")
