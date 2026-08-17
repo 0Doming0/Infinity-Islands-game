@@ -1,7 +1,7 @@
--- Progressao visual do MVP linear.
+-- Progressao visual nao bloqueante do MVP.
 -- Nenhum level-up abre painel ou captura input: jogador, Orb e companion usam
 -- apenas um toast curto. Upgrades de companion sao confirmados automaticamente
--- usando a primeira melhoria valida oferecida pelo servidor.
+-- escolhendo uma melhoria valida aleatoria para variar cada companheiro.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -10,10 +10,11 @@ local TweenService = game:GetService("TweenService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local VERSION = "LinearNonBlockingProgressionToastV2"
+local VERSION = "NonBlockingProgressionToastV3_RandomCompanionUpgrade"
 local TOAST_GUI_NAME = "ProgressionLevelToastGui"
 local DISPLAY_SECONDS = 1.35
 local FADE_SECONDS = 0.18
+local random = Random.new()
 
 local toastGui
 local toastLabel
@@ -199,22 +200,25 @@ local function autoAcceptCompanionOffer(payload, request)
 		return
 	end
 
-	local chosen
+	local available = {}
 	for _, option in ipairs(payload.Options or {}) do
 		if type(option) == "table"
 			and option.Available ~= false
 			and type(option.UpgradeId) == "string"
 			and option.UpgradeId ~= ""
 		then
-			chosen = option
-			break
+			table.insert(available, option)
 		end
 	end
-	if not chosen then
+	if #available == 0 then
 		return
 	end
 
+	local chosen = available[random:NextInteger(1, #available)]
 	companionOfferSerials[serial] = true
+	player:SetAttribute("DungeonCompanionLastRandomUpgrade", chosen.UpgradeId)
+	player:SetAttribute("DungeonCompanionLastRandomUpgradeSerial", serial)
+
 	request:FireServer({
 		Serial = serial,
 		InstanceId = instanceId,
@@ -281,4 +285,4 @@ end)
 
 player:SetAttribute("DungeonProgressionToastVersion", VERSION)
 player:SetAttribute("DungeonBlockingLevelUpPanelDisabled", true)
-player:SetAttribute("DungeonCompanionLevelUpChoicePolicy", "AutomaticFirstAvailableUpgrade")
+player:SetAttribute("DungeonCompanionLevelUpChoicePolicy", "AutomaticRandomAvailableUpgrade")
