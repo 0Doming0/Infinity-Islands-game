@@ -1,50 +1,43 @@
+-- OrbProgressionServer - progressao linear automatica do MVP.
+--
+-- O Orb nao interrompe mais o combate e nao pede escolha.
+-- Jogador novo recebe Fire Orb automaticamente no nivel 3.
+-- O Orb principal evolui automaticamente nos niveis 6, 9 e 12 ate Lv.4.
+-- Jogadores antigos preservam seus Orbs salvos; o Orb equipado/primeiro possuido
+-- vira o Orb principal e continua evoluindo.
+
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local orbFolder = ReplicatedStorage:WaitForChild("OrbCombat")
 local OrbConfig = require(orbFolder:WaitForChild("OrbConfig"))
-local AttackStyles = require(ReplicatedStorage:WaitForChild("AttackStyles"))
 local PlayerDataService = require(
 	ServerScriptService:WaitForChild("BlockParkour"):WaitForChild("PlayerDataService_SkyDungeon_V10")
 )
-local UpgradeChoiceProtectionService = require(
-	ServerScriptService:WaitForChild("MVPSystems"):WaitForChild("UpgradeChoiceProtectionService")
-)
-local choiceEvent = orbFolder:WaitForChild("OrbChoiceEvent")
-local choiceRequest = orbFolder:WaitForChild("OrbChoiceRequest")
 
-local queues = setmetatable({}, { __mode = "k" })
-local queuedMilestones = setmetatable({}, { __mode = "k" })
-local selecting = setmetatable({}, { __mode = "k" })
-local offeredOptions = setmetatable({}, { __mode = "k" })
-local random = Random.new()
-local lastClearSerial = math.max(0, math.floor(tonumber(workspace:GetAttribute("DungeonIslandClearFeedbackSerial")) or 0))
+local VERSION = "LinearAutomaticOrbProgressionV1"
+local MILESTONES = { 3, 6, 9, 12 }
+local DEFAULT_ORB = "Fire"
 local saveScheduled = setmetatable({}, { __mode = "k" })
 
 local function claimedAttribute(level)
 	return string.format("OrbChoiceLevel%dClaimed", level)
 end
 
-local function getOrbLevel(player, orbName)
-	local attribute = OrbConfig.GetLevelAttribute(orbName)
-	return attribute and OrbConfig.CleanLevel(player:GetAttribute(attribute)) or 0
+local function cleanLevel(value)
+	return OrbConfig.CleanLevel(value)
 end
 
-local function ownedOrbCount(player)
-	local count = 0
-	for _, orbName in ipairs(OrbConfig.OrbOrder) do
-		if getOrbLevel(player, orbName) > 0 then
-			count += 1
-		end
-	end
-	return count
+local function getOrbLevel(player, orbName)
+	local attribute = OrbConfig.GetLevelAttribute(orbName)
+	return attribute and cleanLevel(player:GetAttribute(attribute)) or 0
 end
 
 local function setOrbLevel(player, orbName, level)
 	local attribute = OrbConfig.GetLevelAttribute(orbName)
 	if attribute then
-		player:SetAttribute(attribute, OrbConfig.CleanLevel(level))
+		player:SetAttribute(attribute, cleanLevel(level))
 	end
 end
 
@@ -61,35 +54,64 @@ local function setOrbXP(player, orbName, value)
 end
 
 local function ensureMilestoneAbilities(player, orbName, level)
-	for abilityLevel = 2, OrbConfig.CleanLevel(level) do
-		local ability, rank = OrbConfig.GetMilestoneAbility(orbName, abilityLevel)
+	for orbLevel = 2, cleanLevel(level) do
+		local ability, rank = OrbConfig.GetMilestoneAbility(orbName, orbLevel)
 		if ability then
 			local attribute = "OrbUpgrade_" .. ability.Id
-			local currentRank = math.max(0, math.floor(tonumber(player:GetAttribute(attribute)) or 0))
-			player:SetAttribute(attribute, math.max(currentRank, rank))
+			local current = math.max(0, math.floor(tonumber(player:GetAttribute(attribute)) or 0))
+			player:SetAttribute(attribute, math.max(current, rank or 1))
 		end
 	end
 end
 
-local function ownedEquippedOrbs(player)
-	local result = {}
-	local seen = {}
+local function ownedOrb(player, orbName)
+	return OrbConfig.GetOrb(orbName) ~= nil and getOrbLevel(player, orbName) > 0
+end
+
+local function primaryOrb(player)
+	local equipped = OrbConfig.NormalizeOrb(player:GetAttribute("EquippedOrb"))
+	if equipped and ownedOrb(player, equipped) then
+		return equipped
+	end
+
 	for orbName in string.gmatch(tostring(player:GetAttribute("EquippedOrbs") or ""), "[^,]+") do
-		if OrbConfig.GetOrb(orbName) and getOrbLevel(player, orbName) > 0 and not seen[orbName] and #result < (OrbConfig.MaxEquippedOrbs or 2) then
-			seen[orbName] = true
-			table.insert(result, orbName)
+		orbName = OrbConfig.NormalizeOrb(orbName)
+		if orbName and ownedOrb(player, orbName) then
+			return orbName
 		end
 	end
-	return result
+
+	for _, orbName in ipairs(OrbConfig.OrbOrder or {}) do
+		if ownedOrb(player, orbName) then
+			return orbName
+		end
+	end
+
+	return OrbConfig.GetOrb(DEFAULT_ORB) and DEFAULT_ORB or (OrbConfig.OrbOrder and OrbConfig.OrbOrder[1])
 end
 
-local function persistOrbProgression(player)
+local function equipOnlyPrimary(player, orbName)
+	if not orbName or not ownedOrb(player, orbName) then
+		player:SetAttribute("EquippedOrbs", "")
+		player:SetAttribute("EquippedOrb", nil)
+		player:SetAttribute("EquippedOrb2", nil)
+		return
+	end
+	player:SetAttribute("EquippedOrbs", orbName)
+	player:SetAttribute("EquippedOrb", orbName)
+	player:SetAttribute("EquippedOrb2", nil)
+end
+
+local function progressionSnapshot(player)
 	local orbs = {}
-	for _, orbName in ipairs(OrbConfig.OrbOrder) do
+	for _, orbName in ipairs(OrbConfig.OrbOrder or {}) do
 		local definition = OrbConfig.GetOrb(orbName)
 		local abilities = {}
-		for _, upgrade in ipairs(definition.SpecializedUpgrades or {}) do
-			abilities[upgrade.Id] = math.max(0, math.floor(tonumber(player:GetAttribute("OrbUpgrade_" .. upgrade.Id)) or 0))
+		for _, upgrade in ipairs((definition and definition.SpecializedUpgrades) or {}) do
+			abilities[upgrade.Id] = math.max(
+				0,
+				math.floor(tonumber(player:GetAttribute("OrbUpgrade_" .. upgrade.Id)) or 0)
+			)
 		end
 		orbs[orbName] = {
 			Level = getOrbLevel(player, orbName),
@@ -98,437 +120,243 @@ local function persistOrbProgression(player)
 		}
 	end
 
-	local claimedMilestones = {}
-	for _, level in ipairs(OrbConfig.ChoiceLevels) do
-		if player:GetAttribute(claimedAttribute(level)) == true then
-			claimedMilestones[level] = true
-		end
+	local claimed = {}
+	for _, level in ipairs(MILESTONES) do
+		claimed[level] = player:GetAttribute(claimedAttribute(level)) == true
 	end
 
-	return PlayerDataService.SetOrbProgression(player, {
-		Version = OrbConfig.Version,
+	local primary = primaryOrb(player)
+	return {
+		Version = VERSION,
 		Orbs = orbs,
-		EquippedOrbs = ownedEquippedOrbs(player),
-		ClaimedMilestones = claimedMilestones,
+		EquippedOrbs = primary and ownedOrb(player, primary) and { primary } or {},
+		ClaimedMilestones = claimed,
 		ChoicesCompleted = math.max(0, math.floor(tonumber(player:GetAttribute("OrbChoicesCompleted")) or 0)),
-	})
+	}
 end
 
-local function scheduleOrbSave(player)
+local function persist(player)
+	if player.Parent ~= Players and not player.UserId then
+		return false
+	end
+	local ok = PlayerDataService.SetOrbProgression(player, progressionSnapshot(player))
+	return ok == true
+end
+
+local function scheduleSave(player)
 	if saveScheduled[player] then
 		return
 	end
 	saveScheduled[player] = true
-	task.delay(4, function()
+	task.delay(3, function()
 		saveScheduled[player] = nil
-		if persistOrbProgression(player) then
+		if player.Parent == Players and persist(player) then
 			PlayerDataService.Save(player, false)
 		end
 	end)
 end
 
-local function restoreOrbProgression(player)
+local function restore(player)
 	PlayerDataService.Load(player)
 	local saved = PlayerDataService.GetOrbProgression(player)
-	if not saved then
+	if type(saved) ~= "table" then
 		return
 	end
 
-	for _, orbName in ipairs(OrbConfig.OrbOrder) do
-		local record = saved.Orbs[orbName] or {}
+	for _, orbName in ipairs(OrbConfig.OrbOrder or {}) do
+		local record = type(saved.Orbs) == "table" and saved.Orbs[orbName] or nil
+		record = type(record) == "table" and record or {}
 		setOrbLevel(player, orbName, record.Level)
 		setOrbXP(player, orbName, record.XP)
+
 		local definition = OrbConfig.GetOrb(orbName)
-		for _, upgrade in ipairs(definition.SpecializedUpgrades or {}) do
-			player:SetAttribute("OrbUpgrade_" .. upgrade.Id, math.max(0, math.floor(tonumber(record.Abilities and record.Abilities[upgrade.Id]) or 0)))
-		end
-	end
-
-	for _, level in ipairs(OrbConfig.ChoiceLevels) do
-		player:SetAttribute(claimedAttribute(level), saved.ClaimedMilestones[level] == true)
-	end
-	player:SetAttribute("OrbChoicesCompleted", saved.ChoicesCompleted)
-	if #saved.EquippedOrbs > 0 then
-		player:SetAttribute("EquippedOrbs", table.concat(saved.EquippedOrbs, ","))
-		player:SetAttribute("EquippedOrb", saved.EquippedOrbs[1])
-		player:SetAttribute("EquippedOrb2", saved.EquippedOrbs[2])
-	end
-end
-
--- A escolha de Orb nao deve modificar o Humanoid. A antiga protecao criava um
--- ForceField real, que bloqueava todo dano dos mobs e, ao restaurar estados
--- durante um congelamento, podia deixar o JumpHeight em 1.
-local function removeLegacyChoiceForceField(player)
-	local character = player.Character
-	local forceField = character and character:FindFirstChild("OrbChoiceProtection")
-	if forceField and forceField:IsA("ForceField") then
-		forceField:Destroy()
-	end
-end
-
-local function restoreChoiceProtection(player)
-	removeLegacyChoiceForceField(player)
-	player:SetAttribute("OrbChoiceProtected", false)
-	UpgradeChoiceProtectionService.End(player, "OrbChoice")
-end
-
-local function applyChoiceProtection(player)
-	-- Mantem somente o estado logico para pausar o Orb enquanto a escolha esta
-	-- aberta. Nao cria ForceField nem salva/restaura WalkSpeed ou pulo.
-	removeLegacyChoiceForceField(player)
-	player:SetAttribute("OrbChoiceProtected", true)
-	UpgradeChoiceProtectionService.Begin(player, "OrbChoice")
-end
-
-local function initializePlayer(player)
-	restoreOrbProgression(player)
-	for _, orbName in ipairs(OrbConfig.OrbOrder) do
-		if player:GetAttribute(OrbConfig.GetLevelAttribute(orbName)) == nil then
-			setOrbLevel(player, orbName, 0)
-		end
-		if player:GetAttribute(OrbConfig.GetOrbLevelXPAttribute(orbName)) == nil then
-			setOrbXP(player, orbName, 0)
-		end
-		local orb = OrbConfig.GetOrb(orbName)
-		for _, upgrade in ipairs(orb.SpecializedUpgrades or {}) do
-			local attribute = "OrbUpgrade_" .. upgrade.Id
-			if player:GetAttribute(attribute) == nil then player:SetAttribute(attribute, 0) end
+		for _, upgrade in ipairs((definition and definition.SpecializedUpgrades) or {}) do
+			local count = math.max(
+				0,
+				math.floor(tonumber(record.Abilities and record.Abilities[upgrade.Id]) or 0)
+			)
+			player:SetAttribute("OrbUpgrade_" .. upgrade.Id, count)
 		end
 		ensureMilestoneAbilities(player, orbName, getOrbLevel(player, orbName))
 	end
-	for _, level in ipairs(OrbConfig.ChoiceLevels) do
-		local attribute = claimedAttribute(level)
-		if player:GetAttribute(attribute) == nil then player:SetAttribute(attribute, false) end
+
+	local claimed = type(saved.ClaimedMilestones) == "table" and saved.ClaimedMilestones or {}
+	for _, level in ipairs(MILESTONES) do
+		player:SetAttribute(claimedAttribute(level), claimed[level] == true)
 	end
-	if player:GetAttribute("OrbChoicesCompleted") == nil then player:SetAttribute("OrbChoicesCompleted", 0) end
-	if player:GetAttribute("OrbChoiceSerial") == nil then player:SetAttribute("OrbChoiceSerial", 0) end
-	if player:GetAttribute("PendingOrbChoiceLevel") == nil then player:SetAttribute("PendingOrbChoiceLevel", 0) end
-	if player:GetAttribute("OrbChoiceState") == nil then player:SetAttribute("OrbChoiceState", "None") end
-	if player:GetAttribute("OrbChoiceSafeMomentSerial") == nil then player:SetAttribute("OrbChoiceSafeMomentSerial", 0) end
-	if player:GetAttribute("OrbChoiceLastPresentedSafeMomentSerial") == nil then player:SetAttribute("OrbChoiceLastPresentedSafeMomentSerial", 0) end
-	if player:GetAttribute("OrbChoiceSafeIslandIndex") == nil then player:SetAttribute("OrbChoiceSafeIslandIndex", 0) end
-	removeLegacyChoiceForceField(player)
-	player:SetAttribute("OrbChoiceProtected", false)
-	player:SetAttribute("OrbProgressionVersion", OrbConfig.Version)
-	player:SetAttribute("OrbProgressionPolicy", "FirstOrbGuaranteed_RareAdditionalOrb")
-	player:SetAttribute("OrbFirstChoiceLevel", 2)
-	player:SetAttribute("OrbFirstChoiceGuaranteed", true)
-	if player:GetAttribute("EquippedOrbs") == nil then
-		local equippedOrbNames = {}
-		for _, orbName in ipairs(OrbConfig.OrbOrder) do
-			if getOrbLevel(player, orbName) > 0 and #equippedOrbNames < (OrbConfig.MaxEquippedOrbs or 2) then
-				table.insert(equippedOrbNames, orbName)
+	player:SetAttribute("OrbChoicesCompleted", math.max(0, math.floor(tonumber(saved.ChoicesCompleted) or 0)))
+
+	local savedPrimary = type(saved.EquippedOrbs) == "table" and saved.EquippedOrbs[1] or nil
+	savedPrimary = OrbConfig.NormalizeOrb(savedPrimary)
+	if savedPrimary and ownedOrb(player, savedPrimary) then
+		player:SetAttribute("EquippedOrb", savedPrimary)
+	end
+end
+
+local function initialize(player)
+	restore(player)
+
+	for _, orbName in ipairs(OrbConfig.OrbOrder or {}) do
+		local levelAttribute = OrbConfig.GetLevelAttribute(orbName)
+		local xpAttribute = OrbConfig.GetOrbLevelXPAttribute(orbName)
+		if levelAttribute and player:GetAttribute(levelAttribute) == nil then
+			setOrbLevel(player, orbName, 0)
+		end
+		if xpAttribute and player:GetAttribute(xpAttribute) == nil then
+			setOrbXP(player, orbName, 0)
+		end
+		local definition = OrbConfig.GetOrb(orbName)
+		for _, upgrade in ipairs((definition and definition.SpecializedUpgrades) or {}) do
+			local attribute = "OrbUpgrade_" .. upgrade.Id
+			if player:GetAttribute(attribute) == nil then
+				player:SetAttribute(attribute, 0)
 			end
 		end
-		player:SetAttribute("EquippedOrbs", table.concat(equippedOrbNames, ","))
-		player:SetAttribute("EquippedOrb", equippedOrbNames[1])
-		player:SetAttribute("EquippedOrb2", equippedOrbNames[2])
 	end
+
+	for _, level in ipairs(MILESTONES) do
+		local attribute = claimedAttribute(level)
+		if player:GetAttribute(attribute) == nil then
+			player:SetAttribute(attribute, false)
+		end
+	end
+
+	if player:GetAttribute("OrbChoicesCompleted") == nil then
+		player:SetAttribute("OrbChoicesCompleted", 0)
+	end
+
+	-- Remove qualquer escolha/modal pendente de versoes anteriores.
+	player:SetAttribute("PendingOrbChoiceLevel", 0)
+	player:SetAttribute("OrbChoiceProtected", false)
+	player:SetAttribute("OrbChoiceState", "Automatic")
+	player:SetAttribute("OrbChoiceSerial", 0)
+	player:SetAttribute("OrbChoiceSafeMomentSerial", 0)
+	player:SetAttribute("OrbChoiceLastPresentedSafeMomentSerial", 0)
+	player:SetAttribute("OrbChoiceSafeIslandIndex", 0)
+	player:SetAttribute("OrbProgressionVersion", VERSION)
+	player:SetAttribute("OrbProgressionPolicy", "AutomaticPrimaryOrb")
+	player:SetAttribute("OrbAutomaticMilestones", "3,6,9,12")
+	player:SetAttribute("OrbFirstChoiceGuaranteed", false)
 end
 
-local function createNewOrbOption(style, orbName, definition)
-	return { ChoiceType = "NewOrb", StyleId = style.Id, AttackType = style.AttackType, Orb = orbName, AssetName = definition.AssetName, DisplayName = style.DisplayName, Description = style.Description .. string.format("  |  CUSTO: %d XP", OrbConfig.GetOrbLevelXPCost(0)), Icon = style.Icon, Color = style.Color, CurrentLevel = 0, NextLevel = 1, XPCost = OrbConfig.GetOrbLevelXPCost(0), Kind = "NOVO ORB", AttributeLabel = "NOVA HABILIDADE", Available = true }
-end
-
-local function choiceIsSafe(player)
-	local transportState = tostring(player:GetAttribute("DungeonAssistedTransportState") or "Idle")
-	if transportState == "Flying"
-		or transportState == "Landing"
-		or player:GetAttribute("DungeonAssistedTransportActive") == true
-		or player:GetAttribute("IsDowned") == true
-		or player:GetAttribute("DungeonEliminated") == true
-		or player:GetAttribute("DungeonSpectating") == true
-	then
+local function grantOrUpgrade(player, milestone)
+	if player:GetAttribute(claimedAttribute(milestone)) == true then
 		return false
 	end
 
-	local safeMomentSerial = math.max(0, math.floor(tonumber(player:GetAttribute("OrbChoiceSafeMomentSerial")) or 0))
-	local presentedMomentSerial = math.max(0, math.floor(tonumber(player:GetAttribute("OrbChoiceLastPresentedSafeMomentSerial")) or 0))
-	local currentIsland = math.max(0, math.floor(tonumber(player:GetAttribute("CurrentGlobalIslandIndex")) or 0))
-	local safeIsland = math.max(0, math.floor(tonumber(player:GetAttribute("OrbChoiceSafeIslandIndex")) or 0))
-	return safeMomentSerial > presentedMomentSerial
-		and currentIsland > 0
-		and currentIsland == safeIsland
+	local orbName = primaryOrb(player)
+	if not orbName then
+		player:SetAttribute(claimedAttribute(milestone), true)
+		return false
+	end
+
+	local previous = getOrbLevel(player, orbName)
+	local nextLevel = previous
+	local kind = "MilestoneConsumed"
+
+	if previous <= 0 then
+		nextLevel = 1
+		kind = "NewOrb"
+	elseif previous < OrbConfig.MaxOrbLevel then
+		nextLevel = previous + 1
+		kind = "AutomaticUpgrade"
+	end
+
+	if nextLevel ~= previous then
+		setOrbLevel(player, orbName, nextLevel)
+		ensureMilestoneAbilities(player, orbName, nextLevel)
+		equipOnlyPrimary(player, orbName)
+		player:SetAttribute("LastOrbChoice", orbName)
+		player:SetAttribute("LastOrbChoiceKind", kind)
+		player:SetAttribute("LastOrbChoiceLevel", nextLevel)
+		player:SetAttribute("LastOrbChoiceAt", workspace:GetServerTimeNow())
+		player:SetAttribute("LastOrbAutomaticMilestone", milestone)
+	end
+
+	player:SetAttribute(claimedAttribute(milestone), true)
+	player:SetAttribute(
+		"OrbChoicesCompleted",
+		math.max(0, math.floor(tonumber(player:GetAttribute("OrbChoicesCompleted")) or 0)) + 1
+	)
+	player:SetAttribute("PendingOrbChoiceLevel", 0)
+	player:SetAttribute("OrbChoiceState", "Automatic")
+	scheduleSave(player)
+	return nextLevel ~= previous
 end
 
-local function buildOptions(player)
-	local options = {}
-	local ownedCount = 0
-	local newOrbCandidates = {}
-	local maxEquippedOrbs = OrbConfig.MaxEquippedOrbs or 2
-	for _, orbName in ipairs(OrbConfig.OrbOrder) do
-		if getOrbLevel(player, orbName) > 0 then
-			ownedCount += 1
-		end
-	end
-
-	for _, styleId in ipairs(AttackStyles.Order) do
-		local style = AttackStyles.Get(styleId)
-		local orbName = style and style.OrbName
-		local definition = orbName and OrbConfig.GetOrb(orbName)
-		if style and definition then
-			local currentLevel = getOrbLevel(player, orbName)
-			if currentLevel == 0 and ownedCount < maxEquippedOrbs then
-				table.insert(newOrbCandidates, { style = style, orbName = orbName, definition = definition })
-			elseif currentLevel > 0 and currentLevel < OrbConfig.MaxOrbLevel then
-				table.insert(options, {
-					ChoiceType = "MilestoneUpgrade",
-					StyleId = style.Id,
-					AttackType = style.AttackType,
-					Orb = orbName,
-					AssetName = definition.AssetName,
-					DisplayName = definition.DisplayName,
-					Description = definition.Description,
-					Icon = style.Icon,
-					Color = style.Color,
-					CurrentLevel = currentLevel,
-					NextLevel = currentLevel + 1,
-					XPCost = 0,
-					Kind = "UPGRADE DE NIVEL",
-					AttributeLabel = "RECOMPENSA DE LEVEL UP",
-					Available = true,
-				})
-			end
-		end
-	end
-
-	-- A primeira escolha sempre apresenta os Orbs disponiveis. A partir do
-	-- segundo, somente uma recompensa rara pode acrescentar um novo Orb.
-	if ownedCount == 0 then
-		for _, candidate in ipairs(newOrbCandidates) do
-			table.insert(options, createNewOrbOption(candidate.style, candidate.orbName, candidate.definition))
-		end
-	elseif ownedCount < maxEquippedOrbs and #newOrbCandidates > 0 then
-		local chance = math.clamp(tonumber(OrbConfig.AdditionalOrbChancePerMilestone) or 0.015, 0, 1)
-		if random:NextNumber() < chance then
-			local candidate = newOrbCandidates[random:NextInteger(1, #newOrbCandidates)]
-			table.insert(options, createNewOrbOption(candidate.style, candidate.orbName, candidate.definition))
-		end
-	end
-	return options
-end
-
-local function presentNext(player)
-	if player.Parent ~= Players or (tonumber(player:GetAttribute("PendingOrbChoiceLevel")) or 0) > 0 then return end
-	local queue = queues[player]
-	if not queue or #queue == 0 then return end
-	if not choiceIsSafe(player) then
-		player:SetAttribute("OrbChoiceState", "WaitingForSafeMoment")
+local function synchronize(player)
+	if player.Parent ~= Players then
 		return
 	end
-	while queue and #queue > 0 do
-		local milestone = table.remove(queue, 1)
-		local options = buildOptions(player)
-		local set = queuedMilestones[player]
-		if #options == 0 then
-			-- Nao ha melhoria disponivel e a tentativa rara nao aconteceu. Esta
-			-- recompensa e consumida sem abrir uma tela vazia para o jogador.
-			player:SetAttribute(claimedAttribute(milestone), true)
-			if set then set[milestone] = nil end
-			continue
-		end
+	local playerLevel = math.max(1, math.floor(tonumber(player:GetAttribute("PlayerLevel")) or 1))
 
-		local serial = (tonumber(player:GetAttribute("OrbChoiceSerial")) or 0) + 1
-		local byOrb = {}
-		for _, option in ipairs(options) do
-			byOrb[option.Orb] = option
+	-- Recupera jogadores que ficaram presos em uma escolha antiga antes desta migracao.
+	if playerLevel >= MILESTONES[1] then
+		local primary = primaryOrb(player)
+		if primary and getOrbLevel(player, primary) <= 0 then
+			player:SetAttribute(claimedAttribute(MILESTONES[1]), false)
 		end
-		offeredOptions[player] = { Serial = serial, ByOrb = byOrb }
-		player:SetAttribute("PendingOrbChoiceLevel", milestone)
-		player:SetAttribute("OrbChoiceSerial", serial)
-		player:SetAttribute("OrbChoiceState", "WaitingForSelection")
-		player:SetAttribute("OrbChoiceLastPresentedSafeMomentSerial", player:GetAttribute("OrbChoiceSafeMomentSerial"))
-		applyChoiceProtection(player)
-		choiceEvent:FireClient(player, { Action = "Offer", MilestoneLevel = milestone, Serial = serial, Options = options })
-		return
+	end
+
+	for _, milestone in ipairs(MILESTONES) do
+		if playerLevel >= milestone then
+			grantOrUpgrade(player, milestone)
+		end
+	end
+
+	local primary = primaryOrb(player)
+	if primary and ownedOrb(player, primary) then
+		equipOnlyPrimary(player, primary)
 	end
 end
 
-local function enqueueMilestone(player, milestone)
-	if player:GetAttribute(claimedAttribute(milestone)) == true then return end
-	local set = queuedMilestones[player] or {}
-	queuedMilestones[player] = set
-	if set[milestone] then return end
-	set[milestone] = true
-	local queue = queues[player] or {}
-	queues[player] = queue
-	table.insert(queue, milestone)
-	table.sort(queue)
-	presentNext(player)
-end
-
-local function synchronizeMilestones(player)
-	local currentLevel = math.max(1, math.floor(tonumber(player:GetAttribute("PlayerLevel")) or 1))
-	for _, milestone in ipairs(OrbConfig.ChoiceLevels) do
-		if currentLevel >= milestone and player:GetAttribute(claimedAttribute(milestone)) ~= true then
-			-- Migracao segura: quem ja possui um Orb nao recebe uma melhoria extra
-			-- apenas porque a primeira escolha passou a acontecer no nivel 2.
-			if milestone == 2 and ownedOrbCount(player) > 0 then
-				player:SetAttribute(claimedAttribute(milestone), true)
-			else
-				enqueueMilestone(player, milestone)
-			end
+local function bindSaveSignals(player)
+	for _, orbName in ipairs(OrbConfig.OrbOrder or {}) do
+		local levelAttribute = OrbConfig.GetLevelAttribute(orbName)
+		local xpAttribute = OrbConfig.GetOrbLevelXPAttribute(orbName)
+		if levelAttribute then
+			player:GetAttributeChangedSignal(levelAttribute):Connect(function()
+				scheduleSave(player)
+			end)
+		end
+		if xpAttribute then
+			player:GetAttributeChangedSignal(xpAttribute):Connect(function()
+				scheduleSave(player)
+			end)
+		end
+		local definition = OrbConfig.GetOrb(orbName)
+		for _, upgrade in ipairs((definition and definition.SpecializedUpgrades) or {}) do
+			player:GetAttributeChangedSignal("OrbUpgrade_" .. upgrade.Id):Connect(function()
+				scheduleSave(player)
+			end)
 		end
 	end
 end
 
 local function bindPlayer(player)
-	initializePlayer(player)
-	queues[player] = queues[player] or {}
-	queuedMilestones[player] = queuedMilestones[player] or {}
-	for _, orbName in ipairs(OrbConfig.OrbOrder) do
-		player:GetAttributeChangedSignal(OrbConfig.GetLevelAttribute(orbName)):Connect(function()
-			scheduleOrbSave(player)
-		end)
-		player:GetAttributeChangedSignal(OrbConfig.GetOrbLevelXPAttribute(orbName)):Connect(function()
-			scheduleOrbSave(player)
-		end)
-		for _, upgrade in ipairs((OrbConfig.GetOrb(orbName).SpecializedUpgrades or {})) do
-			player:GetAttributeChangedSignal("OrbUpgrade_" .. upgrade.Id):Connect(function()
-				scheduleOrbSave(player)
-			end)
-		end
-	end
-	for _, level in ipairs(OrbConfig.ChoiceLevels) do
-		player:GetAttributeChangedSignal(claimedAttribute(level)):Connect(function()
-			scheduleOrbSave(player)
-		end)
-	end
-	for _, attribute in ipairs({ "EquippedOrbs", "EquippedOrb", "EquippedOrb2", "OrbChoicesCompleted" }) do
-		player:GetAttributeChangedSignal(attribute):Connect(function()
-			scheduleOrbSave(player)
-		end)
-	end
-	player.CharacterAdded:Connect(function(character)
-		if (tonumber(player:GetAttribute("PendingOrbChoiceLevel")) or 0) > 0 then character:WaitForChild("Humanoid", 5); applyChoiceProtection(player) end
+	initialize(player)
+	bindSaveSignals(player)
+	player:GetAttributeChangedSignal("PlayerLevel"):Connect(function()
+		task.defer(synchronize, player)
 	end)
-	player:GetAttributeChangedSignal("PlayerLevel"):Connect(function() synchronizeMilestones(player) end)
-	player:GetAttributeChangedSignal("PlayerLevelUpSerial"):Connect(function() synchronizeMilestones(player) end)
-	task.defer(synchronizeMilestones, player)
+	player:GetAttributeChangedSignal("PlayerLevelUpSerial"):Connect(function()
+		task.defer(synchronize, player)
+	end)
+	task.defer(synchronize, player)
 end
-
-workspace:GetAttributeChangedSignal("DungeonIslandClearFeedbackSerial"):Connect(function()
-	local serial = math.max(0, math.floor(tonumber(workspace:GetAttribute("DungeonIslandClearFeedbackSerial")) or 0))
-	if serial <= lastClearSerial then return end
-	lastClearSerial = serial
-	local clearedIsland = math.max(0, math.floor(tonumber(workspace:GetAttribute("DungeonIslandClearFeedbackIsland")) or 0))
-	if clearedIsland <= 0 then return end
-
-	for _, player in ipairs(Players:GetPlayers()) do
-		local currentIsland = math.max(0, math.floor(tonumber(player:GetAttribute("CurrentGlobalIslandIndex")) or 0))
-		if currentIsland == clearedIsland then
-			player:SetAttribute("OrbChoiceSafeMomentSerial", serial)
-			player:SetAttribute("OrbChoiceSafeIslandIndex", clearedIsland)
-			task.defer(presentNext, player)
-		end
-	end
-end)
-
-choiceRequest.OnServerEvent:Connect(function(player, request)
-	if selecting[player] or type(request) ~= "table" then return end
-	selecting[player] = true
-	local pendingLevel = math.floor(tonumber(player:GetAttribute("PendingOrbChoiceLevel")) or 0)
-	local serial = math.floor(tonumber(player:GetAttribute("OrbChoiceSerial")) or 0)
-	local requestedLevel = math.floor(tonumber(request.MilestoneLevel) or 0)
-	local requestedSerial = math.floor(tonumber(request.Serial) or 0)
-	local styleId = AttackStyles.Normalize(request.StyleId)
-	local style = styleId and AttackStyles.Get(styleId)
-	local orbName = style and OrbConfig.NormalizeOrb(style.OrbName)
-	if not orbName then orbName = OrbConfig.NormalizeOrb(request.Orb); style = orbName and AttackStyles.GetByOrbName(orbName); styleId = style and style.Id end
-	if pendingLevel <= 0 or requestedLevel ~= pendingLevel or requestedSerial ~= serial or not styleId or not style or not orbName then
-		choiceEvent:FireClient(player, { Action = "Rejected", Reason = "InvalidOrExpiredChoice" }); restoreChoiceProtection(player); selecting[player] = nil; return
-	end
-	local currentLevel = getOrbLevel(player, orbName)
-	local choiceType = request.ChoiceType
-	-- Compatibilidade com uma interface que ainda envia somente o nome do Orb.
-	if choiceType == nil then
-		choiceType = currentLevel == 0 and "NewOrb" or "MilestoneUpgrade"
-	end
-	local offer = offeredOptions[player]
-	local offeredOption = offer and offer.Serial == serial and offer.ByOrb[orbName]
-	if not offeredOption or offeredOption.ChoiceType ~= choiceType then
-		choiceEvent:FireClient(player, { Action = "Rejected", Reason = "ChoiceNotOffered" })
-		selecting[player] = nil
-		return
-	end
-	local upgrade = choiceType == "SpecializedUpgrade" and OrbConfig.GetSpecializedUpgrade(orbName, request.UpgradeId) or nil
-	local milestoneAbility
-	if choiceType == "MilestoneUpgrade" then
-		milestoneAbility = OrbConfig.GetMilestoneAbility(orbName, currentLevel + 1)
-	end
-	local upgradeXPCost = OrbConfig.GetOrbLevelXPCost(currentLevel)
-	local orbXP = getOrbXP(player, orbName)
-	local equippedCount = 0
-	for _, ownedOrbName in ipairs(OrbConfig.OrbOrder) do
-		if getOrbLevel(player, ownedOrbName) > 0 then
-			equippedCount += 1
-		end
-	end
-	if choiceType == "NewOrb" then
-		if currentLevel ~= 0 or equippedCount >= (OrbConfig.MaxEquippedOrbs or 2) then choiceEvent:FireClient(player, { Action = "Rejected", Reason = "OrbAlreadyOwned" }); restoreChoiceProtection(player); selecting[player] = nil; return end
-	elseif choiceType == "MilestoneUpgrade" then
-		if currentLevel <= 0 or currentLevel >= OrbConfig.MaxOrbLevel or not milestoneAbility then choiceEvent:FireClient(player, { Action = "Rejected", Reason = "InvalidMilestoneUpgrade" }); restoreChoiceProtection(player); selecting[player] = nil; return end
-	elseif choiceType == "SpecializedUpgrade" then
-		local upgradeAttribute = "OrbUpgrade_" .. request.UpgradeId
-		local upgradeCount = math.floor(tonumber(player:GetAttribute(upgradeAttribute)) or 0)
-		if not upgrade or currentLevel <= 0 or currentLevel >= OrbConfig.MaxOrbLevel or upgradeCount >= currentLevel then choiceEvent:FireClient(player, { Action = "Rejected", Reason = "InvalidSpecializedUpgrade" }); restoreChoiceProtection(player); selecting[player] = nil; return end
-		if orbXP < upgradeXPCost then choiceEvent:FireClient(player, { Action = "Rejected", Reason = "InsufficientOrbXP" }); restoreChoiceProtection(player); selecting[player] = nil; return end
-	else
-		choiceEvent:FireClient(player, { Action = "Rejected", Reason = "InvalidChoiceType" }); restoreChoiceProtection(player); selecting[player] = nil; return
-	end
-	if choiceType == "NewOrb" then
-		setOrbXP(player, orbName, 0)
-	elseif choiceType == "SpecializedUpgrade" then
-		setOrbXP(player, orbName, orbXP - upgradeXPCost)
-	end
-	setOrbLevel(player, orbName, currentLevel + 1)
-	if choiceType == "SpecializedUpgrade" then player:SetAttribute("OrbUpgrade_" .. upgrade.Id, math.floor(tonumber(player:GetAttribute("OrbUpgrade_" .. upgrade.Id)) or 0) + 1) end
-	if choiceType == "MilestoneUpgrade" then
-		ensureMilestoneAbilities(player, orbName, currentLevel + 1)
-	end
-	local equippedOrbNames = {}
-	for _, ownedOrbName in ipairs(OrbConfig.OrbOrder) do
-		if getOrbLevel(player, ownedOrbName) > 0 then
-			table.insert(equippedOrbNames, ownedOrbName)
-		end
-	end
-	player:SetAttribute("EquippedOrbs", table.concat(equippedOrbNames, ","))
-	player:SetAttribute("EquippedOrb", equippedOrbNames[1] or orbName)
-	player:SetAttribute("EquippedOrb2", equippedOrbNames[2])
-	player:SetAttribute(claimedAttribute(pendingLevel), true)
-	player:SetAttribute("OrbChoicesCompleted", (tonumber(player:GetAttribute("OrbChoicesCompleted")) or 0) + 1)
-	player:SetAttribute("LastOrbChoice", orbName)
-	player:SetAttribute("LastOrbChoiceKind", choiceType)
-	player:SetAttribute("LastOrbChoiceUpgradeId", choiceType == "SpecializedUpgrade" and upgrade.Id or (milestoneAbility and milestoneAbility.Id or nil))
-	player:SetAttribute("LastOrbChoiceLevel", currentLevel + 1)
-	player:SetAttribute("LastOrbChoiceAt", workspace:GetServerTimeNow())
-	player:SetAttribute("PendingOrbChoiceLevel", 0)
-	player:SetAttribute("OrbChoiceState", "Selected")
-	offeredOptions[player] = nil
-	restoreChoiceProtection(player)
-	persistOrbProgression(player)
-	scheduleOrbSave(player)
-	local set = queuedMilestones[player]
-	if set then set[pendingLevel] = nil end
-	choiceEvent:FireClient(player, { Action = "Selected", StyleId = styleId, AttackType = style.AttackType, Orb = orbName, OrbLevel = currentLevel + 1, ChoiceType = choiceType, UpgradeId = choiceType == "SpecializedUpgrade" and upgrade.Id or (milestoneAbility and milestoneAbility.Id or nil), MilestoneLevel = pendingLevel })
-	selecting[player] = nil
-	task.defer(presentNext, player)
-end)
 
 Players.PlayerAdded:Connect(bindPlayer)
 Players.PlayerRemoving:Connect(function(player)
-	persistOrbProgression(player)
+	persist(player)
 	PlayerDataService.Save(player, true)
-	restoreChoiceProtection(player)
-	queues[player] = nil
-	queuedMilestones[player] = nil
-	selecting[player] = nil
-	offeredOptions[player] = nil
 	saveScheduled[player] = nil
 end)
-for _, player in ipairs(Players:GetPlayers()) do bindPlayer(player) end
+for _, player in ipairs(Players:GetPlayers()) do
+	bindPlayer(player)
+end
+
 workspace:SetAttribute("DungeonOrbProgressionReady", true)
-workspace:SetAttribute("DungeonOrbProgressionVersion", OrbConfig.Version)
-workspace:SetAttribute("DungeonOrbChoiceLevels", table.concat(OrbConfig.ChoiceLevels, ","))
-workspace:SetAttribute("DungeonOrbFirstChoiceLevel", 2)
-print("[OrbProgression] Primeiro Orb garantido; Orbs adicionais sao raros")
+workspace:SetAttribute("DungeonOrbProgressionVersion", VERSION)
+workspace:SetAttribute("DungeonOrbProgressionPolicy", "AutomaticPrimaryOrb")
+workspace:SetAttribute("DungeonOrbAutomaticMilestones", "3,6,9,12")
+workspace:SetAttribute("DungeonOrbChoiceUIRequired", false)
