@@ -2,33 +2,33 @@
 
 local Config = {}
 
-Config.Version = "AssistedIslandEarlyLearningV6"
+Config.Version = "AutomaticIslandTransitV7"
 Config.Enabled = true
 
--- Cada indice de ilha pode iniciar apenas este numero de voos automaticos
--- durante a sessao. Novos level ups na mesma ilha mostram somente a seta.
-Config.AutomaticFlightsPerSourceIsland = 1
+-- O transporte automatico agora e o metodo oficial de transicao entre arenas.
+-- Cada ilha pode disparar novamente caso o jogador retorne a ela durante a
+-- mesma sessao; o limite alto existe apenas como protecao contra loops.
+Config.AutomaticFlightsPerSourceIsland = 99
 Config.GuidanceIndicatorEnabled = true
 
--- O voo automatico e uma ajuda de aprendizado, nao um atalho permanente.
--- Somente nas primeiras ilhas, depois de o jogador ter tempo para entender
--- que subir de nivel libera o caminho, o jogo o leva para a proxima arena.
-Config.EarlyIslandAutomaticTransportMaxIndex = 5
-Config.EarlyIslandIdleSeconds = 35
+-- O transporte vale para toda a rota, nao apenas para as primeiras ilhas.
+Config.EarlyIslandAutomaticTransportMaxIndex = 1000000
+-- Assim que a arena estiver limpa e o proximo nivel estiver elegivel, a
+-- transicao comeca quase imediatamente.
+Config.EarlyIslandIdleSeconds = 0.25
 
--- O aviso comeca no level up e o voo so pode iniciar ao final deste prazo.
-Config.LevelUpDelaySeconds = 8
-Config.FlightDurationSeconds = 2
-Config.LandingCountdownSeconds = 3
+-- Pequeno aviso para o jogador perceber que a arena terminou sem interromper o
+-- ritmo do combate.
+Config.LevelUpDelaySeconds = 1.25
+Config.FlightDurationSeconds = 1.35
+Config.LandingCountdownSeconds = 0.35
 Config.ReleaseProtectionSeconds = 0.25
--- Nao precisa de cooldown adicional: um novo transporte exige outro level up
--- e ja possui seu proprio aviso de 8 segundos.
 Config.CooldownSeconds = 0
 Config.DestinationReadyTimeoutSeconds = 5
-Config.EligibilityPollSeconds = 0.2
+Config.EligibilityPollSeconds = 0.15
 
--- Mantem o loop limpar arena -> avancar. O contador pode acontecer durante o
--- combate, mas o voo espera a conclusao da ilha caso ainda existam inimigos.
+-- Mantem o loop limpar arena -> avancar. Nunca transporta enquanto ainda houver
+-- inimigos obrigatorios na ilha atual.
 Config.RequireCurrentIslandCleared = true
 
 Config.MinimumArcHeightStuds = 24
@@ -49,8 +49,6 @@ Config.GuidanceBobStuds = 0.45
 Config.GuidanceHeightStuds = 6.5
 Config.GuidanceWaypointArrivalRadiusStuds = 8
 Config.GuidanceArrowScale = 1.35
--- Se os Parts de entrada/saida ainda nao tiverem sido replicados, a seta
--- continua visivel e aponta diretamente para a posicao da proxima ilha.
 Config.GuidanceFallbackToDestination = true
 
 -- Um Sound chamado AssistedTransportWhistle em ReplicatedStorage tem
@@ -64,7 +62,7 @@ function Config.Validate()
 		Config.AutomaticFlightsPerSourceIsland >= 1,
 		"AutomaticFlightsPerSourceIsland precisa ser >= 1"
 	)
-	assert(Config.EarlyIslandAutomaticTransportMaxIndex >= 1, "Limite de ilhas iniciais invalido")
+	assert(Config.EarlyIslandAutomaticTransportMaxIndex >= 1, "Limite de ilhas automaticas invalido")
 	assert(Config.EarlyIslandIdleSeconds >= 0, "EarlyIslandIdleSeconds precisa ser >= 0")
 	assert(Config.LevelUpDelaySeconds >= 0, "LevelUpDelaySeconds precisa ser >= 0")
 	assert(Config.FlightDurationSeconds > 0, "FlightDurationSeconds precisa ser > 0")

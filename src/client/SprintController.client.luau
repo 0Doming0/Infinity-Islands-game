@@ -1,7 +1,6 @@
--- V23: mostra numericamente o limite atual enquanto o jogador corre.
--- Corrida: dois toques em W; L3/botao sao toggle; no mobile, empurrar o
--- joystick para frente alem do limite ativa enquanto o toque permanece.
--- Shift pertence ao SneakController e nunca ativa corrida.
+-- Corrida sem autoridade visual sobre controles mobile.
+-- O Studio define Position/Size/AnchorPoint dos botoes. Este controller apenas
+-- conecta input, joystick, gamepad e botoes authored ao SprintRequest.
 
 local ContextActionService = game:GetService("ContextActionService")
 local Players = game:GetService("Players")
@@ -11,10 +10,18 @@ local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
 local SprintConfig = require(ReplicatedStorage:WaitForChild("SprintConfig"))
 local remote = ReplicatedStorage:WaitForChild("SprintRequest")
 
 local ACTION_NAME = "SkyDungeonSprint"
+local VERSION = "AuthoredMobileSprintLayoutV1"
+local BUTTON_NAMES = {
+	sprintbutton = true,
+	runbutton = true,
+	mobileSprintButton = true,
+}
+
 local wDown = false
 local controllerSprintLatched = false
 local touchButtonLatched = false
@@ -33,7 +40,7 @@ local staminaGui
 local staminaBackground
 local staminaFill
 local staminaLimitLabel
-local sprintButton
+local boundButtons = setmetatable({}, { __mode = "k" })
 
 local function formatDuration(seconds)
 	local formatted = string.format("%.1f", seconds)
@@ -45,7 +52,6 @@ local function createStaminaGui()
 		return
 	end
 
-	local playerGui = player:WaitForChild("PlayerGui")
 	staminaGui = Instance.new("ScreenGui")
 	staminaGui.Name = "SprintStaminaGui"
 	staminaGui.ResetOnSpawn = false
@@ -101,7 +107,6 @@ local function updateStaminaBar()
 	if not character or not staminaBackground or not staminaFill or not staminaLimitLabel then
 		return
 	end
-
 	local maximum = character:GetAttribute("SprintStaminaMax")
 	local current = character:GetAttribute("SprintStamina")
 	if typeof(maximum) ~= "number" or maximum <= 0 or typeof(current) ~= "number" then
@@ -109,7 +114,6 @@ local function updateStaminaBar()
 		staminaLimitLabel.Visible = false
 		return
 	end
-
 	local ratio = math.clamp(current / maximum, 0, 1)
 	local sprinting = character:GetAttribute("Sprinting") == true
 	staminaFill.Size = UDim2.fromScale(ratio, 1)
@@ -121,21 +125,18 @@ local function updateStaminaBar()
 end
 
 local function wantsSprint()
-	return wDown and doubleTapLatched
+	return (wDown and doubleTapLatched)
 		or controllerSprintLatched
 		or touchButtonLatched
 		or joystickSprintLatched
 end
 
-local function updateSprintButton()
-	if not sprintButton then
-		return
-	end
-	local active = touchButtonLatched or joystickSprintLatched or controllerSprintLatched
-	sprintButton.BackgroundColor3 = active and Color3.fromRGB(65, 211, 145) or Color3.fromRGB(54, 164, 214)
-	local caption = sprintButton:FindFirstChild("CompactCaption")
-	if caption and caption:IsA("TextLabel") then
-		caption.Text = active and "CORRENDO" or "CORRER"
+local function publishButtonState()
+	for button in pairs(boundButtons) do
+		if button.Parent then
+			button:SetAttribute("SprintActive", wantsSprint())
+			button:SetAttribute("DungeonAuthoredControl", true)
+		end
 	end
 end
 
@@ -148,6 +149,7 @@ local function sendSprintRequest(force)
 	lastRequestedValue = wanted
 	lastRequestAt = now
 	remote:FireServer(wanted)
+	publishButtonState()
 end
 
 local function updateCameraFeedback(sprinting)
@@ -176,25 +178,49 @@ local function bindCharacter(newCharacter)
 	doubleTapLatched = false
 	lastRequestedValue = false
 	normalFieldOfView = workspace.CurrentCamera and workspace.CurrentCamera.FieldOfView or 70
-
 	newCharacter:GetAttributeChangedSignal("Sprinting"):Connect(function()
 		if newCharacter == character then
 			updateCameraFeedback(newCharacter:GetAttribute("Sprinting") == true)
 			updateStaminaBar()
+			publishButtonState()
 		end
 	end)
-	newCharacter:GetAttributeChangedSignal("SprintStamina"):Connect(function()
-		if newCharacter == character then
-			updateStaminaBar()
-		end
-	end)
-	newCharacter:GetAttributeChangedSignal("SprintStaminaMax"):Connect(function()
-		if newCharacter == character then
-			updateStaminaBar()
-		end
-	end)
+	newCharacter:GetAttributeChangedSignal("SprintStamina"):Connect(updateStaminaBar)
+	newCharacter:GetAttributeChangedSignal("SprintStaminaMax"):Connect(updateStaminaBar)
 	updateCameraFeedback(false)
 	updateStaminaBar()
+end
+
+local function isSprintButton(button)
+	if not button or not button:IsA("GuiButton") then
+		return false
+	end
+	local name = string.lower(button.Name)
+	if name == "sprintbutton" or name == "runbutton" or name == "mobilesprintbutton" then
+		return true
+	end
+	local parent = button.Parent
+	local parentName = parent and string.lower(parent.Name) or ""
+	return parentName == "sprintbutton" or parentName == "runbutton" or parentName == "mobilesprintbutton"
+end
+
+local function bindButton(button)
+	if not isSprintButton(button) or boundButtons[button] then
+		return
+	end
+	boundButtons[button] = true
+	button:SetAttribute("DungeonAuthoredControl", true)
+	button.Activated:Connect(function()
+		touchButtonLatched = not touchButtonLatched
+		sendSprintRequest(true)
+	end)
+	publishButtonState()
+end
+
+local function scanButtons()
+	for _, descendant in ipairs(playerGui:GetDescendants()) do
+		bindButton(descendant)
+	end
 end
 
 UserInputService.InputBegan:Connect(function(input, processed)
@@ -220,58 +246,18 @@ UserInputService.InputEnded:Connect(function(input)
 	end
 end)
 
-local function sprintAction(_, inputState, inputObject)
-	local isTouch = inputObject and inputObject.UserInputType == Enum.UserInputType.Touch
+local function sprintAction(_, inputState)
 	if inputState == Enum.UserInputState.Begin then
-		if isTouch then
-			touchButtonLatched = not touchButtonLatched
-		else
-			controllerSprintLatched = not controllerSprintLatched
-		end
+		controllerSprintLatched = not controllerSprintLatched
+		sendSprintRequest(true)
 	end
-	updateSprintButton()
-	sendSprintRequest(true)
 	return Enum.ContextActionResult.Sink
 end
 
-ContextActionService:BindAction(ACTION_NAME, sprintAction, true, Enum.KeyCode.ButtonL3)
-ContextActionService:SetTitle(ACTION_NAME, "↟")
-ContextActionService:SetPosition(ACTION_NAME, SprintConfig.TouchButtonPosition)
+-- false: nao cria botao de toque, portanto nao existe SetPosition por script.
+ContextActionService:BindAction(ACTION_NAME, sprintAction, false, Enum.KeyCode.ButtonL3)
 
-local button = ContextActionService:GetButton(ACTION_NAME)
-if button then
-	sprintButton = button
-	button.Name = "SprintButton"
-	button.Size = UDim2.fromOffset(58, 58)
-	button.BackgroundColor3 = Color3.fromRGB(54, 164, 214)
-	button.BackgroundTransparency = 0.12
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(1, 0)
-	corner.Parent = button
-	local stroke = Instance.new("UIStroke")
-	stroke.Color = Color3.fromRGB(201, 242, 255)
-	stroke.Transparency = 0.25
-	stroke.Thickness = 1.5
-	stroke.Parent = button
-	local caption = Instance.new("TextLabel")
-	caption.Name = "CompactCaption"
-	caption.AnchorPoint = Vector2.new(0.5, 1)
-	caption.Position = UDim2.new(0.5, 0, 1, -5)
-	caption.Size = UDim2.new(1, -6, 0, 10)
-	caption.BackgroundTransparency = 1
-	caption.Text = "CORRER"
-	caption.TextColor3 = Color3.fromRGB(235, 250, 255)
-	caption.Font = Enum.Font.GothamBold
-	caption.TextSize = 8
-	caption.Parent = button
-end
-
--- Gesto de corrida inspirado em shooters mobile: ao empurrar o joystick bem
--- para frente, a corrida fica travada enquanto aquele toque controla o
--- movimento. Soltar o joystick encerra a corrida automaticamente.
-UserInputService.TouchStarted:Connect(function(input, _processed)
-	-- O thumbstick padrao do Roblox marca o toque como processado pelo CoreGui.
-	-- Ainda assim precisamos observar seu deslocamento; nao consumimos o evento.
+UserInputService.TouchStarted:Connect(function(input)
 	local camera = workspace.CurrentCamera
 	local viewport = camera and camera.ViewportSize or Vector2.new(1280, 720)
 	if input.Position.X <= viewport.X * 0.46 and input.Position.Y >= viewport.Y * 0.43 then
@@ -288,10 +274,8 @@ UserInputService.TouchMoved:Connect(function(input)
 	local delta = input.Position - joystickOrigin
 	local push = tonumber(SprintConfig.JoystickSprintPushPixels) or 52
 	local tolerance = tonumber(SprintConfig.JoystickSprintHorizontalTolerance) or 1.15
-	local shouldLatch = delta.Y <= -push and math.abs(delta.X) <= math.abs(delta.Y) * tolerance
-	if shouldLatch and not joystickSprintLatched then
+	if delta.Y <= -push and math.abs(delta.X) <= math.abs(delta.Y) * tolerance and not joystickSprintLatched then
 		joystickSprintLatched = true
-		updateSprintButton()
 		sendSprintRequest(true)
 	end
 end)
@@ -303,7 +287,6 @@ UserInputService.TouchEnded:Connect(function(input)
 	joystickTouch = nil
 	joystickOrigin = nil
 	joystickSprintLatched = false
-	updateSprintButton()
 	sendSprintRequest(true)
 end)
 
@@ -312,15 +295,13 @@ player:GetAttributeChangedSignal("IsDowned"):Connect(function()
 		controllerSprintLatched = false
 		touchButtonLatched = false
 		joystickSprintLatched = false
-		updateSprintButton()
 		sendSprintRequest(true)
 	end
 end)
 
 RunService.Heartbeat:Connect(function()
 	if wantsSprint() and character and humanoid and humanoid.Health > 0 then
-		if
-			character:GetAttribute("Sprinting") ~= true
+		if character:GetAttribute("Sprinting") ~= true
 			and os.clock() - lastRequestAt >= SprintConfig.RequestRetryInterval
 		then
 			sendSprintRequest(true)
@@ -328,7 +309,14 @@ RunService.Heartbeat:Connect(function()
 	end
 end)
 
+playerGui.DescendantAdded:Connect(function(instance)
+	task.defer(bindButton, instance)
+end)
 player.CharacterAdded:Connect(bindCharacter)
 if player.Character then
 	task.spawn(bindCharacter, player.Character)
 end
+
+task.defer(scanButtons)
+player:SetAttribute("DungeonSprintLayoutOwnedByStudio", true)
+player:SetAttribute("DungeonSprintControllerVersion", VERSION)

@@ -84,7 +84,7 @@ CompanionCatalog.UpgradeOrder = table.freeze({
 CompanionCatalog.Entries = table.freeze({
 	GreenSlime = table.freeze({
 		DisplayName = "Slime Verde",
-		ImageId = "",
+		ImageId = "rbxassetid://80804764005001",
 		LevelIconImageId = "rbxassetid://138682212313932",
 		Color = Color3.fromRGB(91, 219, 128),
 		CaptureChance = 0.06,
@@ -95,7 +95,7 @@ CompanionCatalog.Entries = table.freeze({
 	}),
 	BlueSlime = table.freeze({
 		DisplayName = "Slime Azul",
-		ImageId = "",
+		ImageId = "rbxassetid://107823094473008",
 		LevelIconImageId = "rbxassetid://72572595647145",
 		Color = Color3.fromRGB(70, 170, 255),
 		CaptureChance = 0.04,
@@ -103,7 +103,7 @@ CompanionCatalog.Entries = table.freeze({
 	}),
 	RedSlime = table.freeze({
 		DisplayName = "Slime Vermelho",
-		ImageId = "",
+		ImageId = "rbxassetid://99959820651531",
 		LevelIconImageId = "rbxassetid://89414760577651",
 		Color = Color3.fromRGB(238, 78, 65),
 		CaptureChance = 0.03,
@@ -111,7 +111,7 @@ CompanionCatalog.Entries = table.freeze({
 	}),
 	FireSlime = table.freeze({
 		DisplayName = "Slime de Fogo",
-		ImageId = "",
+		ImageId = "rbxassetid://110941465619369",
 		LevelIconImageId = "rbxassetid://74097355107260",
 		Color = Color3.fromRGB(255, 119, 43),
 		CaptureChance = 0.025,
@@ -119,7 +119,7 @@ CompanionCatalog.Entries = table.freeze({
 	}),
 	IceSlime = table.freeze({
 		DisplayName = "Slime de Gelo",
-		ImageId = "",
+		ImageId = "rbxassetid://80195232921377",
 		LevelIconImageId = "rbxassetid://78285390878409",
 		Color = Color3.fromRGB(92, 238, 255),
 		CaptureChance = 0.025,
@@ -127,7 +127,7 @@ CompanionCatalog.Entries = table.freeze({
 	}),
 	LightningSlime = table.freeze({
 		DisplayName = "Slime do Raio",
-		ImageId = "",
+		ImageId = "rbxassetid://120394977599045",
 		LevelIconImageId = "rbxassetid://106472082094594",
 		Color = Color3.fromRGB(245, 245, 255),
 		CaptureChance = 0.02,
@@ -135,7 +135,7 @@ CompanionCatalog.Entries = table.freeze({
 	}),
 	GoldenSlime = table.freeze({
 		DisplayName = "Slime Dourado",
-		ImageId = "",
+		ImageId = "rbxassetid://112273559139991",
 		LevelIconImageId = "rbxassetid://122552935180866",
 		Color = Color3.fromRGB(255, 210, 65),
 		CaptureChance = 0.01,
@@ -143,8 +143,8 @@ CompanionCatalog.Entries = table.freeze({
 	}),
 	PrototypeSlime = table.freeze({
 		DisplayName = "Slime",
-		ImageId = "",
-		LevelIconImageId = "",
+		ImageId = "rbxassetid://80804764005001",
+		LevelIconImageId = "rbxassetid://138682212313932",
 		Color = Color3.fromRGB(111, 230, 159),
 		CaptureChance = 0.06,
 		FirstCapturePityTarget = 4,

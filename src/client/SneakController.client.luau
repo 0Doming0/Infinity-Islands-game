@@ -1,7 +1,8 @@
--- Shift segura; R3/botao de toque alternam o agachamento no estilo Minecraft.
+-- Shift segura; R3/botao authored no Studio alternam o agachamento no estilo Minecraft.
 -- Um raycast acompanha a direcao do input. Quando nao existe piso adiante,
 -- uma barreira invisivel criada somente neste cliente impede a queda sem
 -- cancelar o input, teleportar ou alterar a velocidade do personagem.
+-- O script nao cria nem posiciona controles mobile.
 
 local ContextActionService = game:GetService("ContextActionService")
 local Players = game:GetService("Players")
@@ -11,11 +12,12 @@ local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
 local SprintConfig = require(ReplicatedStorage:WaitForChild("SprintConfig"))
 local sprintRemote = ReplicatedStorage:WaitForChild("SprintRequest")
 local sneakRemote = ReplicatedStorage:WaitForChild("SneakRequest")
 
-local VERSION = "V7_CLIENT_EDGE_BARRIER"
+local VERSION = "V8_CLIENT_EDGE_BARRIER_AUTHORED_LAYOUT"
 local ACTION_NAME = "SkyDungeonSneak"
 script:SetAttribute("ControllerVersion", VERSION)
 local crouchWanted = false
@@ -38,7 +40,8 @@ local function updateSneakButton()
 	if not sneakButton then
 		return
 	end
-	sneakButton.BackgroundColor3 = crouchWanted and Color3.fromRGB(72, 177, 139) or Color3.fromRGB(88, 108, 126)
+	sneakButton:SetAttribute("SneakActive", crouchWanted)
+	sneakButton:SetAttribute("DungeonAuthoredControl", true)
 	local caption = sneakButton:FindFirstChild("CompactCaption")
 	if caption and caption:IsA("TextLabel") then
 		caption.Text = crouchWanted and "AGACHADO" or "AGACHAR"
@@ -429,44 +432,55 @@ end)
 
 local function sneakAction(_, inputState)
 	if inputState == Enum.UserInputState.Begin then
-		-- R3 e toque sao toggle. Teclado continua com comportamento segurar via
-		-- InputBegan/InputEnded acima.
+		-- R3 e o botao authored sao toggle. Teclado continua segurando Shift.
 		requestCrouch(not crouchWanted, true)
 	end
 	return Enum.ContextActionResult.Sink
 end
 
-ContextActionService:BindAction(ACTION_NAME, sneakAction, true, Enum.KeyCode.ButtonR3)
-ContextActionService:SetTitle(ACTION_NAME, "◢")
-ContextActionService:SetPosition(ACTION_NAME, SprintConfig.SneakTouchButtonPosition)
+-- false impede o ContextActionService de fabricar e posicionar um botao touch.
+ContextActionService:BindAction(ACTION_NAME, sneakAction, false, Enum.KeyCode.ButtonR3)
 
-local button = ContextActionService:GetButton(ACTION_NAME)
-if button then
-	sneakButton = button
-	button.Name = "SneakButton"
-	button.Size = UDim2.fromOffset(58, 58)
-	button.BackgroundColor3 = Color3.fromRGB(88, 108, 126)
-	button.BackgroundTransparency = 0.14
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(1, 0)
-	corner.Parent = button
-	local stroke = Instance.new("UIStroke")
-	stroke.Color = Color3.fromRGB(220, 232, 241)
-	stroke.Transparency = 0.34
-	stroke.Thickness = 1.5
-	stroke.Parent = button
-	local caption = Instance.new("TextLabel")
-	caption.Name = "CompactCaption"
-	caption.AnchorPoint = Vector2.new(0.5, 1)
-	caption.Position = UDim2.new(0.5, 0, 1, -5)
-	caption.Size = UDim2.new(1, -6, 0, 10)
-	caption.BackgroundTransparency = 1
-	caption.Text = "AGACHAR"
-	caption.TextColor3 = Color3.fromRGB(243, 248, 252)
-	caption.Font = Enum.Font.GothamBold
-	caption.TextSize = 8
-	caption.Parent = button
+local function isSneakButton(button)
+	if not button or not button:IsA("GuiButton") then
+		return false
+	end
+	local name = string.lower(button.Name)
+	if name == "sneakbutton" or name == "crouchbutton" or name == "mobilesneakbutton" then
+		return true
+	end
+	local parent = button.Parent
+	local parentName = parent and string.lower(parent.Name) or ""
+	return parentName == "sneakbutton"
+		or parentName == "crouchbutton"
+		or parentName == "mobilesneakbutton"
 end
+
+local function bindSneakButton(button)
+	if not isSneakButton(button) then
+		return
+	end
+	if button:GetAttribute("DungeonSneakBound") == true then
+		return
+	end
+	button:SetAttribute("DungeonSneakBound", true)
+	button:SetAttribute("DungeonAuthoredControl", true)
+	sneakButton = button
+	button.Activated:Connect(function()
+		requestCrouch(not crouchWanted, true)
+	end)
+	updateSneakButton()
+end
+
+local function scanSneakButtons()
+	for _, descendant in ipairs(playerGui:GetDescendants()) do
+		bindSneakButton(descendant)
+	end
+end
+
+playerGui.DescendantAdded:Connect(function(instance)
+	task.defer(bindSneakButton, instance)
+end)
 
 player:GetAttributeChangedSignal("IsDowned"):Connect(function()
 	if player:GetAttribute("IsDowned") == true and crouchWanted then
@@ -548,3 +562,6 @@ player.CharacterAdded:Connect(bindCharacter)
 if player.Character then
 	task.spawn(bindCharacter, player.Character)
 end
+
+task.defer(scanSneakButtons)
+player:SetAttribute("DungeonSneakLayoutOwnedByStudio", true)

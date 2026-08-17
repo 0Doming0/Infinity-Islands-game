@@ -1,7 +1,8 @@
 -- Configuracao compartilhada de corrida e agachamento seguro.
+-- Posicoes dos controles touch pertencem ao layout authored no Roblox Studio.
 
 local SprintConfig = {
-	Version = "V26_SLOW_SPRINT_CAPACITY_PROGRESSION",
+	Version = "V27_AUTHORED_MOBILE_CONTROL_LAYOUT",
 	DoubleTapWindow = 0.30,
 	SpeedMultiplier = 1.25,
 	MaximumSprintSpeed = 34,
@@ -24,10 +25,6 @@ local SprintConfig = {
 	SneakSpeedMultiplier = 0.50,
 	RequestRetryInterval = 0.40,
 	IdleStopDelay = 0.85,
-	-- Controles compactos: corrida fica proxima ao joystick e agachamento acima
-	-- do ataque, sem cobrir o botao de pulo padrao do Roblox.
-	TouchButtonPosition = UDim2.fromScale(0.30, 0.70),
-	SneakTouchButtonPosition = UDim2.fromScale(0.87, 0.57),
 	JoystickSprintPushPixels = 52,
 	JoystickSprintHorizontalTolerance = 1.15,
 	SneakCameraDrop = 1.15,
