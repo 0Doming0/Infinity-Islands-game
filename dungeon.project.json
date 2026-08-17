@@ -28,6 +28,7 @@
         "ChestPromptController": { "$path": "src/client/ChestPromptController.client.luau" },
         "CompanionInventoryController": { "$path": "src/client/CompanionInventoryController.client.luau" },
         "CompanionInventoryTypography": { "$path": "src/client/CompanionInventoryTypography.client.luau" },
+        "CrouchHealingInput": { "$path": "src/client/CrouchHealingInput.client.luau" },
         "DungeonArtHUDController": { "$attributes": { "_lemonadeUniqueId": "vrORjdDTvrOR" }, "$path": "src/client/DungeonArtHUDController.client.luau" },
         "DungeonCameraController": { "$attributes": { "_lemonadeUniqueId": "qd59RB4Aqd59" }, "$path": "src/client/DungeonCameraController.client.luau" },
         "DungeonHUDBootstrap": { "$attributes": { "_lemonadeUniqueId": "QrR6ToTZQrR6" }, "$path": "src/client/DungeonHUDBootstrap.client.luau" },
