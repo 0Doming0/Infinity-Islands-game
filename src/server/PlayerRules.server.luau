@@ -1,4 +1,5 @@
--- Regras cooperativas: sem regeneracao passiva e penalidade unica em qualquer morte.
+-- Regras principais do jogador.
+-- A regeneracao passiva padrao do Roblox permanece habilitada.
 
 local Players = game:GetService("Players")
 
@@ -6,14 +7,9 @@ local ScoreService = require(script.Parent.BlockParkour:WaitForChild("ScoreServi
 local RunLevelService = require(script.Parent.BlockParkour:WaitForChild("RunLevelService"))
 local DownedService = require(script.Parent.MVPSystems:WaitForChild("DownedService"))
 local GameplayAnalytics = require(script.Parent:WaitForChild("GameplayAnalyticsService"))
+
 ScoreService.Start()
 DownedService.Start()
-
-local function removeHealthRegeneration(instance)
-	if instance.Name == "Health" and instance:IsA("BaseScript") then
-		instance:Destroy()
-	end
-end
 
 local function detectDeathCause(character)
 	local root = character:FindFirstChild("HumanoidRootPart")
@@ -34,11 +30,12 @@ end
 
 local function bindCharacter(player, character)
 	player:SetAttribute("ShopOpen", false)
-	for _, child in ipairs(character:GetChildren()) do
-		removeHealthRegeneration(child)
-	end
-	character.ChildAdded:Connect(removeHealthRegeneration)
-	character:SetAttribute("PassiveHealingDisabled", true)
+
+	-- Regeneracao automatica volta a ser parte da experiencia normal.
+	-- Nao destruimos mais o script "Health" inserido pelo Roblox no personagem.
+	character:SetAttribute("PassiveHealingDisabled", false)
+	player:SetAttribute("DungeonPassiveHealingEnabled", true)
+
 	ScoreService.ResetRun(player)
 	RunLevelService.Reset(player, character)
 
@@ -46,10 +43,12 @@ local function bindCharacter(player, character)
 	if not humanoid then
 		return
 	end
+
 	-- O estado inconsciente usa ragdoll antes da morte real. As juntas precisam
 	-- sobreviver caso o tempo de resgate termine e a vida finalmente chegue a zero.
 	humanoid.BreakJointsOnDeath = false
 	humanoid.RequiresNeck = false
+
 	local processed = false
 	humanoid.Died:Connect(function()
 		if processed then
@@ -59,10 +58,6 @@ local function bindCharacter(player, character)
 		local cause = detectDeathCause(character)
 		GameplayAnalytics.RecordDeath(player, character, cause)
 		ScoreService.HandleDeath(player, cause)
-		-- DeathReviveService pertencia ao fluxo antigo de renascimento. O dungeon
-		-- atual gerencia queda, espectador e retorno por DownedService e
-		-- DungeonPartyLifeService; manter a espera por esse modulo removido
-		-- bloqueava o PlayerRules inteiro na inicializacao.
 		RunLevelService.Reset(player, nil)
 	end)
 end
