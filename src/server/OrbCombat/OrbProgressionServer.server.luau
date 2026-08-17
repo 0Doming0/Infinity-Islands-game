@@ -1,10 +1,10 @@
--- OrbProgressionServer - progressao linear automatica do MVP.
+-- OrbProgressionServer - progressao automatica do MVP.
 --
 -- O Orb nao interrompe mais o combate e nao pede escolha.
--- Jogador novo recebe Fire Orb automaticamente no nivel 3.
--- O Orb principal evolui automaticamente nos niveis 6, 9 e 12 ate Lv.4.
+-- Jogador novo recebe aleatoriamente Fire, Ice ou Shadow no nivel 3.
+-- O Orb principal sorteado evolui automaticamente nos niveis 6, 9 e 12 ate Lv.4.
 -- Jogadores antigos preservam seus Orbs salvos; o Orb equipado/primeiro possuido
--- vira o Orb principal e continua evoluindo.
+-- vira o Orb principal e continua evoluindo sem reroll.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -16,9 +16,10 @@ local PlayerDataService = require(
 	ServerScriptService:WaitForChild("BlockParkour"):WaitForChild("PlayerDataService_SkyDungeon_V10")
 )
 
-local VERSION = "LinearAutomaticOrbProgressionV1"
+local VERSION = "RandomFirstOrbProgressionV2"
 local MILESTONES = { 3, 6, 9, 12 }
-local DEFAULT_ORB = "Fire"
+local FIRST_ORB_POOL = { "Fire", "Ice", "Shadow" }
+local rng = Random.new()
 local saveScheduled = setmetatable({}, { __mode = "k" })
 
 local function claimedAttribute(level)
@@ -87,7 +88,35 @@ local function primaryOrb(player)
 		end
 	end
 
-	return OrbConfig.GetOrb(DEFAULT_ORB) and DEFAULT_ORB or (OrbConfig.OrbOrder and OrbConfig.OrbOrder[1])
+	-- Importante: nao retornar um Orb padrao aqui. Jogador sem Orb precisa
+	-- passar pelo sorteio do milestone 3, senao todos acabam recebendo Fire.
+	return nil
+end
+
+local function randomFirstOrb()
+	local available = {}
+	for _, orbName in ipairs(FIRST_ORB_POOL) do
+		local normalized = OrbConfig.NormalizeOrb(orbName)
+		if normalized and OrbConfig.GetOrb(normalized) then
+			table.insert(available, normalized)
+		end
+	end
+
+	-- Fallback defensivo: se o pool explicito ficar invalido depois de uma
+	-- alteracao de config, ainda sorteamos qualquer Orb registrado em OrbOrder.
+	if #available == 0 then
+		for _, orbName in ipairs(OrbConfig.OrbOrder or {}) do
+			if OrbConfig.GetOrb(orbName) then
+				table.insert(available, orbName)
+			end
+		end
+	end
+
+	if #available == 0 then
+		return nil
+	end
+
+	return available[rng:NextInteger(1, #available)]
 end
 
 local function equipOnlyPrimary(player, orbName)
@@ -234,8 +263,10 @@ local function initialize(player)
 	player:SetAttribute("OrbChoiceLastPresentedSafeMomentSerial", 0)
 	player:SetAttribute("OrbChoiceSafeIslandIndex", 0)
 	player:SetAttribute("OrbProgressionVersion", VERSION)
-	player:SetAttribute("OrbProgressionPolicy", "AutomaticPrimaryOrb")
+	player:SetAttribute("OrbProgressionPolicy", "RandomFirstThenAutomaticPrimary")
 	player:SetAttribute("OrbAutomaticMilestones", "3,6,9,12")
+	player:SetAttribute("OrbFirstUnlockRandom", true)
+	player:SetAttribute("OrbFirstUnlockPool", table.concat(FIRST_ORB_POOL, ","))
 	player:SetAttribute("OrbFirstChoiceGuaranteed", false)
 end
 
@@ -245,8 +276,14 @@ local function grantOrUpgrade(player, milestone)
 	end
 
 	local orbName = primaryOrb(player)
+	local isFirstRandomUnlock = milestone == MILESTONES[1] and not orbName
+	if isFirstRandomUnlock then
+		orbName = randomFirstOrb()
+	end
+
 	if not orbName then
-		player:SetAttribute(claimedAttribute(milestone), true)
+		-- Nao consome o milestone se a configuracao nao tiver nenhum Orb valido.
+		-- Assim o synchronize pode tentar novamente depois de uma correcao.
 		return false
 	end
 
@@ -256,7 +293,7 @@ local function grantOrUpgrade(player, milestone)
 
 	if previous <= 0 then
 		nextLevel = 1
-		kind = "NewOrb"
+		kind = isFirstRandomUnlock and "RandomFirstOrb" or "NewOrb"
 	elseif previous < OrbConfig.MaxOrbLevel then
 		nextLevel = previous + 1
 		kind = "AutomaticUpgrade"
@@ -271,6 +308,10 @@ local function grantOrUpgrade(player, milestone)
 		player:SetAttribute("LastOrbChoiceLevel", nextLevel)
 		player:SetAttribute("LastOrbChoiceAt", workspace:GetServerTimeNow())
 		player:SetAttribute("LastOrbAutomaticMilestone", milestone)
+		if isFirstRandomUnlock then
+			player:SetAttribute("FirstRandomOrb", orbName)
+			player:SetAttribute("FirstRandomOrbAt", workspace:GetServerTimeNow())
+		end
 	end
 
 	player:SetAttribute(claimedAttribute(milestone), true)
@@ -290,10 +331,11 @@ local function synchronize(player)
 	end
 	local playerLevel = math.max(1, math.floor(tonumber(player:GetAttribute("PlayerLevel")) or 1))
 
-	-- Recupera jogadores que ficaram presos em uma escolha antiga antes desta migracao.
+	-- Recupera jogador que alcancou o nivel 3 mas ficou sem Orb por uma versao
+	-- antiga/corrompida. Quem ja possui Orb nunca e rerrolado.
 	if playerLevel >= MILESTONES[1] then
 		local primary = primaryOrb(player)
-		if primary and getOrbLevel(player, primary) <= 0 then
+		if not primary then
 			player:SetAttribute(claimedAttribute(MILESTONES[1]), false)
 		end
 	end
@@ -357,6 +399,8 @@ end
 
 workspace:SetAttribute("DungeonOrbProgressionReady", true)
 workspace:SetAttribute("DungeonOrbProgressionVersion", VERSION)
-workspace:SetAttribute("DungeonOrbProgressionPolicy", "AutomaticPrimaryOrb")
+workspace:SetAttribute("DungeonOrbProgressionPolicy", "RandomFirstThenAutomaticPrimary")
 workspace:SetAttribute("DungeonOrbAutomaticMilestones", "3,6,9,12")
+workspace:SetAttribute("DungeonOrbFirstUnlockRandom", true)
+workspace:SetAttribute("DungeonOrbFirstUnlockPool", table.concat(FIRST_ORB_POOL, ","))
 workspace:SetAttribute("DungeonOrbChoiceUIRequired", false)
