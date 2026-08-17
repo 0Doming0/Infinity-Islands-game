@@ -17,7 +17,7 @@ local DungeonGenerator = require(
 	ServerScriptService:WaitForChild("DungeonRuntime"):WaitForChild("DungeonGenerator")
 )
 
-local VERSION = "LinearIslandObjectiveBridgeV1"
+local VERSION = "LinearIslandObjectiveBridgeV2_NoRecommendedLevel"
 local POLL_SECONDS = 0.08
 local elapsed = 0
 
@@ -99,6 +99,18 @@ local function publishPlayer(player)
 	end
 end
 
+local function enforceLinearPolicy()
+	-- CombatRouteProgressionService legado ainda publica estes atributos em alguns
+	-- refreshes. Mantemos explicitamente desligados para que nenhuma UI ou sistema
+	-- volte a tratar nivel recomendado como requisito de progressao.
+	if workspace:GetAttribute("DungeonRecommendedLevelIsHardGate") ~= false then
+		workspace:SetAttribute("DungeonRecommendedLevelIsHardGate", false)
+	end
+	if workspace:GetAttribute("DungeonRecommendedLevelWarningActive") ~= false then
+		workspace:SetAttribute("DungeonRecommendedLevelWarningActive", false)
+	end
+end
+
 local function bindPlayer(player)
 	player:GetAttributeChangedSignal("CurrentGlobalIslandIndex"):Connect(function()
 		task.defer(publishPlayer, player)
@@ -117,6 +129,7 @@ RunService.Heartbeat:Connect(function(deltaTime)
 		return
 	end
 	elapsed = 0
+	enforceLinearPolicy()
 	for _, player in ipairs(Players:GetPlayers()) do
 		publishPlayer(player)
 	end
@@ -125,5 +138,4 @@ end)
 workspace:SetAttribute("DungeonLinearObjectiveBridgeReady", true)
 workspace:SetAttribute("DungeonLinearObjectiveBridgeVersion", VERSION)
 workspace:SetAttribute("DungeonLinearProgressionPolicy", "ClearSituationThenAdvance")
-workspace:SetAttribute("DungeonRecommendedLevelIsHardGate", false)
-workspace:SetAttribute("DungeonRecommendedLevelWarningActive", false)
+enforceLinearPolicy()
