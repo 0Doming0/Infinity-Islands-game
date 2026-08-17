@@ -16,7 +16,7 @@ ScoreService.Start()
 DownedService.Start()
 
 -- Recuperacao intencionalmente perceptivel: serve como opcao de recuo/defesa.
-local CROUCH_HEAL_RATE = 0.08 -- +8% da vida maxima por segundo.
+local CROUCH_HEAL_RATE = 0.16 -- +16% da vida maxima por segundo (2x a taxa anterior).
 local CROUCH_WARMUP_SECONDS = 0.40
 local CROUCH_DAMAGE_DELAY_SECONDS = 1.25
 local CROUCH_MAX_HORIZONTAL_SPEED = 10
