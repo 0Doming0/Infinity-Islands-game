@@ -1,8 +1,10 @@
 -- CompanionInventoryController.client.luau
 --
 -- Autoridade cliente da CompanionInventoryGui autorada no Studio.
--- Nao cria o layout: conecta o launcher, torna o MainFrame responsivo,
+-- Nao cria o layout principal: conecta o launcher, torna o MainFrame responsivo,
 -- renderiza snapshots do CompanionService e envia equip/unequip ao servidor.
+-- O unico elemento criado em runtime e um aviso compacto de formacao cheia,
+-- exibido somente quando o jogador tenta equipar alem dos slots disponiveis.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -11,9 +13,10 @@ local Workspace = game:GetService("Workspace")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local VERSION = "AuthoredRealtimeResponsiveV5_TopOverlay"
+local VERSION = "AuthoredRealtimeResponsiveV6_SlotUpsell"
 local RESPONSIVE_SCALE_NAME = "CompanionResponsiveScale"
 local INVENTORY_DISPLAY_ORDER = 1000
+local SLOT_PROMPT_ZINDEX = 350
 local VIEWPORT_PADDING = Vector2.new(28, 28)
 local MAX_RESPONSIVE_SCALE = 1.12
 local MIN_RESPONSIVE_SCALE = 0.25
@@ -44,6 +47,11 @@ local isMutating = false
 local responsiveScale
 local responsiveBaseWidth
 local responsiveBaseHeight
+
+local slotPromptFrame
+local slotPromptMessage
+local slotPromptBuyButton
+local slotPromptDismissButton
 
 local cardConnections = {}
 local inventoryConnections = {}
@@ -232,6 +240,21 @@ local function hasUnlockedCompanion()
 	return #snapshotEntries() > 0
 end
 
+local function equippedCount(snapshot)
+	if type(snapshot) ~= "table" or type(snapshot.EquippedCompanions) ~= "table" then
+		return 0
+	end
+	return #snapshot.EquippedCompanions
+end
+
+local function formationIsFull(snapshot)
+	if type(snapshot) ~= "table" then
+		return false
+	end
+	local maxEquipped = math.max(0, math.floor(tonumber(snapshot.MaxEquipped) or 0))
+	return maxEquipped > 0 and equippedCount(snapshot) >= maxEquipped
+end
+
 local function getEntry(instanceId)
 	if type(instanceId) ~= "string" then
 		return nil
@@ -367,6 +390,13 @@ local function renderSelected(entry)
 	setVisible(findNamedDescendant(selectedPanel, { "UnequipButton" }), entry.Equipped == true)
 end
 
+local function hideSlotPrompt()
+	if slotPromptFrame then
+		slotPromptFrame.Visible = false
+	end
+	player:SetAttribute("DungeonCompanionSlotUpsellVisible", false)
+end
+
 local function render()
 	updateAllLaunchers()
 
@@ -413,9 +443,15 @@ local function render()
 	setVisible(findNamedDescendant(mainFrame, { "EmptyText" }), #entries == 0)
 	renderSelected(getEntry(selectedId))
 
+	if slotPromptFrame and slotPromptFrame.Visible and not formationIsFull(currentSnapshot) then
+		hideSlotPrompt()
+	end
+
 	if inventoryGui then
 		inventoryGui:SetAttribute("CompanionSnapshotCount", #entries)
 		inventoryGui:SetAttribute("CompanionSelectedInstanceId", selectedId)
+		inventoryGui:SetAttribute("CompanionEquippedCount", equippedCount(currentSnapshot))
+		inventoryGui:SetAttribute("CompanionEquipSlotCount", tonumber(currentSnapshot.MaxEquipped) or 0)
 	end
 end
 
@@ -461,7 +497,7 @@ end
 
 local function invoke(action, first, second)
 	if not request or isMutating then
-		return false
+		return false, nil
 	end
 
 	isMutating = true
@@ -472,14 +508,186 @@ local function invoke(action, first, second)
 
 	if not success then
 		warn("[CompanionInventory] Falha ao falar com o servidor:", response)
-		return false
+		return false, nil
 	end
 
 	if type(response) == "table" and type(response.Snapshot) == "table" then
 		applySnapshot(response.Snapshot, "Mutation:" .. tostring(action))
 	end
 
-	return type(response) == "table" and response.Success ~= false
+	return type(response) == "table" and response.Success ~= false, response
+end
+
+local function ensureSlotPrompt()
+	if slotPromptFrame and slotPromptFrame.Parent == inventoryGui then
+		return slotPromptFrame
+	end
+	if not inventoryGui then
+		return nil
+	end
+
+	slotPromptFrame = Instance.new("Frame")
+	slotPromptFrame.Name = "CompanionSlotLimitPrompt"
+	slotPromptFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+	slotPromptFrame.Position = UDim2.fromScale(0.5, 0.5)
+	slotPromptFrame.Size = UDim2.new(0.72, 0, 0, 170)
+	slotPromptFrame.BackgroundColor3 = Color3.fromRGB(20, 28, 44)
+	slotPromptFrame.BackgroundTransparency = 0.04
+	slotPromptFrame.BorderSizePixel = 0
+	slotPromptFrame.Visible = false
+	slotPromptFrame.ZIndex = SLOT_PROMPT_ZINDEX
+	slotPromptFrame.Parent = inventoryGui
+	Instance.new("UICorner", slotPromptFrame).CornerRadius = UDim.new(0, 16)
+
+	local sizeConstraint = Instance.new("UISizeConstraint")
+	sizeConstraint.MinSize = Vector2.new(280, 150)
+	sizeConstraint.MaxSize = Vector2.new(480, 185)
+	sizeConstraint.Parent = slotPromptFrame
+
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(255, 196, 73)
+	stroke.Thickness = 2
+	stroke.Transparency = 0.12
+	stroke.Parent = slotPromptFrame
+
+	local title = Instance.new("TextLabel")
+	title.Name = "Title"
+	title.Position = UDim2.new(0.06, 0, 0.08, 0)
+	title.Size = UDim2.new(0.88, 0, 0, 34)
+	title.BackgroundTransparency = 1
+	title.Text = "FORMAÇÃO CHEIA"
+	title.TextColor3 = Color3.fromRGB(255, 220, 118)
+	title.Font = Enum.Font.GothamBlack
+	title.TextScaled = true
+	title.ZIndex = SLOT_PROMPT_ZINDEX + 1
+	title.Parent = slotPromptFrame
+	local titleConstraint = Instance.new("UITextSizeConstraint")
+	titleConstraint.MinTextSize = 14
+	titleConstraint.MaxTextSize = 24
+	titleConstraint.Parent = title
+
+	slotPromptMessage = Instance.new("TextLabel")
+	slotPromptMessage.Name = "Message"
+	slotPromptMessage.Position = UDim2.new(0.07, 0, 0, 48)
+	slotPromptMessage.Size = UDim2.new(0.86, 0, 1, -105)
+	slotPromptMessage.BackgroundTransparency = 1
+	slotPromptMessage.Text = ""
+	slotPromptMessage.TextColor3 = Color3.fromRGB(239, 244, 255)
+	slotPromptMessage.Font = Enum.Font.GothamMedium
+	slotPromptMessage.TextWrapped = true
+	slotPromptMessage.TextScaled = true
+	slotPromptMessage.ZIndex = SLOT_PROMPT_ZINDEX + 1
+	slotPromptMessage.Parent = slotPromptFrame
+	local messageConstraint = Instance.new("UITextSizeConstraint")
+	messageConstraint.MinTextSize = 11
+	messageConstraint.MaxTextSize = 17
+	messageConstraint.Parent = slotPromptMessage
+
+	slotPromptBuyButton = Instance.new("TextButton")
+	slotPromptBuyButton.Name = "BuyExtraSlot"
+	slotPromptBuyButton.AnchorPoint = Vector2.new(0, 1)
+	slotPromptBuyButton.Position = UDim2.new(0.055, 0, 0.94, 0)
+	slotPromptBuyButton.Size = UDim2.new(0.58, 0, 0, 42)
+	slotPromptBuyButton.BackgroundColor3 = Color3.fromRGB(255, 194, 61)
+	slotPromptBuyButton.BorderSizePixel = 0
+	slotPromptBuyButton.Text = "COMPRAR +1 SLOT"
+	slotPromptBuyButton.TextColor3 = Color3.fromRGB(42, 30, 8)
+	slotPromptBuyButton.Font = Enum.Font.GothamBlack
+	slotPromptBuyButton.TextScaled = true
+	slotPromptBuyButton.ZIndex = SLOT_PROMPT_ZINDEX + 2
+	slotPromptBuyButton.Parent = slotPromptFrame
+	Instance.new("UICorner", slotPromptBuyButton).CornerRadius = UDim.new(0, 11)
+	local buyConstraint = Instance.new("UITextSizeConstraint")
+	buyConstraint.MinTextSize = 10
+	buyConstraint.MaxTextSize = 16
+	buyConstraint.Parent = slotPromptBuyButton
+
+	slotPromptDismissButton = Instance.new("TextButton")
+	slotPromptDismissButton.Name = "Dismiss"
+	slotPromptDismissButton.AnchorPoint = Vector2.new(1, 1)
+	slotPromptDismissButton.Position = UDim2.new(0.945, 0, 0.94, 0)
+	slotPromptDismissButton.Size = UDim2.new(0.29, 0, 0, 42)
+	slotPromptDismissButton.BackgroundColor3 = Color3.fromRGB(55, 66, 84)
+	slotPromptDismissButton.BorderSizePixel = 0
+	slotPromptDismissButton.Text = "AGORA NÃO"
+	slotPromptDismissButton.TextColor3 = Color3.fromRGB(240, 245, 255)
+	slotPromptDismissButton.Font = Enum.Font.GothamBold
+	slotPromptDismissButton.TextScaled = true
+	slotPromptDismissButton.ZIndex = SLOT_PROMPT_ZINDEX + 2
+	slotPromptDismissButton.Parent = slotPromptFrame
+	Instance.new("UICorner", slotPromptDismissButton).CornerRadius = UDim.new(0, 11)
+	local dismissConstraint = Instance.new("UITextSizeConstraint")
+	dismissConstraint.MinTextSize = 9
+	dismissConstraint.MaxTextSize = 14
+	dismissConstraint.Parent = slotPromptDismissButton
+
+	slotPromptDismissButton.Activated:Connect(hideSlotPrompt)
+	slotPromptBuyButton.Activated:Connect(function()
+		if not currentSnapshot then
+			return
+		end
+		local currentLimit = math.max(0, math.floor(tonumber(currentSnapshot.MaxEquipped) or 0))
+		local absoluteLimit = math.max(currentLimit, math.floor(tonumber(currentSnapshot.MaximumEquipSlots) or currentLimit))
+		if currentLimit >= absoluteLimit then
+			hideSlotPrompt()
+			return
+		end
+
+		slotPromptBuyButton.Active = false
+		local success, response = invoke("BuySlotRobux")
+		slotPromptBuyButton.Active = true
+		if success then
+			hideSlotPrompt()
+			player:SetAttribute("DungeonCompanionSlotUpsellCTAUsed", true)
+		elseif slotPromptMessage and type(response) == "table" and type(response.Message) == "string" then
+			slotPromptMessage.Text = response.Message
+		end
+	end)
+
+	return slotPromptFrame
+end
+
+local function showSlotPrompt(snapshot)
+	if type(snapshot) ~= "table" then
+		return
+	end
+	local prompt = ensureSlotPrompt()
+	if not prompt then
+		return
+	end
+
+	local used = equippedCount(snapshot)
+	local currentLimit = math.max(0, math.floor(tonumber(snapshot.MaxEquipped) or 0))
+	local absoluteLimit = math.max(currentLimit, math.floor(tonumber(snapshot.MaximumEquipSlots) or currentLimit))
+	local productConfigured = snapshot.SlotProductConfigured == true
+	local canBuy = productConfigured and currentLimit < absoluteLimit
+
+	if currentLimit >= absoluteLimit then
+		slotPromptMessage.Text = string.format(
+			"Você já atingiu o limite máximo de %d companheiros equipados.",
+			absoluteLimit
+		)
+	else
+		slotPromptMessage.Text = string.format(
+			"Você já está usando %d/%d slot(s). Libere mais 1 slot para equipar outro companheiro.",
+			used,
+			currentLimit
+		)
+	end
+
+	slotPromptBuyButton.Visible = canBuy
+	slotPromptBuyButton.Active = canBuy
+	if canBuy then
+		slotPromptDismissButton.Size = UDim2.new(0.29, 0, 0, 42)
+	else
+		slotPromptDismissButton.Size = UDim2.new(0.89, 0, 0, 42)
+	end
+
+	prompt.Visible = true
+	player:SetAttribute("DungeonCompanionSlotUpsellVisible", true)
+	player:SetAttribute("DungeonCompanionSlotUpsellCurrentSlots", currentLimit)
+	player:SetAttribute("DungeonCompanionSlotUpsellTargetSlot", math.min(absoluteLimit, currentLimit + 1))
+	player:SetAttribute("DungeonCompanionSlotUpsellCanPurchase", canBuy)
 end
 
 local function updateResponsiveScale()
@@ -575,6 +783,7 @@ local function bindResponsiveMainFrame()
 end
 
 local function hideInventory()
+	hideSlotPrompt()
 	if mainFrame then
 		mainFrame.Visible = false
 	end
@@ -644,13 +853,15 @@ local function bindInventoryGui(gui)
 	disconnectAll(cardConnections)
 
 	inventoryGui = gui
+	slotPromptFrame = nil
+	slotPromptMessage = nil
+	slotPromptBuyButton = nil
+	slotPromptDismissButton = nil
+
 	inventoryGui:SetAttribute("invisible", nil)
 	inventoryGui.Enabled = true
 	inventoryGui.ResetOnSpawn = false
 	inventoryGui.IgnoreGuiInset = true
-
-	-- DisplayOrder e a autoridade correta contra outros ScreenGuis. Mantemos
-	-- ZIndexBehavior em Sibling para preservar a ordem interna autorada no Studio.
 	inventoryGui.DisplayOrder = INVENTORY_DISPLAY_ORDER
 	inventoryGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 	inventoryGui:SetAttribute("CompanionIgnoreGuiInset", true)
@@ -696,8 +907,21 @@ local function bindInventoryGui(gui)
 	if equipButton and equipButton:IsA("GuiButton") then
 		table.insert(inventoryConnections, equipButton.Activated:Connect(function()
 			local entry = getEntry(selectedId)
-			if entry then
-				invoke("SetEquipped", entry.InstanceId, true)
+			if not entry or entry.Equipped == true then
+				return
+			end
+
+			-- O snapshot e atualizado pelo CompanionEvent em tempo real. Se a
+			-- formacao ja esta cheia, nao fazemos uma tentativa muda no servidor:
+			-- explicamos o motivo e oferecemos o slot que o sistema ja vende.
+			if formationIsFull(currentSnapshot) then
+				showSlotPrompt(currentSnapshot)
+				return
+			end
+
+			local success = invoke("SetEquipped", entry.InstanceId, true)
+			if not success and formationIsFull(currentSnapshot) then
+				showSlotPrompt(currentSnapshot)
 			end
 		end))
 	end
@@ -781,3 +1005,4 @@ end)
 player:SetAttribute("DungeonCompanionInventoryControllerVersion", VERSION)
 player:SetAttribute("DungeonCompanionButtonUnlockPolicy", "VisibleAfterFirstCompanion")
 player:SetAttribute("DungeonCompanionInventoryOverlayPolicy", "DisplayOrder1000")
+player:SetAttribute("DungeonCompanionSlotUpsellPolicy", "OnEquipWhenFormationFull")
