@@ -11,7 +11,7 @@ local RemoteRegistry = require(ReplicatedStorage.Shared.Utilities.RemoteRegistry
 local DungeonGenerator = require(script.Parent.DungeonRuntime.DungeonGenerator)
 
 local remote = RemoteRegistry.Get("Navigation", "AssistedIslandTransport", "RemoteEvent")
-local VERSION = "ManualIslandAdvanceV1"
+local VERSION = "ManualIslandAdvanceV2"
 local states = setmetatable({}, { __mode = "k" })
 
 local function now()
@@ -83,12 +83,15 @@ local function recommendedLevel(index, context)
 	))
 end
 
-local function resolveEligibility(player)
+local function resolveEligibility(player, allowBusy)
 	if Config.ManualAdvanceEnabled ~= true or not playerCanTravel(player) then
 		return nil, "Unavailable"
 	end
 	local state = states[player]
-	if not state or state.Phase == "Flying" or state.Phase == "Landing" or state.Phase == "Warning" then
+	if not state then
+		return nil, "Unavailable"
+	end
+	if not allowBusy and (state.Phase == "Flying" or state.Phase == "Landing" or state.Phase == "Warning") then
 		return nil, "Busy"
 	end
 
@@ -192,7 +195,9 @@ local function restoreCharacter(state)
 		root.Anchored = false
 		root.AssemblyLinearVelocity = Vector3.zero
 		root.AssemblyAngularVelocity = Vector3.zero
-		pcall(function() root:SetNetworkOwnershipAuto() end)
+		pcall(function()
+			root:SetNetworkOwnershipAuto()
+		end)
 	end
 	if humanoid and humanoid.Parent then
 		humanoid.WalkSpeed = (tonumber(state.WalkSpeedWas) or 0) > 0 and state.WalkSpeedWas or 16
@@ -208,7 +213,6 @@ local function restoreCharacter(state)
 	state.Character = nil
 	state.Humanoid = nil
 	state.Root = nil
-	player = nil
 end
 
 local function quadraticBezier(a, b, c, t)
@@ -371,7 +375,7 @@ local function beginAdvance(player, readyToken)
 	if not state or state.Phase ~= "Ready" or tonumber(readyToken) ~= state.ReadyToken then
 		return
 	end
-	local eligibility = resolveEligibility(player)
+	local eligibility = resolveEligibility(player, false)
 	if not eligibility or eligibility.CurrentIndex ~= state.ReadyForSourceIndex then
 		hideReady(player, "EligibilityChanged")
 		return
@@ -399,7 +403,7 @@ local function beginAdvance(player, readyToken)
 		if not latest or latest.FlightToken ~= flightToken or latest.Phase ~= "Warning" then
 			return
 		end
-		local finalEligibility = resolveEligibility(player)
+		local finalEligibility = resolveEligibility(player, true)
 		if not finalEligibility or finalEligibility.CurrentIndex ~= eligibility.CurrentIndex then
 			cancelTravel(player, "EligibilityChanged")
 			return
@@ -416,7 +420,7 @@ local function refreshPlayer(player)
 	if state.Phase == "Flying" or state.Phase == "Landing" or state.Phase == "Warning" then
 		return
 	end
-	local eligibility = resolveEligibility(player)
+	local eligibility = resolveEligibility(player, false)
 	if eligibility then
 		publishReady(player, eligibility)
 	else
