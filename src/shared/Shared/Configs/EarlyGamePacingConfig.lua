@@ -1,6 +1,6 @@
 --[[
 	Infinity Islands - Task 17
-	EarlyGamePacingConfig V4
+	EarlyGamePacingConfig V5
 
 	First 60-90 second retention calibration.
 
@@ -8,7 +8,7 @@
 	overrides layered on top of the normal IslandLevel systems.
 
 	Why:
-		- Initial Island: demonstracao pacifica de todas as variantes;
+		- Initial Island: demonstracao pacifica curta e legivel;
 		- todas as variantes iniciais usam vida e XP do Green L1;
 		- Numbered Island 1: 3 Green L1;
 		- Numbered Islands 2-6 apresentam cada variante avancada separadamente;
@@ -24,7 +24,7 @@
 
 local Config = {}
 
-Config.Version = "InitialAllSlimesThenGreenIslandOneV4"
+Config.Version = "InitialThreeSlimesThenGreenIslandOneV5"
 Config.Policy = "InitialTutorialThenGrowingNumberedCycle"
 
 Config.CalibrationWindowSeconds = 90
@@ -35,15 +35,15 @@ Config.InitialIslandModelScale = 0.60
 
 Config.IslandOverrides = table.freeze({
 	[1] = table.freeze({
-		TargetCount = 7,
-		MaximumAlive = 7,
-		SpawnStaggerSeconds = 0.40,
-		ExpectedRoster = "AllSlimeVariantsPassiveGreenStats",
+		TargetCount = 3,
+		MaximumAlive = 3,
+		SpawnStaggerSeconds = 0.55,
+		ExpectedRoster = "GreenBlueRedPassivePreview",
 		ExpectedMobLevel = 1,
 		ExpectedXPPerMob = 6,
-		ExpectedTotalXP = 42,
+		ExpectedTotalXP = 18,
 		ExpectedModelScale = 0.60,
-		ExpectedOutcome = "TutorialPracticeNoGuaranteedLevelUp",
+		ExpectedOutcome = "QuickSafeThreeSlimePractice",
 	}),
 	[2] = table.freeze({
 		MaximumAlive = 3,
@@ -173,8 +173,8 @@ function Config.Validate()
 	)
 
 	assert(
-		Config.GetTargetCount(1, 3) == 7,
-		"Ilha Inicial precisa demonstrar as 7 variantes"
+		Config.GetTargetCount(1, 7) == 3,
+		"Ilha Inicial precisa ter somente tres slimes demonstrativos"
 	)
 
 	assert(
@@ -191,9 +191,9 @@ function Config.Validate()
 		Config.GetMaximumAlive(
 			1,
 			7,
-			7
-		) == 7,
-		"Ilha Inicial precisa manter as 7 variantes visiveis"
+			3
+		) == 3,
+		"Ilha Inicial precisa manter somente tres mobs vivos"
 	)
 
 	assert(
@@ -201,9 +201,9 @@ function Config.Validate()
 			Config.GetSpawnStaggerSeconds(
 				1,
 				0.25
-			) - 0.40
-		) < 0.0001,
-		"Ilha Inicial precisa usar stagger 0.40"
+		) - 0.55
+	) < 0.0001,
+		"Ilha Inicial precisa usar stagger 0.55"
 	)
 
 	return true

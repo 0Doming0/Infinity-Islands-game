@@ -8,9 +8,6 @@ local DEFAULT_FALL_DISTANCE_BELOW_CHECKPOINT = 55
 local DEFAULT_FAST_FALL_SPEED = -35
 local DEFAULT_FAST_FALL_SECONDS = 0.85
 local DEFAULT_GROUND_SCAN_DEPTH = 32
-local DEFAULT_EMBEDDED_SECONDS = 1.4
-local DEFAULT_STUCK_SECONDS = 6.5
-local DEFAULT_STUCK_DISPLACEMENT = 0.8
 local DEFAULT_RESCUE_COOLDOWN = 8
 local DEFAULT_RESCUE_PROTECTION_SECONDS = 4
 
@@ -25,11 +22,6 @@ local rescueCount = 0
 
 local function now()
 	return workspace:GetServerTimeNow()
-end
-
-local function horizontalDistance(left, right)
-	local offset = left - right
-	return Vector2.new(offset.X, offset.Z).Magnitude
 end
 
 local function checkpointCFrame()
@@ -84,7 +76,6 @@ local function recordFor(player, root)
 	if not record then
 		record = {
 			LastPosition = root.Position,
-			StuckAnchorPosition = root.Position,
 			CooldownUntil = 0,
 		}
 		records[player] = record
@@ -105,29 +96,8 @@ local function groundBelow(character, root, depth)
 	return result ~= nil and result.Instance ~= nil and result.Instance.CanCollide == true
 end
 
-local function embeddedInGeometry(character, root)
-	local params = OverlapParams.new()
-	params.FilterType = Enum.RaycastFilterType.Exclude
-	params.FilterDescendantsInstances = { character }
-	params.MaxParts = 12
-	local size = Vector3.new(
-		math.max(0.9, root.Size.X * 0.62),
-		math.max(1.1, root.Size.Y * 0.72),
-		math.max(0.9, root.Size.Z * 0.62)
-	)
-	for _, part in ipairs(workspace:GetPartBoundsInBox(root.CFrame, size, params)) do
-		if part:IsA("BasePart") and part.CanCollide and part.Transparency < 1 then
-			return true, part
-		end
-	end
-	return false, nil
-end
-
 local function clearDetection(record, root)
 	record.FastFallSince = nil
-	record.EmbeddedSince = nil
-	record.StuckSince = nil
-	record.StuckAnchorPosition = root and root.Position or record.StuckAnchorPosition
 	record.LastPosition = root and root.Position or record.LastPosition
 end
 
@@ -222,7 +192,16 @@ local function evaluatePlayer(player)
 		tonumber(options.FallDistanceBelowCheckpoint) or DEFAULT_FALL_DISTANCE_BELOW_CHECKPOINT
 	)
 	local destroyThreshold = workspace.FallenPartsDestroyHeight + 30
-	if root.Position.Y <= checkpointY - fallDistance or root.Position.Y <= destroyThreshold then
+	-- So recupera uma queda real. Ilhas em alturas diferentes, combate parado
+	-- e pequenas intersecoes de colisao nunca podem devolver o jogador ao Entry.
+	local fallingWithoutGround = root.AssemblyLinearVelocity.Y <= -12
+		and not groundBelow(character, root, math.max(32, fallDistance))
+	if root.Position.Y <= destroyThreshold
+		or (
+			root.Position.Y <= checkpointY - fallDistance
+			and fallingWithoutGround
+		)
+	then
 		performRescue(player, record, "FellBelowRecoveryThreshold")
 		return
 	end
@@ -249,49 +228,6 @@ local function evaluatePlayer(player)
 		record.FastFallSince = nil
 	end
 
-	local embedded, blockingPart = embeddedInGeometry(character, root)
-	if embedded then
-		record.EmbeddedSince = record.EmbeddedSince or now()
-		record.EmbeddedPartName = blockingPart and blockingPart:GetFullName() or nil
-		if now() - record.EmbeddedSince >= (
-			tonumber(options.EmbeddedSeconds) or DEFAULT_EMBEDDED_SECONDS
-		) then
-			player:SetAttribute("DungeonRecoveryBlockingPart", record.EmbeddedPartName)
-			performRescue(player, record, "EmbeddedInGeometry")
-			return
-		end
-	else
-		record.EmbeddedSince = nil
-		record.EmbeddedPartName = nil
-	end
-
-	local movingIntent = humanoid.MoveDirection.Magnitude >= 0.2
-	local horizontalVelocity = Vector2.new(
-		root.AssemblyLinearVelocity.X,
-		root.AssemblyLinearVelocity.Z
-	).Magnitude
-	local stableState = humanoidState ~= Enum.HumanoidStateType.Freefall
-		and humanoidState ~= Enum.HumanoidStateType.Jumping
-		and humanoidState ~= Enum.HumanoidStateType.Swimming
-	if movingIntent and stableState and horizontalVelocity <= 2.5 then
-		record.StuckSince = record.StuckSince or now()
-		record.StuckAnchorPosition = record.StuckAnchorPosition or root.Position
-		local displacement = horizontalDistance(root.Position, record.StuckAnchorPosition)
-		if displacement > (
-			tonumber(options.StuckDisplacementStuds) or DEFAULT_STUCK_DISPLACEMENT
-		) then
-			record.StuckSince = now()
-			record.StuckAnchorPosition = root.Position
-		elseif now() - record.StuckSince >= (
-			tonumber(options.StuckSeconds) or DEFAULT_STUCK_SECONDS
-		) then
-			performRescue(player, record, "MovementStuck")
-			return
-		end
-	else
-		record.StuckSince = nil
-		record.StuckAnchorPosition = root.Position
-	end
 	record.LastPosition = root.Position
 end
 
@@ -311,15 +247,13 @@ function DungeonRecoveryService.Start(startOptions)
 	rescueCount = 0
 	accumulator = 0
 	workspace:SetAttribute("DungeonRecoveryServiceReady", true)
-	workspace:SetAttribute("DungeonRecoveryPolicy", "CheckpointFallAndGeometryRecoveryV1")
+	workspace:SetAttribute("DungeonRecoveryPolicy", "CheckpointFallOnlyRecoveryV2")
 	workspace:SetAttribute(
 		"DungeonRecoveryFallDistanceStuds",
 		tonumber(options.FallDistanceBelowCheckpoint) or DEFAULT_FALL_DISTANCE_BELOW_CHECKPOINT
 	)
-	workspace:SetAttribute(
-		"DungeonRecoveryStuckSeconds",
-		tonumber(options.StuckSeconds) or DEFAULT_STUCK_SECONDS
-	)
+	workspace:SetAttribute("DungeonRecoveryStuckSeconds", nil)
+	workspace:SetAttribute("DungeonRecoveryEmbeddedRecoveryEnabled", false)
 	workspace:SetAttribute(
 		"DungeonRecoveryProtectionSeconds",
 		tonumber(options.ProtectionSeconds) or DEFAULT_RESCUE_PROTECTION_SECONDS
@@ -387,7 +321,7 @@ function DungeonRecoveryService.GetSnapshot(player)
 	end
 	return {
 		Ready = started,
-		Policy = "CheckpointFallAndGeometryRecoveryV1",
+		Policy = "CheckpointFallOnlyRecoveryV2",
 		ParticipantCount = (function()
 			local count = 0
 			for _ in pairs(participantSet) do

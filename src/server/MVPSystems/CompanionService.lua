@@ -26,6 +26,7 @@ local MonsterConfig = require(script.Parent.Parent.MonsterSystem.MonsterConfig)
 local MonsterAnimationLoader = require(script.Parent.Parent.MonsterSystem.MonsterAnimationLoader)
 local GameplayAnalytics = require(script.Parent.Parent:WaitForChild("GameplayAnalyticsService"))
 local RuntimeFolders = require(script.Parent.Parent.DungeonRuntime:WaitForChild("RuntimeFolders"))
+local UpgradeChoiceProtectionService = require(script.Parent:WaitForChild("UpgradeChoiceProtectionService"))
 
 local CompanionService = {}
 local THINK_INTERVAL = 0.15
@@ -71,6 +72,10 @@ local levelUpRequest
 local pendingLevelUps = setmetatable({}, { __mode = "k" })
 local levelUpSelecting = setmetatable({}, { __mode = "k" })
 local levelUpSerials = setmetatable({}, { __mode = "k" })
+-- Contador de protecao da captura inicial de cada especie. Ele e mantido pelo
+-- servidor e impede que uma sequencia ruim de sorte faca os novos companheiros
+-- parecerem impossiveis de conseguir durante a partida.
+local firstCaptureAttempts = setmetatable({}, { __mode = "k" })
 local elapsed = 0
 local random = Random.new()
 
@@ -95,6 +100,13 @@ end
 
 local function xpRequired(level)
 	return CompanionCatalog.GetXPRequired(level)
+end
+
+local function applyCompanionVisualScale(model, level)
+	local scale = CompanionCatalog.GetVisualScale(level)
+	pcall(model.ScaleTo, model, scale)
+	model:SetAttribute("CompanionVisualScale", scale)
+	return scale
 end
 
 local function monsterFolder()
@@ -196,26 +208,70 @@ function CompanionService.GetSnapshot(player)
 	local entries = {}
 	for instanceId, record in pairs(companions) do
 		local speciesId = record.SpeciesId
-		local _, imageId, speciesName = getTemplateMetadata(speciesId)
-		local spentPoints = CompanionCatalog.SpentPoints(record.Upgrades)
+		local catalogEntry = CompanionCatalog.Get(speciesId)
+		local level = math.max(1, math.floor(tonumber(record.Level) or 1))
+		local xp = math.max(0, math.floor(tonumber(record.XP) or 0))
+		local kills = math.max(0, math.floor(tonumber(record.Kills) or 0))
+		local upgrades = type(record.Upgrades) == "table" and record.Upgrades
+			or CompanionCatalog.EmptyUpgrades()
+		-- Um template visual ausente ou uma configuracao de stats invalida nao pode
+		-- impedir que o jogador veja todos os companions da propria colecao.
+		local imageId = catalogEntry and catalogEntry.ImageId or ""
+		local speciesName = catalogEntry and catalogEntry.DisplayName or speciesId
+		local metadataSuccess, _, metadataImageId, metadataSpeciesName = pcall(
+			getTemplateMetadata,
+			speciesId
+		)
+		if metadataSuccess then
+			imageId = metadataImageId or imageId
+			speciesName = metadataSpeciesName or speciesName
+		else
+			warn(string.format(
+				"[CompanionService] Metadata indisponivel para %s; usando catalogo.",
+				tostring(speciesId)
+			))
+		end
+
+		local stats = {
+			Damage = 0,
+			AttackCooldown = 0,
+			WalkSpeed = 0,
+			AttackRange = 0,
+			Style = "Unknown",
+		}
+		local statsSuccess, calculatedStats = pcall(computedEntryStats, speciesId, record)
+		if statsSuccess and type(calculatedStats) == "table" then
+			stats = calculatedStats
+		else
+			warn(string.format(
+				"[CompanionService] Stats indisponiveis para %s; renderizando card mesmo assim.",
+				tostring(speciesId)
+			))
+		end
+
+		local displayName = type(record.DisplayName) == "string" and record.DisplayName ~= ""
+			and record.DisplayName
+			or speciesName
+		local spentPoints = CompanionCatalog.SpentPoints(upgrades)
 		table.insert(entries, {
 			-- MonsterId permanece como o identificador selecionável para manter a
 			-- interface antiga compatível. SpeciesId identifica o tipo do slime.
 			MonsterId = instanceId,
 			InstanceId = instanceId,
 			SpeciesId = speciesId,
-			DisplayName = record.DisplayName,
+			DisplayName = displayName,
 			SpeciesName = speciesName,
 			ImageId = imageId,
-			Level = record.Level,
-			XP = record.XP,
-			XPRequired = xpRequired(record.Level),
-			Kills = record.Kills,
+			LevelIconImageId = catalogEntry and catalogEntry.LevelIconImageId or "",
+			Level = level,
+			XP = xp,
+			XPRequired = xpRequired(level),
+			Kills = kills,
 			Equipped = equippedSlots[instanceId] ~= nil,
 			Slot = equippedSlots[instanceId],
-			UpgradePoints = math.max(0, record.Level - 1 - spentPoints),
-			Upgrades = table.clone(record.Upgrades),
-			Stats = computedEntryStats(speciesId, record),
+			UpgradePoints = math.max(0, level - 1 - spentPoints),
+			Upgrades = table.clone(upgrades),
+			Stats = stats,
 		})
 	end
 	table.sort(entries, function(a, b)
@@ -322,7 +378,7 @@ local function addNameplate(model, root, displayName, level, slot, xp, xpRequire
 	local fillCorner = Instance.new("UICorner")
 	fillCorner.CornerRadius = UDim.new(1, 0)
 	fillCorner.Parent = xpFill
-	return { Label = label, XPFill = xpFill }
+	return { Gui = gui, Label = label, XPFill = xpFill }
 end
 
 local function destroyState(state)
@@ -685,8 +741,7 @@ local function spawnState(player, instanceId, record, slot)
 			SlimeVariants.ConfigureClone(model, template, random, variant)
 		end
 	end
-	local scale = math.clamp(tonumber(model:GetAttribute("CompanionScale")) or 0.72, 0.3, 1.5)
-	pcall(model.ScaleTo, model, scale)
+	applyCompanionVisualScale(model, record.Level)
 	local root = MonsterConfig.GetRoot(model)
 	local humanoid = MonsterConfig.GetHumanoid(model)
 	if not root or not humanoid then
@@ -1163,9 +1218,22 @@ local function refreshState(player, instanceId, record)
 				record.Upgrades
 			)
 			state.Humanoid.WalkSpeed = state.CombatStats.WalkSpeed
+			applyCompanionVisualScale(state.Model, record.Level)
+			state.GroundOffset = math.clamp(
+				state.Humanoid.HipHeight + state.Root.Size.Y * 0.5,
+				0.75,
+				10
+			)
 			state.Model:SetAttribute("CompanionLevel", record.Level)
 			state.Model:SetAttribute("CompanionDisplayName", record.DisplayName)
 			if state.Nameplate and state.Nameplate.Label and state.Nameplate.Label.Parent then
+				if state.Nameplate.Gui and state.Nameplate.Gui.Parent then
+					state.Nameplate.Gui.StudsOffsetWorldSpace = Vector3.new(
+						0,
+						math.max(2.4, state.Model:GetExtentsSize().Y * 0.55 + 0.7),
+						0
+					)
+				end
 				state.Nameplate.Label.Text = string.format(
 					"%d · %s  Nv.%d",
 					state.Slot,
@@ -1178,6 +1246,10 @@ local function refreshState(player, instanceId, record)
 						1
 					)
 				end
+			end
+			local character, _, characterRoot = ownerCharacter(player)
+			if character and characterRoot then
+				teleportToOwner(state, character, characterRoot)
 			end
 		end
 	end
@@ -1370,6 +1442,7 @@ local function enqueueCompanionLevelUp(player, result)
 			local serial = (levelUpSerials[player] or 0) + 1
 			levelUpSerials[player] = serial
 			player:SetAttribute("PendingCompanionLevelUp", true)
+			UpgradeChoiceProtectionService.Begin(player, "CompanionUpgrade")
 			levelUpEvent:FireClient(player, {
 				Action = "Offer",
 				Serial = serial,
@@ -1381,6 +1454,33 @@ local function enqueueCompanionLevelUp(player, result)
 				Options = getUpgradeCardOptions(nextOffer),
 			})
 		end
+	end
+end
+
+local function playerOwnsCompanionSpecies(player, speciesId)
+	local companions = PlayerDataService.GetCompanions(player)
+	for _, record in pairs(companions) do
+		if record.SpeciesId == speciesId then
+			return true
+		end
+	end
+	return false
+end
+
+local function nextFirstCaptureAttempt(player, speciesId)
+	local attempts = firstCaptureAttempts[player]
+	if not attempts then
+		attempts = {}
+		firstCaptureAttempts[player] = attempts
+	end
+	attempts[speciesId] = math.max(0, math.floor(tonumber(attempts[speciesId]) or 0)) + 1
+	return attempts[speciesId]
+end
+
+local function clearFirstCaptureAttempt(player, speciesId)
+	local attempts = firstCaptureAttempts[player]
+	if attempts then
+		attempts[speciesId] = nil
 	end
 end
 
@@ -1421,21 +1521,42 @@ function CompanionService.RecordDefeat(player, monster, playerMobXP)
 	local displayName = monster:GetAttribute("DisplayName")
 		or (monsterHumanoid and monsterHumanoid.DisplayName)
 		or monsterId
+	-- A ilha inicial e somente demonstrativa: ela mostra todas as variantes,
+	-- mas a primeira captura vem da ilha de combate correspondente.
 	local canUnlock = monster:GetAttribute("CanBecomeCompanion") ~= false
+		and monster:GetAttribute("IsInitialIslandMob") ~= true
 		and CompanionCatalog.IsSupported(monsterId)
 	local chance = CompanionCatalog.GetCaptureChance(
 		monsterId,
 		monster:GetAttribute("IsElite") == true
 	)
+	local firstSpeciesCapture = canUnlock
+		and not playerOwnsCompanionSpecies(player, monsterId)
+	local pityTarget = firstSpeciesCapture
+		and CompanionCatalog.GetFirstCapturePityTarget(monsterId)
+		or 0
+	local pityAttempt = firstSpeciesCapture
+		and nextFirstCaptureAttempt(player, monsterId)
+		or 0
 	player:SetAttribute("LastCompanionCaptureChance", chance)
+	player:SetAttribute("LastCompanionCaptureMonsterId", monsterId)
+	player:SetAttribute("LastCompanionCapturePityTarget", pityTarget)
+	player:SetAttribute("LastCompanionCapturePityProgress", pityAttempt)
 	player:SetAttribute(
 		"LastCompanionCaptureAttemptSerial",
 		(tonumber(player:GetAttribute("LastCompanionCaptureAttemptSerial")) or 0) + 1
 	)
 	local unlocked = false
-	if canUnlock and random:NextNumber() <= chance then
+	local guaranteedByPity = canUnlock
+		and pityTarget > 0
+		and pityAttempt >= pityTarget
+	player:SetAttribute("LastCompanionCaptureGuaranteed", guaranteedByPity)
+	if canUnlock and (guaranteedByPity or random:NextNumber() <= chance) then
 		local success, instanceId
 		success, unlocked, instanceId = PlayerDataService.UnlockCompanion(player, monsterId, displayName)
+		if unlocked then
+			clearFirstCaptureAttempt(player, monsterId)
+		end
 		if success and unlocked and #equippedBefore == 0 then
 			spawnRoster(player)
 		end
@@ -1583,11 +1704,14 @@ function CompanionService.Start()
 				local nextSerial = (levelUpSerials[player] or 0) + 1
 				levelUpSerials[player] = nextSerial
 				player:SetAttribute("PendingCompanionLevelUp", true)
+				UpgradeChoiceProtectionService.Begin(player, "CompanionUpgrade")
 				levelUpEvent:FireClient(player, {
 					Action = "Offer", Serial = nextSerial, InstanceId = nextOffer.InstanceId,
 					SpeciesId = nextOffer.SpeciesId, SpeciesName = getSpeciesDisplayName(nextOffer.SpeciesId), CompanionName = nextOffer.DisplayName,
 					Level = nextOffer.Level, Options = getUpgradeCardOptions(nextOffer),
 				})
+			else
+				UpgradeChoiceProtectionService.End(player, "CompanionUpgrade")
 			end
 		end
 		levelUpSelecting[player] = nil
@@ -1708,6 +1832,7 @@ function CompanionService.Start()
 	Players.PlayerRemoving:Connect(function(player)
 		lastMutationAt[player] = nil
 		lastRenameAt[player] = nil
+		firstCaptureAttempts[player] = nil
 		player:SetAttribute("CompanionSlotPurchasePending", nil)
 		player:SetAttribute("CompanionSlotPurchaseTarget", nil)
 		destroyActive(player)

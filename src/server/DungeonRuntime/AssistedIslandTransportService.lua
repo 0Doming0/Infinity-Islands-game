@@ -14,6 +14,7 @@ local RemoteRegistry = require(
 	ReplicatedStorage.Shared.Utilities.RemoteRegistry
 )
 local DungeonGenerator = require(script.Parent.DungeonGenerator)
+local PartyService = require(script.Parent.Parent.BlockParkour.PartyService)
 
 local AssistedIslandTransportService = {}
 
@@ -211,6 +212,13 @@ local function automaticFlightUsed(state, sourceIndex)
 	local counts = state and state.FlightCountBySourceIsland
 	return (counts and (counts[sourceIndex] or 0) or 0)
 		>= Config.AutomaticFlightsPerSourceIsland
+end
+
+local function isEarlyLearningIsland(index)
+	return cleanIndex(index) <= math.max(
+		1,
+		math.floor(tonumber(Config.EarlyIslandAutomaticTransportMaxIndex) or 1)
+	)
 end
 
 local function beginGuidance(player, eligibility, reason)
@@ -592,7 +600,42 @@ local function performFlight(player, eligibility, token)
 	end)
 end
 
-local function beginLevelUpCountdown(player)
+local function beginPartyTravel(player)
+	local state = states[player]
+	local coop = PartyService.GetCoopState(player)
+	if not state or not coop or not playerCanTravel(player) then
+		return
+	end
+	if state.Phase == "Flying" or state.Phase == "Landing" then
+		return
+	end
+	local currentIndex = cleanIndex(player:GetAttribute("CurrentGlobalIslandIndex"))
+	local destinationIndex = cleanIndex(coop.TargetIslandIndex)
+	if currentIndex == destinationIndex then
+		fire(player, {
+			Action = "PartyArrived",
+			DestinationIndex = destinationIndex,
+		})
+		return
+	end
+	state.Token += 1
+	local token = state.Token
+	state.Phase = "PartyTravel"
+	state.GuidanceTargetIndex = nil
+	state.SuppressAutomaticUntil = now() + 3
+	player:SetAttribute("DungeonAssistedTransportState", "PartyTravel")
+	player:SetAttribute("DungeonAssistedTransportDestination", destinationIndex)
+	player:SetAttribute("PartyCoopTravelTargetIsland", destinationIndex)
+	DungeonGenerator.RequestRouteThrough(destinationIndex)
+	task.spawn(performFlight, player, {
+		CurrentIndex = currentIndex,
+		DestinationIndex = destinationIndex,
+		DestinationContext = DungeonGenerator.GetRouteIslandContext(destinationIndex),
+		RecommendedLevel = recommendedLevel(destinationIndex, DungeonGenerator.GetRouteIslandContext(destinationIndex)),
+	}, token)
+end
+
+local function beginAutomaticTransportCountdown(player, triggerReason)
 	local state = states[player]
 	if not state
 		or state.Phase == "Warning"
@@ -602,11 +645,20 @@ local function beginLevelUpCountdown(player)
 	then
 		return
 	end
+	if now() < (state.SuppressAutomaticUntil or 0) then
+		return
+	end
 
 	local guidanceRoute = resolveGuidanceRoute(player)
 	local eligibility = resolveEligibility(player, true)
 	if not eligibility then
-		cancel(player, "NotEligibleAfterLevelUp")
+		cancel(player, "NotEligibleForAutomaticTransport")
+		return
+	end
+	if not isEarlyLearningIsland(eligibility.CurrentIndex) then
+		if guidanceRoute then
+			beginGuidance(player, guidanceRoute, "AutomaticTransportLimitedToEarlyIslands")
+		end
 		return
 	end
 
@@ -647,6 +699,7 @@ local function beginLevelUpCountdown(player)
 	player:SetAttribute("DungeonAssistedTransportDestination", eligibility.DestinationIndex)
 	fire(player, {
 		Action = "Warning",
+		Reason = triggerReason or "EarlyIslandIdleAssist",
 		Token = token,
 		TransportAt = transportAt,
 		Countdown = Config.LevelUpDelaySeconds,
@@ -710,6 +763,60 @@ local function beginLevelUpCountdown(player)
 	end)
 end
 
+local function refreshGuidance(player, reason)
+	local state = states[player]
+	if not state
+		or state.Phase == "Warning"
+		or state.Phase == "WaitingForClear"
+		or state.Phase == "Flying"
+		or state.Phase == "Landing"
+	then
+		return
+	end
+	local route = resolveGuidanceRoute(player)
+	if route then
+		beginGuidance(player, route, reason or "EligibleRoute")
+	end
+end
+
+local function scheduleEarlyIslandIdleAssist(player, reason)
+	local state = states[player]
+	if not state then
+		return
+	end
+	state.IdleAssistToken = (state.IdleAssistToken or 0) + 1
+	local token = state.IdleAssistToken
+	local sourceIndex = cleanIndex(player:GetAttribute("CurrentGlobalIslandIndex"))
+	if not isEarlyLearningIsland(sourceIndex) then
+		refreshGuidance(player, "HighIslandManualProgression")
+		return
+	end
+
+	task.spawn(function()
+		task.wait(math.max(0, tonumber(Config.EarlyIslandIdleSeconds) or 35))
+		while true do
+			local latest = states[player]
+			if not latest
+				or latest.IdleAssistToken ~= token
+				or latest.Phase ~= "Idle"
+				or cleanIndex(player:GetAttribute("CurrentGlobalIslandIndex")) ~= sourceIndex
+			then
+				return
+			end
+
+			local eligibility, rejectReason = resolveEligibility(player, false)
+			if eligibility then
+				beginAutomaticTransportCountdown(player, reason or "EarlyIslandIdleAssist")
+				return
+			end
+			if rejectReason ~= "CurrentIslandNotCleared" then
+				return
+			end
+			task.wait(Config.EligibilityPollSeconds)
+		end
+	end)
+end
+
 local function bindPlayer(player)
 	if states[player] then
 		return
@@ -720,16 +827,19 @@ local function bindPlayer(player)
 		CooldownUntil = 0,
 		FlightCountBySourceIsland = {},
 		GuidanceTargetIndex = nil,
+		IdleAssistToken = 0,
+		LastPartyCoopTravelSerial = math.max(0, math.floor(tonumber(player:GetAttribute("PartyCoopTravelSerial")) or 0)),
+		SuppressAutomaticUntil = 0,
 	}
 	player:SetAttribute("DungeonAssistedTransportState", "Idle")
 
 	local list = {}
 	connections[player] = list
 	table.insert(list, player:GetAttributeChangedSignal("PlayerLevel"):Connect(function()
-		beginLevelUpCountdown(player)
+		scheduleEarlyIslandIdleAssist(player, "LevelUpEarlyIsland")
 	end))
 	table.insert(list, player:GetAttributeChangedSignal("PlayerLevelUpSerial"):Connect(function()
-		beginLevelUpCountdown(player)
+		scheduleEarlyIslandIdleAssist(player, "LevelUpEarlyIsland")
 	end))
 	table.insert(list, player:GetAttributeChangedSignal("CurrentGlobalIslandIndex"):Connect(function()
 		local state = states[player]
@@ -745,6 +855,15 @@ local function bindPlayer(player)
 			if currentIndex >= cleanIndex(state.GuidanceTargetIndex) then
 				cancel(player, "GuidanceDestinationReached")
 			end
+		end
+		task.defer(scheduleEarlyIslandIdleAssist, player, "IslandEntryEarlyAssist")
+	end))
+	table.insert(list, player:GetAttributeChangedSignal("PartyCoopTravelSerial"):Connect(function()
+		local state = states[player]
+		local serial = math.max(0, math.floor(tonumber(player:GetAttribute("PartyCoopTravelSerial")) or 0))
+		if state and serial > (state.LastPartyCoopTravelSerial or 0) then
+			state.LastPartyCoopTravelSerial = serial
+			beginPartyTravel(player)
 		end
 	end))
 	table.insert(list, player.CharacterRemoving:Connect(function()
@@ -772,6 +891,7 @@ local function bindPlayer(player)
 			end
 		end)
 	end))
+	task.defer(scheduleEarlyIslandIdleAssist, player, "InitialEarlyIslandAssist")
 end
 
 local function unbindPlayer(player)

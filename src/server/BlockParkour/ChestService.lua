@@ -10,6 +10,7 @@ local ServerStorage = game:GetService("ServerStorage")
 
 local MVPConfig = require(ReplicatedStorage:WaitForChild("MVPConfig"))
 local ScoreService = require(script.Parent.ScoreService_SkyDungeon_V10)
+local XPCollectibleService = require(script.Parent.Parent.DungeonRuntime.MobXPCollectibleService)
 local MimicAI = require(script.Parent.MimicAI)
 local AnimeOutline = require(ServerScriptService.MVPSystems:WaitForChild("AnimeOutline"))
 local GameplayAnalytics = require(ServerScriptService:WaitForChild("GameplayAnalyticsService"))
@@ -204,6 +205,43 @@ local function selectCells(cells, amount, random)
 	return selected
 end
 
+local function normalChestPlanForIsland(island)
+	local config = MVPConfig.Chests
+	local levelInCycle = math.max(
+		1,
+		math.floor(tonumber(island:GetAttribute("LevelInCycle")) or 1)
+	)
+	local extraEveryLevels = math.max(
+		1,
+		math.floor(tonumber(config.NormalExtraChestEveryCycleLevels) or 3)
+	)
+	local baseCount = math.max(
+		1,
+		math.floor(tonumber(config.NormalBaseChests) or 1)
+	)
+	local maximumCount = math.max(
+		baseCount,
+		math.floor(tonumber(config.NormalMaximumChests) or baseCount)
+	)
+	local count = math.min(
+		maximumCount,
+		baseCount + math.floor((levelInCycle - 1) / extraEveryLevels)
+	)
+	local baseChance = math.max(0, tonumber(config.NormalIslandChance) or 0)
+	local chancePerLevel = math.max(0, tonumber(config.NormalChancePerCycleLevel) or 0)
+	local maximumChance = math.clamp(
+		tonumber(config.NormalMaximumIslandChance) or 1,
+		0,
+		1
+	)
+	local chance = math.min(
+		maximumChance,
+		baseChance + chancePerLevel * (levelInCycle - 1)
+	)
+
+	return levelInCycle, count, chance
+end
+
 local function revealParticles(position, color)
 	local part = Instance.new("Part")
 	part.Name = "ChestBurst"
@@ -224,6 +262,32 @@ local function revealParticles(position, color)
 	Debris:AddItem(part, 0.8)
 end
 
+local function configureChestPrompt(prompt, objectText, isRare)
+	prompt.ActionText = "Abrir"
+	prompt.ObjectText = objectText
+	prompt.KeyboardKeyCode = Enum.KeyCode.E
+	prompt.GamepadKeyCode = Enum.KeyCode.ButtonX
+	prompt.HoldDuration = 0.18
+	prompt.MaxActivationDistance = MVPConfig.Chests.PromptDistance
+	prompt.RequiresLineOfSight = false
+	-- O cliente desenha um indicador pequeno acima do bau. Custom remove somente
+	-- o painel padrao grande do Roblox, sem alterar a validacao no servidor.
+	prompt.Style = Enum.ProximityPromptStyle.Custom
+	prompt:SetAttribute("UseSubtleChestPrompt", true)
+	prompt:SetAttribute("ChestPromptLabel", objectText)
+	prompt:SetAttribute("ChestPromptRare", isRare == true)
+end
+
+local function removeTemplatePrompts(chest)
+	-- Modelos importados, especialmente RareChest, podem trazer um prompt proprio
+	-- no asset. Ele usa o visual padrao do Roblox e competiria com o prompt leve.
+	for _, descendant in ipairs(chest:GetDescendants()) do
+		if descendant:IsA("ProximityPrompt") then
+			descendant:Destroy()
+		end
+	end
+end
+
 local function createDormantMimicDisguise(mimic, normalTemplate, island, pivot)
 	if not mimic.Parent or not normalTemplate or not normalTemplate:IsA("Model") then
 		return nil
@@ -236,6 +300,7 @@ local function createDormantMimicDisguise(mimic, normalTemplate, island, pivot)
 	end
 	chest.PrimaryPart = root
 	prepare(chest, true, false)
+	removeTemplatePrompts(chest)
 	chest.Name = "NormalChest"
 	chest:SetAttribute("IsTreasureChest", true)
 	chest:SetAttribute("IsDormantMimicChest", true)
@@ -247,13 +312,7 @@ local function createDormantMimicDisguise(mimic, normalTemplate, island, pivot)
 
 	local prompt = Instance.new("ProximityPrompt")
 	prompt.Name = "WakeMimicPrompt"
-	prompt.ActionText = "Abrir"
-	prompt.ObjectText = "Bau"
-	prompt.KeyboardKeyCode = Enum.KeyCode.E
-	prompt.GamepadKeyCode = Enum.KeyCode.ButtonX
-	prompt.HoldDuration = 0.18
-	prompt.MaxActivationDistance = MVPConfig.Chests.PromptDistance
-	prompt.RequiresLineOfSight = false
+	configureChestPrompt(prompt, "Baú", false)
 	prompt.Parent = root
 
 	local opening = false
@@ -296,6 +355,10 @@ local function activateChest(chest, player)
 	if not state or state.Opened or not chest.Parent then
 		return
 	end
+	if player:GetAttribute("PartyId") ~= nil and player:GetAttribute("PartyCoopProgressEligible") ~= true then
+		player:SetAttribute("LastPartyCoopRewardDenied", "ChestRequiresOwnProgression")
+		return
+	end
 	local character = player.Character
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 	local playerRoot = character and character:FindFirstChild("HumanoidRootPart")
@@ -326,7 +389,34 @@ local function activateChest(chest, player)
 	if not state.IsMimic then
 		MarketingOfferService.Record(player, "ChestOpened", 1)
 		ScoreService.AwardCoins(player, state.CoinReward, "TreasureChest")
-		GameplayAnalytics.RecordChestRewardCollected(player, state.IsRare and "RareWheelAndCoins" or "Coins")
+		local xpSpawned = 0
+		if state.XPReward > 0 then
+			local success, err = XPCollectibleService.SpawnXPBurst(
+				player,
+				position + Vector3.new(0, 1.8, 0),
+				state.XPReward,
+				{
+					SourceId = state.IsRare and "TreasureChest" or "NormalChest",
+					MonsterId = state.IsRare and "TreasureChest" or "NormalChest",
+					MobLevel = state.DifficultyTier,
+					IslandLevel = state.DifficultyTier,
+					GlobalIslandIndex = state.Island:GetAttribute("GlobalIslandIndex"),
+					RewardSource = "Chest",
+				}
+			)
+			if success then
+				xpSpawned = state.XPReward
+			else
+				warn("[ChestService] Falha ao criar coletaveis de XP: " .. tostring(err))
+			end
+		end
+		player:SetAttribute("LastChestXPReward", xpSpawned)
+		player:SetAttribute("LastChestXPDelivery", "PhysicalCollectibles")
+		player:SetAttribute("LastChestXPRewardAt", workspace:GetServerTimeNow())
+		GameplayAnalytics.RecordChestRewardCollected(
+			player,
+			state.IsRare and "RareWheelCoinsAndPhysicalXP" or "CoinsAndPhysicalXP"
+		)
 		if state.IsRare then
 			RewardWheelService.Spin(player, "RareChest", {
 				Level = state.DifficultyTier,
@@ -398,6 +488,7 @@ local function spawnChest(
 	isMimic,
 	isRare,
 	coinReward,
+	xpReward,
 	random,
 	normalTemplate,
 	rareTemplate,
@@ -414,11 +505,13 @@ local function spawnChest(
 	end
 	chest.PrimaryPart = root
 	prepare(chest, true, false)
+	removeTemplatePrompts(chest)
 	chest.Name = string.format("Chest_%02d", index)
 	chest:SetAttribute("IsTreasureChest", true)
 	chest:SetAttribute("IsRareChest", isRare)
 	chest:SetAttribute("SourceChestTemplate", chestTemplate.Name)
 	chest:SetAttribute("Opened", false)
+	chest:SetAttribute("ChestXPReward", math.max(0, math.floor(tonumber(xpReward) or 0)))
 	chest.Parent = parent
 	CollectionService:AddTag(chest, "AnalyticsChest")
 	AnimeOutline.Apply(chest)
@@ -436,13 +529,7 @@ local function spawnChest(
 	alignBottom(chest, record.SurfacePosition, yaw)
 	local prompt = Instance.new("ProximityPrompt")
 	prompt.Name = "OpenChestPrompt"
-	prompt.ActionText = "Abrir"
-	prompt.ObjectText = isRare and "Baú raro" or "Baú"
-	prompt.KeyboardKeyCode = Enum.KeyCode.E
-	prompt.GamepadKeyCode = Enum.KeyCode.ButtonX
-	prompt.HoldDuration = 0.18
-	prompt.MaxActivationDistance = MVPConfig.Chests.PromptDistance
-	prompt.RequiresLineOfSight = false
+	configureChestPrompt(prompt, isRare and "Baú raro" or "Baú", isRare)
 	prompt.Parent = root
 	active[chest] = {
 		Island = island,
@@ -454,6 +541,7 @@ local function spawnChest(
 		IsMimic = isMimic,
 		IsRare = isRare,
 		CoinReward = coinReward,
+		XPReward = xpReward,
 		DifficultyTier = tier,
 		Opened = false,
 	}
@@ -481,14 +569,18 @@ function ChestService.PopulateIsland(island, freeCells, context)
 		+ MVPConfig.Chests.RandomSalt)) % 2147483647
 	local random = Random.new(seed == 0 and 1 or seed)
 	local chanceMultiplier = math.max(0, tonumber(island:GetAttribute("ChestChanceMultiplier")) or 1)
-	local normalChance = math.clamp(MVPConfig.Chests.NormalIslandChance * chanceMultiplier, 0, 1)
+	local levelInCycle, normalChestCount, normalChanceBeforeMultiplier = normalChestPlanForIsland(island)
+	local normalChance = math.clamp(normalChanceBeforeMultiplier * chanceMultiplier, 0, 1)
+	island:SetAttribute("ChestLevelInCycle", levelInCycle)
+	island:SetAttribute("NormalChestPlannedCount", normalChestCount)
+	island:SetAttribute("NormalChestSpawnChance", normalChance)
 	if islandType ~= "Treasure" and random:NextNumber() > normalChance then
 		return 0
 	end
 
 	local desired = islandType == "Treasure"
 		and random:NextInteger(MVPConfig.Chests.TreasureMinimumChests, MVPConfig.Chests.TreasureMaximumChests)
-		or 1
+		or normalChestCount
 	local selected = selectCells(freeCells, desired, random)
 	if #selected == 0 then
 		return 0
@@ -522,6 +614,15 @@ function ChestService.PopulateIsland(island, freeCells, context)
 		local minimum = isMimic and MVPConfig.Chests.MimicMinimumCoins or MVPConfig.Chests.NormalMinimumCoins
 		local maximum = isMimic and MVPConfig.Chests.MimicMaximumCoins or MVPConfig.Chests.NormalMaximumCoins
 		local reward = math.floor(random:NextInteger(minimum, maximum) * rewardMultiplier)
+		local xpReward = 0
+		if not isMimic then
+			xpReward = math.floor(
+				random:NextInteger(
+					MVPConfig.Chests.NormalMinimumXP,
+					MVPConfig.Chests.NormalMaximumXP
+				) * rewardMultiplier
+			)
+		end
 		local marker = Instance.new("CFrameValue")
 		marker.Name = string.format("Chest_%02d", index)
 		marker.Value = CFrame.new(record.SurfacePosition)
@@ -537,6 +638,7 @@ function ChestService.PopulateIsland(island, freeCells, context)
 			isMimic,
 			isRare,
 			reward,
+			xpReward,
 			random,
 			normalTemplate,
 			rareTemplate,

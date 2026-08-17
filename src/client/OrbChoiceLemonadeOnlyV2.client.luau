@@ -11,7 +11,7 @@ local choiceRequest = orbFolder:WaitForChild("OrbChoiceRequest")
 local activePanel
 local activeCards = {}
 local activeButtonConnections = {}
-local activeOptionsBySerial = {}
+local activeOfferOptions = {}
 local submitting = false
 
 -- O painel criado pelo Lemonade, dentro do DungeonHUD, e a unica interface
@@ -121,7 +121,7 @@ local function ensureCards(panel)
 				orbName
 			))
 		end
-		table.insert(cards, card)
+		cards[orbName] = card
 	end
 
 	if template and template:IsA("GuiObject") then
@@ -130,19 +130,30 @@ local function ensureCards(panel)
 	return cards
 end
 
-local function populateCard(card, option, milestone, serial)
-	if not card or type(option) ~= "table" then
+local function currentOrbLevel(orbName)
+	return OrbConfig.CleanLevel(player:GetAttribute(OrbConfig.GetLevelAttribute(orbName)))
+end
+
+local function mapOfferOptions(options)
+	local result = {}
+	for _, option in ipairs(options or {}) do
+		if type(option) == "table" and typeof(option.Orb) == "string" and typeof(option.ChoiceType) == "string" then
+			result[option.Orb] = option
+		end
+	end
+	return result
+end
+
+local function populateCard(card, orbName, milestone, serial, offeredOption)
+	if not card then
 		return
 	end
 
-	local orbName = OrbConfig.NormalizeOrb(option.Orb)
 	local definition = OrbConfig.GetOrb(orbName)
-	if not orbName or not definition then
-		return
-	end
-	local currentLevel = math.max(0, math.floor(tonumber(option.CurrentLevel) or 0))
-	local nextLevel = math.max(1, math.floor(tonumber(option.NextLevel) or (currentLevel + 1)))
-	local isNew = option.ChoiceType == "NewOrb"
+	local currentLevel = currentOrbLevel(orbName)
+	local nextLevel = math.min(currentLevel + 1, OrbConfig.MaxOrbLevel)
+	local isNew = currentLevel == 0
+	local available = offeredOption ~= nil
 
 	local nameText = findText(card, { "OrbName", "Name", "Title" })
 	local levelText = findText(card, { "OrbLevel", "Level" })
@@ -156,31 +167,39 @@ local function populateCard(card, option, milestone, serial)
 	end
 
 	if nameText then
-		nameText.Text = string.upper(tostring(option.DisplayName or definition.DisplayName))
+		nameText.Text = string.upper(definition.DisplayName)
 	end
 	if levelText then
-		levelText.Text = isNew and "NOVA HABILIDADE" or string.format("NÍVEL %d → %d", currentLevel, nextLevel)
+		levelText.Text = string.format("Level %d", nextLevel)
 	end
 	if descriptionText then
-		descriptionText.Text = tostring(option.Description or definition.Description)
+		descriptionText.Text = available and definition.Description or (isNew and "Orb raro. Continue jogando para ter a chance de encontrá-lo." or definition.Description)
 	end
 	if badge then
-		badge.Visible = true
-		badge.Text = tostring(option.Kind or (isNew and "NOVO ORB" or "UPGRADE"))
+		badge.Visible = isNew
+		badge.Text = "NEW"
 	end
 	if upgradeText then
-		upgradeText.Text = tostring(option.AttributeLabel or OrbConfig.GetUpgradeSummary(orbName, currentLevel))
+		if available then
+			local summary = OrbConfig.GetUpgradeSummary(orbName, currentLevel)
+			local ability = not isNew and OrbConfig.GetMilestoneAbility(orbName, nextLevel) or nil
+			if ability then
+				summary ..= string.format("\nNOVA HABILIDADE: %s\n%s", string.upper(ability.Name), ability.Description)
+			end
+			upgradeText.Text = summary
+		else
+			upgradeText.Text = isNew and "DISPONIBILIDADE RARA" or "MAX"
+		end
 	end
 	if button then
 		local oldConnection = activeButtonConnections[button]
 		if oldConnection then
 			oldConnection:Disconnect()
 		end
-		local available = option.Available ~= false
 		button.Active = available
 		button.AutoButtonColor = available
 		if button:IsA("TextButton") then
-			button.Text = isNew and "ESCOLHER" or "MELHORAR"
+			button.Text = available and (offeredOption.ChoiceType == "NewOrb" and "CHOOSE" or "UPGRADE") or (isNew and "RARE" or "MAX")
 		end
 		button.Modal = true
 		activeButtonConnections[button] = button.Activated:Connect(function()
@@ -197,9 +216,7 @@ local function populateCard(card, option, milestone, serial)
 			end
 			choiceRequest:FireServer({
 				Orb = orbName,
-				StyleId = option.StyleId,
-				ChoiceType = option.ChoiceType,
-				UpgradeId = option.UpgradeId,
+				ChoiceType = offeredOption.ChoiceType,
 				MilestoneLevel = milestone,
 				Serial = serial,
 			})
@@ -217,13 +234,6 @@ local function showOffer(milestone, serial, options)
 	if milestone <= 0 or serial <= 0 then
 		return
 	end
-	if type(options) == "table" and #options > 0 then
-		activeOptionsBySerial[serial] = options
-	end
-	options = activeOptionsBySerial[serial]
-	if type(options) ~= "table" or #options == 0 then
-		return
-	end
 
 	local panel = findLemonadePanel()
 	if not panel then
@@ -233,29 +243,22 @@ local function showOffer(milestone, serial, options)
 	hideOtherOrbChoicePanels(panel)
 	activePanel = panel
 	activeCards = ensureCards(panel)
+	if options then
+		activeOfferOptions = mapOfferOptions(options)
+	end
 	submitting = false
 
 	local title = findText(panel, { "Title", "OrbChoiceTitle" })
 	local subtitle = findText(panel, { "Subtitle", "LevelText", "OrbChoiceSubtitle" })
-	local initialReward = player:GetAttribute("OrbFirstChoiceGate") == "InitialIslandCleared"
-		and (tonumber(player:GetAttribute("OrbChoicesCompleted")) or 0) == 0
 	if title then
-		title.Text = initialReward
-			and "ESCOLHA SEU PRIMEIRO ORB"
-			or "ESCOLHA SUA FORMA DE ATAQUE"
+		title.Text = "CHOOSE YOUR ORB"
 	end
 	if subtitle then
-		subtitle.Text = initialReward
-			and "RECOMPENSA DA ILHA INICIAL"
-			or string.format("RECOMPENSA DO NÍVEL %d", milestone)
+		subtitle.Text = string.format("Level %d reward - choose one", milestone)
 	end
 
-	for index, card in ipairs(activeCards) do
-		local option = options[index]
-		card.Visible = option ~= nil
-		if option then
-			populateCard(card, option, milestone, serial)
-		end
+	for _, orbName in ipairs(OrbConfig.OrbOrder) do
+		populateCard(activeCards[orbName], orbName, milestone, serial, activeOfferOptions[orbName])
 	end
 	setPanelVisible(panel, true)
 end
@@ -266,6 +269,7 @@ local function hideOffer()
 	end
 	activePanel = nil
 	activeCards = {}
+	activeOfferOptions = {}
 	for button, connection in pairs(activeButtonConnections) do
 		connection:Disconnect()
 		activeButtonConnections[button] = nil
@@ -285,8 +289,7 @@ choiceEvent.OnClientEvent:Connect(function(payload)
 		submitting = false
 		local pending = tonumber(player:GetAttribute("PendingOrbChoiceLevel")) or 0
 		if pending > 0 then
-			local serial = player:GetAttribute("OrbChoiceSerial")
-			showOffer(pending, serial, activeOptionsBySerial[tonumber(serial) or 0])
+			showOffer(pending, player:GetAttribute("OrbChoiceSerial"))
 		end
 	end
 end)
@@ -294,8 +297,7 @@ end)
 player:GetAttributeChangedSignal("PendingOrbChoiceLevel"):Connect(function()
 	local pending = tonumber(player:GetAttribute("PendingOrbChoiceLevel")) or 0
 	if pending > 0 then
-		local serial = player:GetAttribute("OrbChoiceSerial")
-		showOffer(pending, serial, activeOptionsBySerial[tonumber(serial) or 0])
+		showOffer(pending, player:GetAttribute("OrbChoiceSerial"))
 	elseif activePanel then
 		hideOffer()
 	end
@@ -304,8 +306,7 @@ end)
 task.defer(function()
 	local pending = tonumber(player:GetAttribute("PendingOrbChoiceLevel")) or 0
 	if pending > 0 then
-		local serial = player:GetAttribute("OrbChoiceSerial")
-		showOffer(pending, serial, activeOptionsBySerial[tonumber(serial) or 0])
+		showOffer(pending, player:GetAttribute("OrbChoiceSerial"))
 	end
 end)
 

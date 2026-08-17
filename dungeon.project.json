@@ -40,6 +40,18 @@
         "AssistedIslandTransportController": {
           "$path": "src/client/AssistedIslandTransportController.client.luau"
         },
+        "CombatFeedbackController": {
+          "$path": "src/client/CombatFeedbackController.client.luau"
+        },
+        "ChestPromptController": {
+          "$path": "src/client/ChestPromptController.client.luau"
+        },
+        "CompanionInventoryController": {
+          "$path": "src/client/CompanionInventoryController.client.luau"
+        },
+        "CompanionInventoryTypography": {
+          "$path": "src/client/CompanionInventoryTypography.client.luau"
+        },
         "DungeonArtHUDController": {
           "$attributes": {
             "_lemonadeUniqueId": "vrORjdDTvrOR"
@@ -52,11 +64,35 @@
           },
           "$path": "src/client/DungeonCameraController.client.luau"
         },
+        "DungeonBossPortraitCamera": {
+          "$path": "src/client/DungeonBossPortraitCamera.client.luau"
+        },
+        "DungeonNextIslandCameraGuidance": {
+          "$path": "src/client/DungeonNextIslandCameraGuidance.client.luau"
+        },
         "DungeonHUDBootstrap": {
           "$attributes": {
             "_lemonadeUniqueId": "QrR6ToTZQrR6"
           },
           "$path": "src/client/DungeonHUDBootstrap.client.luau"
+        },
+        "DungeonClientLegacyGuard": {
+          "$path": "src/client/DungeonClientLegacyGuard.client.luau"
+        },
+        "DungeonMobileAccessibility": {
+          "$path": "src/client/DungeonMobileAccessibility.client.luau"
+        },
+        "DungeonMobileCombatTelemetry": {
+          "$path": "src/client/DungeonMobileCombatTelemetry.client.luau"
+        },
+        "DungeonMobileSoftAim": {
+          "$path": "src/client/DungeonMobileSoftAim.client.luau"
+        },
+        "DungeonPortraitEnemyReadability": {
+          "$path": "src/client/DungeonPortraitEnemyReadability.client.luau"
+        },
+        "DungeonStrongHitFeedback": {
+          "$path": "src/client/DungeonStrongHitFeedback.client.luau"
         },
         "InputProfileController": {
           "$attributes": {
@@ -69,6 +105,9 @@
             "_lemonadeUniqueId": "GYlZqjwGGYlZ"
           },
           "$path": "src/client/IslandEffectCulling.client.luau"
+        },
+        "InstantOnboardingController": {
+          "$path": "src/client/InstantOnboardingController.client.luau"
         },
         "EnemyCombatFeedback": {
           "$path": "src/client/EnemyCombatFeedback.client.luau"
@@ -97,8 +136,11 @@
         "MobileControls": {
           "$path": "src/client/MobileControls.client.luau"
         },
-        "OrbChoiceClient": {
-          "$path": "src/client/OrbChoiceClient.client.luau"
+        "DungeonShopUI": {
+          "$path": "src/client/MonetizationUI.client.luau"
+        },
+        "OrbChoiceLemonadeOnlyV2": {
+          "$path": "src/client/OrbChoiceLemonadeOnlyV2.client.luau"
         },
         "OrbCombatClient": {
           "$attributes": {
@@ -135,6 +177,10 @@
             "_lemonadeUniqueId": "zSwxXMESzSwx"
           },
           "$path": "src/client/SwordInputClient.client.luau"
+        },
+        "UI": {
+          "$className": "Folder",
+          "$path": "src/client/UI"
         },
         "XPCollectSound": {
           "$attributes": {

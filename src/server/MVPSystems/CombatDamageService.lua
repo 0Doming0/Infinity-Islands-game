@@ -55,6 +55,16 @@ local function validAttacker(attacker)
         and attacker.Parent == Players
 end
 
+local function isCompanionModel(model)
+    return model
+        and model:IsA("Model")
+        and (
+            model:GetAttribute("IsCompanion") == true
+            or model:GetAttribute("CompanionOwnerUserId") ~= nil
+            or model:GetAttribute("CompanionInstanceId") ~= nil
+        )
+end
+
 local function safeCall(callback, ...)
     local ok, result = pcall(callback, ...)
     if not ok then
@@ -229,7 +239,9 @@ local function validateTarget(target, allowNoSwordDamage)
         return nil
     end
 
-    if Players:GetPlayerFromCharacter(model) then
+    if Players:GetPlayerFromCharacter(model)
+        or isCompanionModel(model)
+    then
         return nil
     end
 
@@ -521,7 +533,10 @@ end
 
 function DamageService.IsFriendly(attacker, targetModel, friendlyFire)
     return targetModel
-        and Players:GetPlayerFromCharacter(targetModel) ~= nil
+        and (
+            Players:GetPlayerFromCharacter(targetModel) ~= nil
+            or isCompanionModel(targetModel)
+        )
 end
 
 function DamageService.ApplySwordHit(attacker, attackerRoot, target, attack)

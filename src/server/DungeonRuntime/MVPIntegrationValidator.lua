@@ -36,6 +36,10 @@ local Config = require(
 	ReplicatedStorage.Shared.Configs.MVPIntegrationValidatorConfig
 )
 
+local PlayerLevelConfig = require(
+	ReplicatedStorage.Shared.Configs.PlayerLevelConfig
+)
+
 local Validator = {}
 
 local ISLAND_TAG = "SkyDungeonIslandNode"
@@ -836,7 +840,7 @@ local function validatePlayer(
 	if attr(
 		player,
 		"PlayerLevelVersion"
-	) ~= "PlayerLevelV1"
+	) ~= PlayerLevelConfig.Version
 	then
 		addIssue(
 			warnings,
@@ -855,12 +859,13 @@ local function validatePlayer(
 	if attr(
 		player,
 		"RunDamageDealtMultiplierSource"
-	) ~= "PlayerLevelV1"
+	) ~= PlayerLevelConfig.Version
 	then
 		addIssue(
 			warnings,
 			"PlayerDamageAuthorityNotApplied",
-			"RunDamageDealtMultiplierSource ainda nao e PlayerLevelV1",
+			"RunDamageDealtMultiplierSource ainda nao e "
+				.. PlayerLevelConfig.Version,
 			player
 		)
 	end

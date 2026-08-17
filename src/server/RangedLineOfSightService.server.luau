@@ -59,7 +59,9 @@ local function livingTarget(player)
 	if not player
 		or player.Parent ~= Players
 		or player:GetAttribute("IsDowned") == true
-		or player:GetAttribute("InvisibleToEnemies") == true
+		or player:GetAttribute("DungeonEliminated") == true
+		or player:GetAttribute("DungeonSpectating") == true
+		or player:GetAttribute("CapeInvisibleToEnemies") == true
 	then
 		return nil
 	end
@@ -70,14 +72,6 @@ local function livingTarget(player)
 		return nil
 	end
 	return character, humanoid, root
-end
-
-local function targetIsProtected(player, character)
-	local untilTime = tonumber(player:GetAttribute("RespawnProtectionUntil")) or 0
-	if player:GetAttribute("RespawnProtectionActive") == true and untilTime > serverTime() then
-		return true
-	end
-	return character and character:FindFirstChildOfClass("ForceField") ~= nil
 end
 
 local function nearestPlayer(position, maximumDistance)
@@ -287,14 +281,6 @@ local function evaluate(model)
 		return
 	end
 
-	if targetIsProtected(player, character) then
-		model:SetAttribute("RangedLineOfSight", false)
-		model:SetAttribute("RangedLineOfSightState", "TargetProtected")
-		model:SetAttribute("RangedLineOfSightBlockedBy", "RespawnProtection")
-		applySightGuard(model, state, "TargetProtected")
-		return
-	end
-
 	local visible, blocker = hasLineOfSight(model, root, character, targetRoot)
 	model:SetAttribute("RangedLineOfSight", visible)
 	model:SetAttribute("RangedLineOfSightBlockedBy", visible and nil or blockerName(blocker))
@@ -338,7 +324,6 @@ while true do
 					for _, player in ipairs(Players:GetPlayers()) do
 						local character, _, targetRoot = livingTarget(player)
 						if character and targetRoot
-							and not targetIsProtected(player, character)
 							and (targetRoot.Position - root.Position).Magnitude <= attackRange + splashMargin
 						then
 							local visible = hasLineOfSight(model, root, character, targetRoot)

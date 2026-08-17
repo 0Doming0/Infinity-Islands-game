@@ -1,9 +1,9 @@
 --[[
-	Infinity Islands - IslandMobRosterConfig V5
+	Infinity Islands - IslandMobRosterConfig V6
 	Advanced Slime Variety
 
 	Goals:
-	- a Ilha Inicial demonstra todas as variantes de slime de forma pacifica;
+	- a Ilha Inicial mostra tres slimes pacificos em ordem legivel;
 	- a Ilha 1 numerada usa somente Green Slime;
 	- Ilhas 2-6 apresentam Blue, Red, Fire, Ice e Lightning separadamente;
 	- a partir da Ilha 7, todas as variantes avancadas podem aparecer juntas;
@@ -22,7 +22,7 @@
 local IslandMobRosterConfig = {}
 
 IslandMobRosterConfig.Version =
-	"IslandMobRosterV5SoloIntroductionsThenMixed"
+	"IslandMobRosterV6ThreeSlimePreviewThenMixed"
 
 IslandMobRosterConfig.AdvancedSlimeStartLevel = 2
 IslandMobRosterConfig.SoloIntroductionEndLevel = 6
@@ -759,7 +759,6 @@ function IslandMobRosterConfig.BuildDemonstrationRoster(
 	seed
 )
 	local count = cleanCount(targetCount)
-	local random = Random.new(normalizedSeed(seed))
 	local roster = {}
 	local state = {
 		ThreatUsed = 0,
@@ -777,7 +776,9 @@ function IslandMobRosterConfig.BuildDemonstrationRoster(
 		addVariant(roster, variantName, state)
 	end
 
-	roster = shuffle(random, roster)
+	-- A Ilha Inicial precisa ensinar visualmente: o primeiro slime sempre e
+	-- Verde, seguido de Azul e Vermelho. `seed` permanece na assinatura por
+	-- compatibilidade com os chamadores antigos.
 
 	return {
 		Version = IslandMobRosterConfig.Version,
@@ -818,6 +819,15 @@ function IslandMobRosterConfig.Validate()
 			"Demonstracao inicial precisa incluir " .. variantName
 		)
 	end
+
+	local shortDemonstration =
+		IslandMobRosterConfig.BuildDemonstrationRoster(3, 777)
+	assert(
+		shortDemonstration.Roster[1] == "Green"
+			and shortDemonstration.Roster[2] == "Blue"
+			and shortDemonstration.Roster[3] == "Red",
+		"Demonstracao curta precisa seguir Verde, Azul, Vermelho"
+	)
 
 	local levelOne =
 		IslandMobRosterConfig

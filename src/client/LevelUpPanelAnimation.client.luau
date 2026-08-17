@@ -6,12 +6,18 @@ local SHOW_TIME = 0.42
 local HIDE_TIME = 0.32
 local DISPLAY_TIME = 2.4
 local SLIDE_OFFSET = 42
+local SCREEN_MARGIN = 20
+local MAX_SCREEN_WIDTH_RATIO = 0.92
+local MAX_SCREEN_HEIGHT_RATIO = 0.70
+local RESPONSIVE_SCALE_NAME = "DungeonLevelUpResponsiveScale"
+local TOP_BIASED_VERTICAL_POSITION = 0.30
 
 local panel
-local initialPosition
+local initialPosition = UDim2.fromScale(0.5, TOP_BIASED_VERTICAL_POSITION)
 local transparencyValues = {}
 local animationSerial = 0
 local lastLevelUpSerial
+local cameraViewportConnection
 
 local function findPanel()
 	local hud = playerGui:FindFirstChild("DungeonHUD")
@@ -30,6 +36,103 @@ local function updateLevelText(level)
 	end
 end
 
+local function getViewport()
+	local camera = workspace.CurrentCamera
+	if camera and camera.ViewportSize.X > 0 and camera.ViewportSize.Y > 0 then
+		return camera.ViewportSize
+	end
+	return Vector2.new(1280, 720)
+end
+
+local function getResponsiveScale()
+	if not panel then
+		return nil
+	end
+
+	local scale = panel:FindFirstChild(RESPONSIVE_SCALE_NAME)
+	if scale and not scale:IsA("UIScale") then
+		scale:Destroy()
+		scale = nil
+	end
+	if not scale then
+		scale = Instance.new("UIScale")
+		scale.Name = RESPONSIVE_SCALE_NAME
+		scale.Scale = 1
+		scale.Parent = panel
+	end
+	return scale
+end
+
+local function centerAndScalePanel()
+	if not panel or not panel.Parent then
+		return
+	end
+
+	-- The panel belongs in the visual center of every device.  The Studio
+	-- design keeps its authored Size; only the final scale is reduced when it
+	-- would otherwise extend beyond the player's screen.
+	panel.AnchorPoint = Vector2.new(0.5, 0.5)
+
+	local responsiveScale = getResponsiveScale()
+	if not responsiveScale then
+		return
+	end
+
+	local activeScale = math.max(responsiveScale.Scale, 0.001)
+	local absoluteSize = panel.AbsoluteSize
+	if absoluteSize.X <= 0 or absoluteSize.Y <= 0 then
+		return
+	end
+
+	local authoredWidth = absoluteSize.X / activeScale
+	local authoredHeight = absoluteSize.Y / activeScale
+	local viewport = getViewport()
+	local maximumWidth = math.max(1, viewport.X * MAX_SCREEN_WIDTH_RATIO - SCREEN_MARGIN * 2)
+	local maximumHeight = math.max(1, viewport.Y * MAX_SCREEN_HEIGHT_RATIO - SCREEN_MARGIN * 2)
+	local targetScale = math.min(1, maximumWidth / authoredWidth, maximumHeight / authoredHeight)
+
+	responsiveScale.Scale = math.max(0.01, targetScale)
+
+	-- Horizontal center is fixed. Vertically, the panel favors the upper third
+	-- of the display but is clamped so even a large mobile layout stays whole.
+	local scaledHeight = authoredHeight * responsiveScale.Scale
+	local minimumCenterY = (SCREEN_MARGIN + scaledHeight * 0.5) / viewport.Y
+	local maximumCenterY = 1 - minimumCenterY
+	local verticalPosition = TOP_BIASED_VERTICAL_POSITION
+	-- Durante a criacao/troca de uma janela muito pequena, o Roblox pode
+	-- informar uma ViewportSize menor que o proprio painel. Nessa situacao nao
+	-- existe faixa vertical valida para o clamp; centralizamos provisoriamente
+	-- ate a proxima atualizacao da viewport.
+	if maximumCenterY >= minimumCenterY then
+		verticalPosition = math.clamp(
+			TOP_BIASED_VERTICAL_POSITION,
+			minimumCenterY,
+			maximumCenterY
+		)
+	else
+		verticalPosition = 0.5
+	end
+	initialPosition = UDim2.fromScale(0.5, verticalPosition)
+
+	if panel.Visible then
+		panel.Position = initialPosition
+	end
+end
+
+local function bindViewport()
+	if cameraViewportConnection then
+		cameraViewportConnection:Disconnect()
+		cameraViewportConnection = nil
+	end
+
+	local camera = workspace.CurrentCamera
+	if camera then
+		cameraViewportConnection = camera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+			task.defer(centerAndScalePanel)
+		end)
+	end
+end
+
 local function capturePanel()
 	local current = findPanel()
 	if not current then
@@ -38,7 +141,6 @@ local function capturePanel()
 
 	if current ~= panel then
 		panel = current
-		initialPosition = panel.Position
 		transparencyValues = {}
 
 		for _, descendant in ipairs(panel:GetDescendants()) do
@@ -54,7 +156,11 @@ local function capturePanel()
 				}
 			end
 		end
+
+		bindViewport()
 	end
+
+	centerAndScalePanel()
 
 	return true
 end
@@ -130,6 +236,7 @@ local function showPanel()
 	local hiddenPosition = initialPosition + UDim2.fromOffset(0, -SLIDE_OFFSET)
 
 	panel.Visible = true
+	centerAndScalePanel()
 	panel.Position = hiddenPosition
 	setFade(1)
 
@@ -184,6 +291,11 @@ player:GetAttributeChangedSignal("PlayerLevelUpSerial"):Connect(onLevelUp)
 
 playerGui.ChildAdded:Connect(function()
 	task.defer(capturePanel)
+end)
+
+workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+	bindViewport()
+	task.defer(centerAndScalePanel)
 end)
 
 task.defer(function()

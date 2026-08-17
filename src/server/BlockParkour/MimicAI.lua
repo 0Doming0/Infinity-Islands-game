@@ -461,7 +461,9 @@ local function nearestPlayer(position, maximumDistance, state)
 	for _, player in ipairs(Players:GetPlayers()) do
 		if
 			player:GetAttribute("IsDowned") == true
-			or player:GetAttribute("InvisibleToEnemies") == true
+			or player:GetAttribute("DungeonEliminated") == true
+			or player:GetAttribute("DungeonSpectating") == true
+			or player:GetAttribute("CapeInvisibleToEnemies") == true
 		then
 			continue
 		end

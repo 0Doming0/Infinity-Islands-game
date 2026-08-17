@@ -16,7 +16,7 @@ local ItemCatalog = require(ReplicatedStorage:WaitForChild("ItemCatalog"))
 
 local DATASTORE_NAME = "SkyDungeonPlayerData_V10"
 local LEGACY_MVP_DATASTORE_NAME = "BlockParkour_PlayerData_v1"
-local SCHEMA_VERSION = 13
+local SCHEMA_VERSION = 15
 local SCORE_SCALE_VERSION = 3
 local STARTER_SWORD_ID = "ClassicSword"
 local LOAD_RETRIES = 4
@@ -70,6 +70,26 @@ local function defaultData()
 				Phase01 = { Completions = 0, BossDefeated = false, BestTime = nil },
 				Phase02 = { Completions = 0, BossDefeated = false, BestTime = nil },
 			},
+		},
+		-- Progresso pessoal da rota. Estes indices usam a rota global: 1 e a
+		-- ilha inicial; a primeira arena de combate e a 2.
+		IslandProgress = {
+			HighestCompletedGlobalIslandIndex = 0,
+			ResumeGlobalIslandIndex = 1,
+		},
+		LevelProgress = {
+			Level = 1,
+			XP = 0,
+			TotalXP = 0,
+		},
+		-- Estado de combate dos Orbs. As habilidades sao guardadas pelo Id da
+		-- melhoria para continuar corretas mesmo que o texto da habilidade mude.
+		OrbProgression = {
+			Version = "",
+			Orbs = {},
+			EquippedOrbs = {},
+			ClaimedMilestones = {},
+			ChoicesCompleted = 0,
 		},
 		Roulette = {
 			TotalSpins = 0,
@@ -410,6 +430,72 @@ local function sanitizePhaseProgress(raw)
 	return { Phases = result }
 end
 
+local function sanitizeIslandProgress(raw)
+	raw = type(raw) == "table" and raw or {}
+	local highest = math.max(0, math.floor(tonumber(raw.HighestCompletedGlobalIslandIndex) or 0))
+	local resume = math.max(1, math.floor(tonumber(raw.ResumeGlobalIslandIndex) or (highest + 1)))
+	return {
+		HighestCompletedGlobalIslandIndex = math.min(highest, math.max(0, resume - 1)),
+		ResumeGlobalIslandIndex = math.max(resume, highest + 1),
+	}
+end
+
+local function sanitizeLevelProgress(raw)
+	raw = type(raw) == "table" and raw or {}
+	local level = math.clamp(math.floor(tonumber(raw.Level) or 1), 1, 100)
+	return {
+		Level = level,
+		XP = math.max(0, math.floor(tonumber(raw.XP) or 0)),
+		TotalXP = math.max(0, math.floor(tonumber(raw.TotalXP) or 0)),
+	}
+end
+
+local function sanitizeOrbProgression(raw)
+	raw = type(raw) == "table" and raw or {}
+	local result = {
+		Version = type(raw.Version) == "string" and string.sub(raw.Version, 1, 120) or "",
+		Orbs = {},
+		EquippedOrbs = {},
+		ClaimedMilestones = {},
+		ChoicesCompleted = math.max(0, math.floor(tonumber(raw.ChoicesCompleted) or 0)),
+	}
+	local savedOrbs = type(raw.Orbs) == "table" and raw.Orbs or {}
+	for _, orbName in ipairs({ "Fire", "Ice", "Shadow" }) do
+		local saved = type(savedOrbs[orbName]) == "table" and savedOrbs[orbName] or {}
+		local abilities = {}
+		if type(saved.Abilities) == "table" then
+			for abilityId, rank in pairs(saved.Abilities) do
+				if type(abilityId) == "string" and string.match(abilityId, "^[%w_]+$") then
+					abilities[abilityId] = math.clamp(math.floor(tonumber(rank) or 0), 0, 4)
+				end
+			end
+		end
+		result.Orbs[orbName] = {
+			Level = math.clamp(math.floor(tonumber(saved.Level) or 0), 0, 4),
+			XP = math.max(0, math.floor(tonumber(saved.XP) or 0)),
+			Abilities = abilities,
+		}
+	end
+	local seenEquipped = {}
+	if type(raw.EquippedOrbs) == "table" then
+		for _, orbName in ipairs(raw.EquippedOrbs) do
+			if result.Orbs[orbName] and result.Orbs[orbName].Level > 0 and not seenEquipped[orbName] and #result.EquippedOrbs < 2 then
+				seenEquipped[orbName] = true
+				table.insert(result.EquippedOrbs, orbName)
+			end
+		end
+	end
+	if type(raw.ClaimedMilestones) == "table" then
+		for level, claimed in pairs(raw.ClaimedMilestones) do
+			local cleanLevel = math.clamp(math.floor(tonumber(level) or 0), 0, 100)
+			if cleanLevel >= 2 and claimed == true then
+				result.ClaimedMilestones[cleanLevel] = true
+			end
+		end
+	end
+	return result
+end
+
 local function sanitizeOwnedRelics(raw)
 	local owned = {}
 	if type(raw) ~= "table" then
@@ -638,6 +724,9 @@ local function sanitize(raw)
 	data.DailyStreak = math.clamp(math.floor(tonumber(raw.DailyStreak) or 0), 0, 7)
 	data.Tickets = sanitizeTickets(raw.Tickets or (raw.Inventory and raw.Inventory.Tickets))
 	data.Progression = sanitizePhaseProgress(raw.Progression)
+	data.IslandProgress = sanitizeIslandProgress(raw.IslandProgress)
+	data.LevelProgress = sanitizeLevelProgress(raw.LevelProgress)
+	data.OrbProgression = sanitizeOrbProgression(raw.OrbProgression)
 	local rawRoulette = type(raw.Roulette) == "table" and raw.Roulette or {}
 	data.Roulette = {
 		TotalSpins = math.max(0, math.floor(tonumber(rawRoulette.TotalSpins) or 0)),
@@ -722,6 +811,108 @@ local function cloneProgression(source)
 	return { Phases = phases }
 end
 
+local function cloneIslandProgress(source)
+	return {
+		HighestCompletedGlobalIslandIndex = source.HighestCompletedGlobalIslandIndex,
+		ResumeGlobalIslandIndex = source.ResumeGlobalIslandIndex,
+	}
+end
+
+local function cloneLevelProgress(source)
+	return {
+		Level = source.Level,
+		XP = source.XP,
+		TotalXP = source.TotalXP,
+	}
+end
+
+local function cloneOrbProgression(source)
+	local orbs = {}
+	for orbName, record in pairs(source.Orbs or {}) do
+		orbs[orbName] = {
+			Level = record.Level,
+			XP = record.XP,
+			Abilities = cloneDictionary(record.Abilities or {}),
+		}
+	end
+	return {
+		Version = source.Version,
+		Orbs = orbs,
+		EquippedOrbs = table.clone(source.EquippedOrbs or {}),
+		ClaimedMilestones = cloneDictionary(source.ClaimedMilestones or {}),
+		ChoicesCompleted = source.ChoicesCompleted,
+	}
+end
+
+local function mergeOrbProgression(current, previous)
+	current = sanitizeOrbProgression(current)
+	previous = sanitizeOrbProgression(previous)
+	for orbName, previousRecord in pairs(previous.Orbs) do
+		local record = current.Orbs[orbName]
+		if previousRecord.Level > record.Level then
+			record.Level = previousRecord.Level
+			record.XP = previousRecord.XP
+		elseif previousRecord.Level == record.Level then
+			record.XP = math.max(record.XP, previousRecord.XP)
+		end
+		for abilityId, rank in pairs(previousRecord.Abilities) do
+			record.Abilities[abilityId] = math.max(record.Abilities[abilityId] or 0, rank)
+		end
+	end
+	for milestone, claimed in pairs(previous.ClaimedMilestones) do
+		if claimed then
+			current.ClaimedMilestones[milestone] = true
+		end
+	end
+	current.ChoicesCompleted = math.max(current.ChoicesCompleted, previous.ChoicesCompleted)
+	if current.Version == "" then
+		current.Version = previous.Version
+	end
+	if #current.EquippedOrbs == 0 then
+		current.EquippedOrbs = table.clone(previous.EquippedOrbs)
+	end
+	return sanitizeOrbProgression(current)
+end
+
+local function captureOrbProgressionFromPlayer(player, current)
+	-- Antes do OrbProgressionServer inicializar, os atributos ainda nao existem;
+	-- nesse instante o registro salvo nao pode ser substituido por zeros.
+	if player:GetAttribute("OrbProgressionVersion") == nil then
+		return current
+	end
+
+	local result = sanitizeOrbProgression(current)
+	result.Version = tostring(player:GetAttribute("OrbProgressionVersion") or result.Version)
+	for _, orbName in ipairs({ "Fire", "Ice", "Shadow" }) do
+		local record = result.Orbs[orbName]
+		record.Level = math.clamp(math.floor(tonumber(player:GetAttribute(orbName .. "OrbLevel")) or 0), 0, 4)
+		record.XP = math.max(0, math.floor(tonumber(player:GetAttribute(orbName .. "OrbXP")) or 0))
+	end
+	for attribute, value in pairs(player:GetAttributes()) do
+		local abilityId = string.match(attribute, "^OrbUpgrade_(.+)$")
+		if abilityId then
+			local orbName = string.match(abilityId, "^(%w+)_")
+			if result.Orbs[orbName] then
+				result.Orbs[orbName].Abilities[abilityId] = math.clamp(math.floor(tonumber(value) or 0), 0, 4)
+			end
+		end
+		local milestone = string.match(attribute, "^OrbChoiceLevel(%d+)Claimed$")
+		if milestone and value == true then
+			result.ClaimedMilestones[math.clamp(math.floor(tonumber(milestone) or 0), 2, 100)] = true
+		end
+	end
+	result.ChoicesCompleted = math.max(0, math.floor(tonumber(player:GetAttribute("OrbChoicesCompleted")) or 0))
+	result.EquippedOrbs = {}
+	local seen = {}
+	for orbName in string.gmatch(tostring(player:GetAttribute("EquippedOrbs") or ""), "[^,]+") do
+		if result.Orbs[orbName] and result.Orbs[orbName].Level > 0 and not seen[orbName] and #result.EquippedOrbs < 2 then
+			seen[orbName] = true
+			table.insert(result.EquippedOrbs, orbName)
+		end
+	end
+	return sanitizeOrbProgression(result)
+end
+
 local function cloneData(data)
 	return {
 		SchemaVersion = SCHEMA_VERSION,
@@ -748,6 +939,9 @@ local function cloneData(data)
 		DailyStreak = data.DailyStreak,
 		Tickets = cloneDictionary(data.Tickets),
 		Progression = cloneProgression(data.Progression),
+		IslandProgress = cloneIslandProgress(data.IslandProgress),
+		LevelProgress = cloneLevelProgress(data.LevelProgress),
+		OrbProgression = cloneOrbProgression(data.OrbProgression),
 		Roulette = cloneDictionary(data.Roulette),
 		DungeonRewards = {
 			ProcessedGrantIds = cloneDictionary(data.DungeonRewards.ProcessedGrantIds),
@@ -852,6 +1046,71 @@ end
 function PlayerDataService.GetSnapshot(player)
 	local data = PlayerDataService.Get(player)
 	return data and cloneData(data) or nil
+end
+
+function PlayerDataService.GetIslandProgress(player)
+	local data = PlayerDataService.Get(player)
+	return data and cloneIslandProgress(data.IslandProgress) or nil
+end
+
+function PlayerDataService.SetIslandProgress(player, highestCompletedGlobalIslandIndex, resumeGlobalIslandIndex)
+	local session = sessions[player]
+	if not session then
+		return false
+	end
+	local nextProgress = sanitizeIslandProgress({
+		HighestCompletedGlobalIslandIndex = highestCompletedGlobalIslandIndex,
+		ResumeGlobalIslandIndex = resumeGlobalIslandIndex,
+	})
+	local current = session.Data.IslandProgress
+	if nextProgress.HighestCompletedGlobalIslandIndex < current.HighestCompletedGlobalIslandIndex then
+		return false
+	end
+	if nextProgress.ResumeGlobalIslandIndex < current.ResumeGlobalIslandIndex then
+		return false
+	end
+	session.Data.IslandProgress = nextProgress
+	markDirty(session)
+	return true, cloneIslandProgress(nextProgress)
+end
+
+function PlayerDataService.GetLevelProgress(player)
+	local data = PlayerDataService.Get(player)
+	return data and cloneLevelProgress(data.LevelProgress) or nil
+end
+
+function PlayerDataService.SetLevelProgress(player, level, xp, totalXP)
+	local session = sessions[player]
+	if not session then
+		return false
+	end
+	local nextProgress = sanitizeLevelProgress({ Level = level, XP = xp, TotalXP = totalXP })
+	local current = session.Data.LevelProgress
+	if nextProgress.Level < current.Level then
+		return false
+	end
+	if nextProgress.Level == current.Level and nextProgress.TotalXP < current.TotalXP then
+		return false
+	end
+	session.Data.LevelProgress = nextProgress
+	markDirty(session)
+	return true, cloneLevelProgress(nextProgress)
+end
+
+function PlayerDataService.GetOrbProgression(player)
+	local data = PlayerDataService.Get(player)
+	return data and cloneOrbProgression(data.OrbProgression) or nil
+end
+
+function PlayerDataService.SetOrbProgression(player, progression)
+	local session = sessions[player]
+	if not session then
+		return false
+	end
+	local nextProgress = sanitizeOrbProgression(progression)
+	session.Data.OrbProgression = nextProgress
+	markDirty(session)
+	return true, cloneOrbProgression(nextProgress)
 end
 
 function PlayerDataService.GetCoins(player)
@@ -2322,6 +2581,10 @@ function PlayerDataService.Save(player, force)
 	end
 
 	session.Saving = true
+	session.Data.OrbProgression = captureOrbProgressionFromPlayer(
+		player,
+		session.Data.OrbProgression
+	)
 	local snapshot = cloneData(session.Data)
 	local snapshotRevision = session.Revision
 	local snapshotDiscardedCompanions = cloneDictionary(session.DiscardedCompanions)
@@ -2416,6 +2679,33 @@ function PlayerDataService.Save(player, force)
 					end
 				end
 			end
+			snapshot.IslandProgress.HighestCompletedGlobalIslandIndex = math.max(
+				snapshot.IslandProgress.HighestCompletedGlobalIslandIndex,
+				previousData.IslandProgress.HighestCompletedGlobalIslandIndex
+			)
+			snapshot.IslandProgress.ResumeGlobalIslandIndex = math.max(
+				snapshot.IslandProgress.ResumeGlobalIslandIndex,
+				previousData.IslandProgress.ResumeGlobalIslandIndex,
+				snapshot.IslandProgress.HighestCompletedGlobalIslandIndex + 1
+			)
+			snapshot.LevelProgress.Level = math.max(
+				snapshot.LevelProgress.Level,
+				previousData.LevelProgress.Level
+			)
+			if snapshot.LevelProgress.Level == previousData.LevelProgress.Level then
+				snapshot.LevelProgress.XP = math.max(
+					snapshot.LevelProgress.XP,
+					previousData.LevelProgress.XP
+				)
+			end
+			snapshot.LevelProgress.TotalXP = math.max(
+				snapshot.LevelProgress.TotalXP,
+				previousData.LevelProgress.TotalXP
+			)
+			snapshot.OrbProgression = mergeOrbProgression(
+				snapshot.OrbProgression,
+				previousData.OrbProgression
+			)
 			snapshot.Roulette.TotalSpins = math.max(
 				snapshot.Roulette.TotalSpins,
 				previousData.Roulette.TotalSpins

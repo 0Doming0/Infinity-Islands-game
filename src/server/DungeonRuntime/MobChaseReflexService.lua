@@ -77,20 +77,9 @@ local function livingRoot(player)
 	end
 
 	if player:GetAttribute("IsDowned") == true
-		or player:GetAttribute("InvisibleToEnemies") == true
-	then
-		return nil
-	end
-
-	local protectionUntil =
-		tonumber(
-			player:GetAttribute(
-				"DungeonEntryProtectionUntil"
-			)
-		) or 0
-
-	if protectionUntil
-		> workspace:GetServerTimeNow()
+		or player:GetAttribute("DungeonEliminated") == true
+		or player:GetAttribute("DungeonSpectating") == true
+		or player:GetAttribute("CapeInvisibleToEnemies") == true
 	then
 		return nil
 	end

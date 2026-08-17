@@ -39,6 +39,11 @@ local boundPlayers =
 local characterTokens =
 	setmetatable({}, { __mode = "k" })
 
+-- Checkpoint pessoal permite que cada jogador retorne ao inicio seguro da
+-- propria proxima ilha, sem mover nem regredir o checkpoint global da rota.
+local playerCheckpointContexts =
+	setmetatable({}, { __mode = "k" })
+
 local connections = {}
 
 local DEFAULT_PROTECTION_SECONDS = 4
@@ -431,12 +436,13 @@ local function onCharacterAdded(
 		return
 	end
 
-	if checkpointContext then
+	local context = playerCheckpointContexts[player] or checkpointContext
+	if context then
 		task.spawn(
 			positionCharacter,
 			player,
 			character,
-			checkpointContext,
+			context,
 			"CharacterAdded"
 		)
 	end
@@ -569,6 +575,7 @@ function DungeonSpawnService.Start(
 
 				boundPlayers[player] = nil
 				characterTokens[player] = nil
+				playerCheckpointContexts[player] = nil
 			end
 		)
 end
@@ -817,7 +824,8 @@ function DungeonSpawnService.PositionPlayer(
 	player,
 	reason
 )
-	if not checkpointContext
+	local context = playerCheckpointContexts[player] or checkpointContext
+	if not context
 		or not player
 		or not player.Character
 	then
@@ -828,9 +836,17 @@ function DungeonSpawnService.PositionPlayer(
 	return positionCharacter(
 		player,
 		player.Character,
-		checkpointContext,
+		context,
 		reason
 	)
+end
+
+function DungeonSpawnService.PositionPlayerAt(player, context, reason)
+	if not player or not player.Character or not markerCFrame(context) then
+		return false, "CheckpointOrCharacterUnavailable"
+	end
+	playerCheckpointContexts[player] = context
+	return positionCharacter(player, player.Character, context, reason or "PersonalIslandResume")
 end
 
 function DungeonSpawnService.GetCheckpoint()

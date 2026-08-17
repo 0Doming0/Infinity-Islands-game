@@ -2,13 +2,19 @@
 
 local Config = {}
 
-Config.Version = "AssistedIslandRouteArrowFallbackV5"
+Config.Version = "AssistedIslandEarlyLearningV6"
 Config.Enabled = true
 
 -- Cada indice de ilha pode iniciar apenas este numero de voos automaticos
 -- durante a sessao. Novos level ups na mesma ilha mostram somente a seta.
 Config.AutomaticFlightsPerSourceIsland = 1
 Config.GuidanceIndicatorEnabled = true
+
+-- O voo automatico e uma ajuda de aprendizado, nao um atalho permanente.
+-- Somente nas primeiras ilhas, depois de o jogador ter tempo para entender
+-- que subir de nivel libera o caminho, o jogo o leva para a proxima arena.
+Config.EarlyIslandAutomaticTransportMaxIndex = 5
+Config.EarlyIslandIdleSeconds = 35
 
 -- O aviso comeca no level up e o voo so pode iniciar ao final deste prazo.
 Config.LevelUpDelaySeconds = 8
@@ -58,6 +64,8 @@ function Config.Validate()
 		Config.AutomaticFlightsPerSourceIsland >= 1,
 		"AutomaticFlightsPerSourceIsland precisa ser >= 1"
 	)
+	assert(Config.EarlyIslandAutomaticTransportMaxIndex >= 1, "Limite de ilhas iniciais invalido")
+	assert(Config.EarlyIslandIdleSeconds >= 0, "EarlyIslandIdleSeconds precisa ser >= 0")
 	assert(Config.LevelUpDelaySeconds >= 0, "LevelUpDelaySeconds precisa ser >= 0")
 	assert(Config.FlightDurationSeconds > 0, "FlightDurationSeconds precisa ser > 0")
 	assert(Config.LandingCountdownSeconds >= 0, "LandingCountdownSeconds precisa ser >= 0")

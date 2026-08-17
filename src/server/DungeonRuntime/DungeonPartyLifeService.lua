@@ -157,22 +157,21 @@ local function applyPlayerState(record)
 	player:SetAttribute("DungeonSpectating", record.State == DungeonPartyLifeService.States.Eliminated)
 	player:SetAttribute("DungeonRewardRespawning", record.RestoringAtReward == true)
 	if record.State == DungeonPartyLifeService.States.Eliminated then
-		record.AppliedSpectatorInvisibility = true
 		player:SetAttribute("DungeonSpectatorInvisible", true)
-		player:SetAttribute("InvisibleToEnemies", true)
 		player:SetAttribute("PlayerLifecycleState", "Spectating")
 		player:SetAttribute("RespawnState", "Spectating")
 	elseif record.State == DungeonPartyLifeService.States.Downed then
 		player:SetAttribute("PlayerLifecycleState", "Downed")
 	elseif record.State == DungeonPartyLifeService.States.Active then
 		player:SetAttribute("DungeonDownedResolution", nil)
-		if record.AppliedSpectatorInvisibility == true
-			and player:GetAttribute("DungeonSpectatorInvisible") == true
-		then
-			player:SetAttribute("InvisibleToEnemies", nil)
-		end
-		record.AppliedSpectatorInvisibility = false
 		player:SetAttribute("DungeonSpectatorInvisible", nil)
+		-- Limpa flags deixadas por versoes antigas do transporte. Os sistemas
+		-- atuais usam estados especificos para capa e espectador.
+		player:SetAttribute("InvisibleToEnemies", nil)
+		local character = player.Character
+		if character then
+			character:SetAttribute("InvisibleToEnemies", nil)
+		end
 		if player:GetAttribute("RespawnState") == "Spectating" then
 			player:SetAttribute("RespawnState", "Ready")
 		end

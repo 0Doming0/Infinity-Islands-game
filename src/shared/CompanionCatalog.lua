@@ -17,6 +17,11 @@ CompanionCatalog.EquipSlotCoinPrices = table.freeze({
 	[4] = 250000,
 })
 CompanionCatalog.MaxLevel = 50
+-- A escala visual e absoluta em relacao ao modelo original do monstro.
+-- Assim, um companheiro no Nv. 50 tem exatamente o dobro do tamanho do mob
+-- normal, independentemente de atributos antigos no template.
+CompanionCatalog.VisualScaleAtLevelOne = 1
+CompanionCatalog.VisualScaleAtMaxLevel = 2
 CompanionCatalog.MaxDisplayNameLength = 20
 CompanionCatalog.LevelDamageBonus = 0.04
 CompanionCatalog.TeleportDistance = 70
@@ -80,50 +85,69 @@ CompanionCatalog.Entries = table.freeze({
 	GreenSlime = table.freeze({
 		DisplayName = "Slime Verde",
 		ImageId = "",
+		LevelIconImageId = "rbxassetid://138682212313932",
 		Color = Color3.fromRGB(91, 219, 128),
 		CaptureChance = 0.06,
+		-- O primeiro companheiro de cada especie recebe uma protecao contra azar.
+		-- O verde e apresentado logo na primeira ilha de combate; os demais
+		-- continuam raros, mas nao ficam inacessiveis durante uma sessao normal.
+		FirstCapturePityTarget = 1,
 	}),
 	BlueSlime = table.freeze({
 		DisplayName = "Slime Azul",
 		ImageId = "",
+		LevelIconImageId = "rbxassetid://72572595647145",
 		Color = Color3.fromRGB(70, 170, 255),
 		CaptureChance = 0.04,
+		FirstCapturePityTarget = 4,
 	}),
 	RedSlime = table.freeze({
 		DisplayName = "Slime Vermelho",
 		ImageId = "",
+		LevelIconImageId = "rbxassetid://89414760577651",
 		Color = Color3.fromRGB(238, 78, 65),
 		CaptureChance = 0.03,
+		FirstCapturePityTarget = 5,
 	}),
 	FireSlime = table.freeze({
 		DisplayName = "Slime de Fogo",
 		ImageId = "",
+		LevelIconImageId = "rbxassetid://74097355107260",
 		Color = Color3.fromRGB(255, 119, 43),
 		CaptureChance = 0.025,
+		FirstCapturePityTarget = 6,
 	}),
 	IceSlime = table.freeze({
 		DisplayName = "Slime de Gelo",
 		ImageId = "",
+		LevelIconImageId = "rbxassetid://78285390878409",
 		Color = Color3.fromRGB(92, 238, 255),
 		CaptureChance = 0.025,
+		FirstCapturePityTarget = 6,
 	}),
 	LightningSlime = table.freeze({
 		DisplayName = "Slime do Raio",
 		ImageId = "",
+		LevelIconImageId = "rbxassetid://106472082094594",
 		Color = Color3.fromRGB(245, 245, 255),
 		CaptureChance = 0.02,
+		FirstCapturePityTarget = 8,
 	}),
 	GoldenSlime = table.freeze({
 		DisplayName = "Slime Dourado",
 		ImageId = "",
+		LevelIconImageId = "rbxassetid://122552935180866",
 		Color = Color3.fromRGB(255, 210, 65),
 		CaptureChance = 0.01,
+		FirstCapturePityTarget = 20,
 	}),
 	PrototypeSlime = table.freeze({
 		DisplayName = "Slime",
 		ImageId = "",
+		LevelIconImageId = "",
 		Color = Color3.fromRGB(111, 230, 159),
 		CaptureChance = 0.06,
+		FirstCapturePityTarget = 4,
 	}),
 })
 
@@ -142,6 +166,14 @@ function CompanionCatalog.GetCaptureChance(monsterId, isElite)
 		chance = math.min(0.10, chance * 2)
 	end
 	return chance
+end
+
+function CompanionCatalog.GetFirstCapturePityTarget(monsterId)
+	local entry = CompanionCatalog.Entries[monsterId]
+	return math.max(
+		0,
+		math.floor(tonumber(entry and entry.FirstCapturePityTarget) or 0)
+	)
 end
 
 function CompanionCatalog.GetEquipSlotCoinPrice(targetSlot)
@@ -182,6 +214,21 @@ function CompanionCatalog.GetXPRequired(level)
 			+ quadratic
 			+ 0.5
 	)
+end
+
+function CompanionCatalog.GetVisualScale(level)
+	local cleanLevel = math.clamp(
+		math.floor(tonumber(level) or 1),
+		1,
+		CompanionCatalog.MaxLevel
+	)
+	local minimumScale = CompanionCatalog.VisualScaleAtLevelOne
+	local maximumScale = CompanionCatalog.VisualScaleAtMaxLevel
+	if CompanionCatalog.MaxLevel <= 1 then
+		return maximumScale
+	end
+	local progress = (cleanLevel - 1) / (CompanionCatalog.MaxLevel - 1)
+	return minimumScale + (maximumScale - minimumScale) * progress
 end
 
 function CompanionCatalog.SpentPoints(upgrades)

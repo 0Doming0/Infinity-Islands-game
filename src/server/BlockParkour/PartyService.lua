@@ -46,6 +46,49 @@ local function memberCount(party)
 	return count
 end
 
+local function cleanIslandIndex(value)
+	return math.max(1, math.floor(tonumber(value) or 1))
+end
+
+local function updateCoopTarget(party)
+	if not party then
+		return
+	end
+	local members = memberArray(party)
+	if #members == 0 then
+		party.CoopTargetIslandIndex = nil
+		return
+	end
+	if party.CoopMode == "Visit" then
+		local targetPlayer = party.CoopTargetPlayer
+		if not targetPlayer or party.Members[targetPlayer] ~= true then
+			targetPlayer = party.Leader or members[1]
+			party.CoopTargetPlayer = targetPlayer
+		end
+		party.CoopTargetIslandIndex = cleanIslandIndex(targetPlayer:GetAttribute("SavedResumeIslandIndex"))
+		return
+	end
+	party.CoopMode = "Progression"
+	party.CoopTargetPlayer = nil
+	local lowest
+	for _, member in ipairs(members) do
+		local resume = cleanIslandIndex(member:GetAttribute("SavedResumeIslandIndex"))
+		lowest = lowest and math.min(lowest, resume) or resume
+	end
+	party.CoopTargetIslandIndex = lowest or 2
+end
+
+local function isProgressionEligible(player, party)
+	if not party or not party.CoopTargetIslandIndex then
+		return false
+	end
+	local resume = cleanIslandIndex(player:GetAttribute("SavedResumeIslandIndex"))
+	if party.CoopMode == "Visit" then
+		return player == party.CoopTargetPlayer and resume == party.CoopTargetIslandIndex
+	end
+	return resume == party.CoopTargetIslandIndex
+end
+
 local function missionComplete(party)
 	return party.MobDefeated >= (tonumber(MISSION.MobDefeatedGoal) or 5)
 		and party.IslandVisited >= (tonumber(MISSION.IslandVisitedGoal) or 3)
@@ -62,8 +105,15 @@ local function setPlayerAttributes(player, party)
 		player:SetAttribute("PartyMissionMobDefeated", 0)
 		player:SetAttribute("PartyMissionIslandVisited", 0)
 		player:SetAttribute("PartyMissionComplete", false)
+		player:SetAttribute("PartyCoopMode", nil)
+		player:SetAttribute("PartyCoopTargetIsland", nil)
+		player:SetAttribute("PartyCoopProgressEligible", nil)
+		player:SetAttribute("PartyCoopIsVisitor", nil)
+		player:SetAttribute("PartyCoopXPModifier", nil)
+		player:SetAttribute("PartyCoopTravelSerial", nil)
 		return
 	end
+	updateCoopTarget(party)
 	player:SetAttribute("PartyId", party.Id)
 	player:SetAttribute("PartyLeaderUserId", party.Leader and party.Leader.UserId or 0)
 	player:SetAttribute("PartyMemberCount", memberCount(party))
@@ -73,6 +123,13 @@ local function setPlayerAttributes(player, party)
 	player:SetAttribute("PartyMissionMobDefeated", party.MobDefeated)
 	player:SetAttribute("PartyMissionIslandVisited", party.IslandVisited)
 	player:SetAttribute("PartyMissionComplete", party.Completed)
+	player:SetAttribute("PartyCoopMode", party.CoopMode)
+	player:SetAttribute("PartyCoopTargetIsland", party.CoopTargetIslandIndex)
+	player:SetAttribute("PartyCoopProgressEligible", isProgressionEligible(player, party))
+	local visitor = party.CoopMode == "Visit" and player ~= party.CoopTargetPlayer
+	player:SetAttribute("PartyCoopIsVisitor", visitor or nil)
+	player:SetAttribute("PartyCoopXPModifier", visitor and (tonumber(CONFIG.VisitorXPModifier) or 0.35) or 1)
+	player:SetAttribute("PartyCoopTravelSerial", party.CoopTravelSerial or 0)
 end
 
 local function findPlayer(userId)
@@ -113,6 +170,7 @@ local function serializeState(player)
 				Name = member.Name,
 				DisplayName = member.DisplayName,
 				IsLeader = member == party.Leader,
+				ResumeIslandIndex = cleanIslandIndex(member:GetAttribute("SavedResumeIslandIndex")),
 			})
 		end
 	end
@@ -143,6 +201,12 @@ local function serializeState(player)
 				IslandVisitedGoal = tonumber(MISSION.IslandVisitedGoal) or 3,
 				Completed = party.Completed,
 			},
+			Coop = {
+				Mode = party.CoopMode,
+				TargetIslandIndex = party.CoopTargetIslandIndex,
+				TargetPlayerUserId = party.CoopTargetPlayer and party.CoopTargetPlayer.UserId or 0,
+				TravelSerial = party.CoopTravelSerial or 0,
+			},
 		} or nil,
 		Invites = serializeInvites(player),
 		AvailablePlayers = available,
@@ -162,6 +226,7 @@ local function publishToPlayer(player, action, message)
 end
 
 local function publishParty(party, action, message)
+	updateCoopTarget(party)
 	for _, member in ipairs(memberArray(party)) do
 		setPlayerAttributes(member, party)
 		publishToPlayer(member, action, message)
@@ -185,6 +250,10 @@ local function createParty(leader)
 		IslandVisited = 0,
 		VisitedIslandKeys = {},
 		Completed = false,
+		CoopMode = "Progression",
+		CoopTargetIslandIndex = cleanIslandIndex(leader:GetAttribute("SavedResumeIslandIndex")),
+		CoopTargetPlayer = nil,
+		CoopTravelSerial = 0,
 	}
 	parties[party.Id] = party
 	partyByPlayer[leader] = party
@@ -313,6 +382,40 @@ local function handleRequest(player, action, payload)
 		end
 		removeMember(target, "Voce foi removido do grupo.")
 		return true, "Membro removido.", serializeState(player)
+	elseif action == "SetCoopMode" then
+		local party = partyByPlayer[player]
+		if not party or party.Leader ~= player then
+			return false, "Somente o lider escolhe a rota cooperativa.", serializeState(player)
+		end
+		local mode = tostring(payload.Mode or "")
+		if mode == "Progression" then
+			party.CoopMode = "Progression"
+			party.CoopTargetPlayer = nil
+		elseif mode == "Visit" then
+			local target = findPlayer(payload.TargetUserId)
+			if not target or party.Members[target] ~= true then
+				return false, "Escolha um membro do grupo para visitar.", serializeState(player)
+			end
+			party.CoopMode = "Visit"
+			party.CoopTargetPlayer = target
+		else
+			return false, "Modo cooperativo invalido.", serializeState(player)
+		end
+		updateCoopTarget(party)
+		publishParty(party, "CoopRouteChanged", "Rota do grupo atualizada.")
+		return true, nil, serializeState(player)
+	elseif action == "StartCoopTravel" then
+		local party = partyByPlayer[player]
+		if not party or party.Leader ~= player then
+			return false, "Somente o lider pode iniciar o deslocamento do grupo.", serializeState(player)
+		end
+		if party.Locked then
+			return false, "O grupo esta bloqueado.", serializeState(player)
+		end
+		updateCoopTarget(party)
+		party.CoopTravelSerial = (party.CoopTravelSerial or 0) + 1
+		publishParty(party, "CoopTravel", "Grupo viajando para a ilha selecionada.")
+		return true, nil, serializeState(player)
 	end
 	return false, "Acao invalida.", serializeState(player)
 end
@@ -324,6 +427,22 @@ end
 function PartyService.GetPartyMembers(player)
 	local party = partyByPlayer[player]
 	return party and memberArray(party) or {}
+end
+
+function PartyService.GetCoopState(player)
+	local party = partyByPlayer[player]
+	if not party then
+		return nil
+	end
+	updateCoopTarget(party)
+	return {
+		Mode = party.CoopMode,
+		TargetIslandIndex = party.CoopTargetIslandIndex,
+		TargetPlayerUserId = party.CoopTargetPlayer and party.CoopTargetPlayer.UserId or 0,
+		ProgressionEligible = isProgressionEligible(player, party),
+		IsVisitor = party.CoopMode == "Visit" and player ~= party.CoopTargetPlayer,
+		TravelSerial = party.CoopTravelSerial or 0,
+	}
 end
 
 function PartyService.RestoreDungeonParty(players, leaderUserId, phaseId, sessionId)
@@ -473,6 +592,12 @@ function PartyService.Start()
 	local function setupPlayer(player)
 		setPlayerAttributes(player, nil)
 		player:SetAttribute("TeleportingToDungeon", false)
+		player:GetAttributeChangedSignal("SavedResumeIslandIndex"):Connect(function()
+			local party = partyByPlayer[player]
+			if party then
+				publishParty(party, "CoopProgressUpdated")
+			end
+		end)
 	end
 	Players.PlayerAdded:Connect(setupPlayer)
 	Players.PlayerRemoving:Connect(function(player)

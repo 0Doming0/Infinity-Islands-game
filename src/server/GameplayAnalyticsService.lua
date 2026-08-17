@@ -274,6 +274,9 @@ local function drainOnboarding(player, state)
 end
 
 function GameplayAnalytics.RecordOnboardingStep(player, stepName, fields)
+	if CONFIG.EnableLegacyOnboardingFunnel ~= true then
+		return false
+	end
 	local state = stateFor(player) or initializePlayer(player)
 	if not state or not STEP_INDEX[stepName] or state.FirstSent[stepName] then
 		return false
@@ -790,6 +793,9 @@ local function findTaggedAncestor(instance, tagName)
 end
 
 local function observeFirstDiscoveries(player)
+	if CONFIG.EnableLegacyOnboardingFunnel ~= true then
+		return
+	end
 	local state = stateFor(player)
 	local character = player.Character
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")

@@ -72,24 +72,21 @@ if not banner or not banner:IsA("Frame") then
 	banner = Instance.new("Frame")
 	banner.AnchorPoint = Vector2.new(0.5, 0)
 	banner.Position = UDim2.fromScale(0.5, 0.075)
-	banner.Size = UDim2.fromOffset(510, 84)
-	banner.BackgroundColor3 = Color3.fromRGB(18, 25, 43)
-	banner.BackgroundTransparency = 0.12
+	banner.Size = UDim2.fromOffset(560, 84)
 	banner.BorderSizePixel = 0
 	banner.ZIndex = 5
 	banner.Parent = gui
-
-	local bannerCorner = Instance.new("UICorner")
-	bannerCorner.CornerRadius = UDim.new(0, 14)
-	bannerCorner.Parent = banner
-
-	local bannerStroke = Instance.new("UIStroke")
-	bannerStroke.Color = Color3.fromRGB(242, 201, 92)
-	bannerStroke.Thickness = 2
-	bannerStroke.Transparency = 0.12
-	bannerStroke.Parent = banner
 end
 banner.Name = "WarningPanel"
+-- A mensagem precisa destacar o transporte sem criar uma caixa escura na tela.
+-- Forcamos isto tambem em um WarningPanel criado no Studio.
+banner.BackgroundTransparency = 1
+banner.BorderSizePixel = 0
+for _, child in ipairs(banner:GetChildren()) do
+	if child:IsA("UIStroke") or child:IsA("UICorner") then
+		child:Destroy()
+	end
+end
 
 local title = banner:FindFirstChild("Title")
 if not title or not title:IsA("TextLabel") then
@@ -106,6 +103,8 @@ if not title or not title:IsA("TextLabel") then
 end
 title.Text = "AVANÇO PARA A PRÓXIMA ILHA"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
+title.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+title.TextStrokeTransparency = 0.08
 
 local description = banner:FindFirstChild("Description")
 if not description or not description:IsA("TextLabel") then
@@ -122,6 +121,8 @@ if not description or not description:IsA("TextLabel") then
 end
 description.Text = "TRANSPORTE EM 8"
 description.TextColor3 = Color3.fromRGB(255, 255, 255)
+description.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+description.TextStrokeTransparency = 0.14
 
 local landingCount = gui:FindFirstChild("LandingCountdown")
 if not landingCount or not landingCount:IsA("TextLabel") then

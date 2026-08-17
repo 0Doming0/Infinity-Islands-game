@@ -18,7 +18,10 @@ local ORBIT_RADIUS = 2.4
 local ORBIT_SPEED = 1.6
 local TARGET_SCAN_INTERVAL = 0.08
 local lastAttackAt = {}
-local freezeShatterTokens = {}
+-- Usa a propria Instance como chave (tabela fraca), pois GetDebugId so pode
+-- ser chamado por Plugins e falha durante uma partida normal.
+local freezeShatterTokens = setmetatable({}, { __mode = "k" })
+local burnSpreadSerial = 0
 local slowFieldSerials = {}
 local scanAccumulator = 0
 
@@ -185,6 +188,28 @@ local function clearTimedStatus(model, attributeName, expectedUntil)
 	end)
 end
 
+local function isCompanionModel(model)
+	return model
+		and model:IsA("Model")
+		and (
+			model:GetAttribute("IsCompanion") == true
+			or model:GetAttribute("CompanionOwnerUserId") ~= nil
+			or model:GetAttribute("CompanionInstanceId") ~= nil
+		)
+end
+
+local function isOrbAttackTarget(player, character, model)
+	return model
+		and model:IsA("Model")
+		and model.Parent ~= nil
+		and model ~= character
+		and isCompanionModel(model) == false
+		and model:GetAttribute("Invulnerable") ~= true
+		and CollectionService:HasTag(model, "CombatTarget")
+		and Players:GetPlayerFromCharacter(model) == nil
+		and not DamageService.IsFriendly(player, model, CombatConfig.FriendlyFire)
+end
+
 local function applyBurn(player, target, humanoid, root, orb)
 	if not target or not target.Parent or not humanoid or humanoid.Health <= 0 then
 		return
@@ -241,11 +266,13 @@ local function applyFireSpread(player, character, target, humanoid, root, orb)
 	local spreadRadius = math.max(4, tonumber(orb.AOERadius) or 4)
 	for _, victim in ipairs(findNearbyTargets(player, character, root.Position, spreadRadius, target)) do
 		if not victim.Model:GetAttribute("OrbBurnSpreadFrom") then
-			victim.Model:SetAttribute("OrbBurnSpreadFrom", target:GetDebugId())
+			burnSpreadSerial += 1
+			local spreadToken = burnSpreadSerial
+			victim.Model:SetAttribute("OrbBurnSpreadFrom", spreadToken)
 			applyBurn(player, victim.Model, victim.Humanoid, victim.Root, orb)
 			attackConfirmed:FireAllClients(player, "FireBurnSpread", root.Position + Vector3.new(0, 1, 0), victim.Root.Position + Vector3.new(0, 1, 0))
 			task.delay(math.max(0.2, tonumber(orb.StatusDuration) or 3), function()
-				if victim.Model.Parent and victim.Model:GetAttribute("OrbBurnSpreadFrom") == target:GetDebugId() then
+				if victim.Model.Parent and victim.Model:GetAttribute("OrbBurnSpreadFrom") == spreadToken then
 					victim.Model:SetAttribute("OrbBurnSpreadFrom", nil)
 				end
 			end)
@@ -263,11 +290,15 @@ local function applyFreeze(player, target, orb)
 	target:SetAttribute("CombatInterruptSerial", (tonumber(target:GetAttribute("CombatInterruptSerial")) or 0) + 1)
 	clearTimedStatus(target, "OrbFrozenUntil", expiresAt)
 	if tonumber(orb.ShatterDamage) and orb.ShatterDamage > 0 and expiresAt > previousUntil then
-		local tokenKey = target:GetDebugId() .. ":" .. player.UserId
-		local token = (freezeShatterTokens[tokenKey] or 0) + 1
-		freezeShatterTokens[tokenKey] = token
+		local targetTokens = freezeShatterTokens[target]
+		if not targetTokens then
+			targetTokens = {}
+			freezeShatterTokens[target] = targetTokens
+		end
+		local token = (targetTokens[player.UserId] or 0) + 1
+		targetTokens[player.UserId] = token
 		task.delay(math.max(0, expiresAt - serverTime()) + 0.03, function()
-			if freezeShatterTokens[tokenKey] ~= token or not target.Parent then return end
+			if freezeShatterTokens[target] ~= targetTokens or targetTokens[player.UserId] ~= token or not target.Parent then return end
 			if serverTime() < (tonumber(target:GetAttribute("OrbFrozenUntil")) or 0) - 0.01 then return end
 			local humanoid = target:FindFirstChildOfClass("Humanoid")
 			local root = target:FindFirstChild("HumanoidRootPart") or target.PrimaryPart or target:FindFirstChildWhichIsA("BasePart")
@@ -276,7 +307,10 @@ local function applyFreeze(player, target, orb)
 				target:SetAttribute("OrbShatterSerial", (tonumber(target:GetAttribute("OrbShatterSerial")) or 0) + 1)
 				attackConfirmed:FireAllClients(player, "IceShatter", root.Position + Vector3.new(0, 1, 0), target)
 			end
-			freezeShatterTokens[tokenKey] = nil
+			targetTokens[player.UserId] = nil
+			if next(targetTokens) == nil then
+				freezeShatterTokens[target] = nil
+			end
 		end)
 	end
 end
@@ -350,11 +384,16 @@ findNearbyTargets = function(player, character, center, radius, excluded)
 	local seen = {}
 	for _, descendant in ipairs(workspace:GetDescendants()) do
 		local model = descendant:IsA("Model") and descendant or descendant:FindFirstAncestorOfClass("Model")
-		if model and not seen[model] and model ~= character and model ~= excluded and model.Parent then
+		if model and not seen[model] and model ~= excluded and model.Parent then
 			seen[model] = true
 			local humanoid = model:FindFirstChildOfClass("Humanoid")
 			local root = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")
-			if humanoid and humanoid.Health > 0 and root and (root.Position - center).Magnitude <= radius and not Players:GetPlayerFromCharacter(model) and not DamageService.IsFriendly(player, model, CombatConfig.FriendlyFire) then
+			if humanoid
+				and humanoid.Health > 0
+				and root
+				and (root.Position - center).Magnitude <= radius
+				and isOrbAttackTarget(player, character, model)
+			then
 				table.insert(results, { Model = model, Humanoid = humanoid, Root = root })
 			end
 		end

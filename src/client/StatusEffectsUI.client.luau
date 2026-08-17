@@ -124,7 +124,7 @@ local EFFECTS = {
 		Icon = "◐",
 		Color = Color3.fromRGB(188, 142, 255),
 		UntilAttribute = "CapeActiveUntil",
-		ActiveAttribute = "InvisibleToEnemies",
+		ActiveAttribute = "CapeInvisibleToEnemies",
 	},
 	{
 		Id = "Treasure",

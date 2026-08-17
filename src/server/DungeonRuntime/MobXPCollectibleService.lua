@@ -472,6 +472,55 @@ local function cloneVisual(templateId)
 	return visual, color
 end
 
+-- ServerStorage templates only reach a client when the first XP drop is
+-- created. Publish one inert copy of every collectible before combat so the
+-- client can load its meshes, bones and effects without a death-frame hitch.
+local function prewarmVisualTemplates()
+	local folderName = CollectibleConfig.PrewarmFolderName
+	local prewarmFolder = ReplicatedStorage:FindFirstChild(folderName)
+
+	if prewarmFolder and not prewarmFolder:IsA("Folder") then
+		warn("[MobXPCollectibleService] Prewarm ignorado: ReplicatedStorage/" .. folderName .. " nao e uma Folder.")
+		return
+	end
+
+	if not prewarmFolder then
+		prewarmFolder = Instance.new("Folder")
+		prewarmFolder.Name = folderName
+		prewarmFolder.Parent = ReplicatedStorage
+	end
+
+	for _, child in ipairs(prewarmFolder:GetChildren()) do
+		child:Destroy()
+	end
+
+	prewarmFolder:SetAttribute("Ready", false)
+	prewarmFolder:SetAttribute("TemplateCount", #CollectibleConfig.TemplateIds)
+
+	task.spawn(function()
+		local prepared = 0
+		for _, templateId in ipairs(CollectibleConfig.TemplateIds) do
+			local created, visualOrError = pcall(cloneVisual, templateId)
+			if created and visualOrError then
+				local visual = visualOrError
+				visual.Name = templateId
+				visual:SetAttribute("IsXPCollectiblePrewarm", true)
+				visual.Parent = prewarmFolder
+				prepared += 1
+			else
+				warn("[MobXPCollectibleService] Falha no prewarm de " .. templateId .. ": " .. tostring(visualOrError))
+			end
+
+			task.wait(math.max(0, tonumber(CollectibleConfig.PrewarmTemplateDelaySeconds) or 0))
+		end
+
+		prewarmFolder:SetAttribute("PreparedCount", prepared)
+		prewarmFolder:SetAttribute("Ready", true)
+		workspace:SetAttribute("DungeonXPCollectiblePrewarmReady", true)
+		workspace:SetAttribute("DungeonXPCollectiblePrewarmPrepared", prepared)
+	end)
+end
+
 local function addTrail(root, color)
 	local attachment0 =
 		Instance.new("Attachment")
@@ -1864,6 +1913,7 @@ function Service.Start()
 
 	installAwardInterceptor()
 	runtimeFolder()
+	prewarmVisualTemplates()
 
 	CollectionService
 		:GetInstanceAddedSignal(

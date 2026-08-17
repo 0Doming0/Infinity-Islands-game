@@ -44,6 +44,11 @@ local activeByIsland =
 local lifetimeByIsland =
 	setmetatable({}, { __mode = "k" })
 
+-- A janela de mundo pode descarregar e recriar o mesmo Model. Guardar o
+-- limite também pelo índice impede que um raro já aberto reapareça ao voltar
+-- para a ilha durante a mesma sessão do servidor.
+local lifetimeByIslandIndex = {}
+
 local openedSerial = 0
 local spawnedSerial = 0
 
@@ -188,11 +193,14 @@ local function activeCountForIsland(island)
 end
 
 local function lifetimeCountForIsland(island)
+	local index = islandIndex(island)
+
 	return math.max(
 		0,
 		math.floor(
 			tonumber(
-				lifetimeByIsland[island]
+				index and lifetimeByIslandIndex[index]
+					or lifetimeByIsland[island]
 			)
 				or tonumber(
 					island:GetAttribute(
@@ -793,6 +801,10 @@ local function openChest(
 	then
 		return
 	end
+	if player:GetAttribute("PartyId") ~= nil and player:GetAttribute("PartyCoopProgressEligible") ~= true then
+		player:SetAttribute("LastPartyCoopRewardDenied", "RareChestRequiresOwnProgression")
+		return
+	end
 
 	if not validOpener(
 		player,
@@ -994,6 +1006,29 @@ local function spawnChestOnIsland(island)
 	prompt.KeyboardKeyCode =
 		Enum.KeyCode.E
 
+	prompt.GamepadKeyCode =
+		Enum.KeyCode.ButtonX
+
+	-- O ChestPromptController desenha o indicador pequeno sobre o baú. Sem isso,
+	-- este segundo sistema de baús raros continua mostrando o painel padrão.
+	prompt.Style =
+		Enum.ProximityPromptStyle.Custom
+
+	prompt:SetAttribute(
+		"UseSubtleChestPrompt",
+		true
+	)
+
+	prompt:SetAttribute(
+		"ChestPromptLabel",
+		Config.PromptObjectText
+	)
+
+	prompt:SetAttribute(
+		"ChestPromptRare",
+		true
+	)
+
 	prompt.Parent = root
 
 	AnimeOutline.Apply(
@@ -1058,6 +1093,9 @@ local function spawnChestOnIsland(island)
 	lifetime += 1
 	lifetimeByIsland[island] =
 		lifetime
+	if index then
+		lifetimeByIslandIndex[index] = lifetime
+	end
 
 	spawnedSerial += 1
 
@@ -1214,9 +1252,22 @@ local function reconcile()
 	local islands =
 		collectMaterializedIslands()
 
+	local eligibleIslands = {}
+
+	for _, island in ipairs(islands) do
+		if Config.IsIslandEligible(
+			islandIndex(island)
+		) then
+			table.insert(
+				eligibleIslands,
+				island
+			)
+		end
+	end
+
 	local desired =
 		Config.GetDesiredActiveChestCount(
-			#islands
+			#eligibleIslands
 		)
 
 	local active =
@@ -1236,7 +1287,7 @@ local function reconcile()
 
 		local island =
 			chooseEligibleIsland(
-				islands
+				eligibleIslands
 			)
 
 		if not island then
@@ -1265,6 +1316,10 @@ local function reconcile()
 	workspace:SetAttribute(
 		"DungeonRareChestMaterializedIslandCount",
 		#islands
+	)
+	workspace:SetAttribute(
+		"DungeonRareChestEligibleIslandCount",
+		#eligibleIslands
 	)
 
 	workspace:SetAttribute(

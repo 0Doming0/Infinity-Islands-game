@@ -4,11 +4,9 @@ local Players = game:GetService("Players")
 
 local ScoreService = require(script.Parent.BlockParkour:WaitForChild("ScoreService_SkyDungeon_V10"))
 local RunLevelService = require(script.Parent.BlockParkour:WaitForChild("RunLevelService"))
-local DeathReviveService = require(script.Parent.MVPSystems:WaitForChild("DeathReviveService"))
 local DownedService = require(script.Parent.MVPSystems:WaitForChild("DownedService"))
 local GameplayAnalytics = require(script.Parent:WaitForChild("GameplayAnalyticsService"))
 ScoreService.Start()
-DeathReviveService.Start()
 DownedService.Start()
 
 local function removeHealthRegeneration(instance)
@@ -60,8 +58,11 @@ local function bindCharacter(player, character)
 		processed = true
 		local cause = detectDeathCause(character)
 		GameplayAnalytics.RecordDeath(player, character, cause)
-		local runScore, lostCoins = ScoreService.HandleDeath(player, cause)
-		DeathReviveService.RecordDeath(player, runScore, lostCoins, cause)
+		ScoreService.HandleDeath(player, cause)
+		-- DeathReviveService pertencia ao fluxo antigo de renascimento. O dungeon
+		-- atual gerencia queda, espectador e retorno por DownedService e
+		-- DungeonPartyLifeService; manter a espera por esse modulo removido
+		-- bloqueava o PlayerRules inteiro na inicializacao.
 		RunLevelService.Reset(player, nil)
 	end)
 end

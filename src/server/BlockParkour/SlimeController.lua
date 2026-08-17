@@ -54,8 +54,9 @@ local function getLivingCharacter(player)
 		not player
 		or player.Parent ~= Players
 		or player:GetAttribute("IsDowned") == true
-		or player:GetAttribute("InvisibleToEnemies") == true
-		or (tonumber(player:GetAttribute("DungeonEntryProtectionUntil")) or 0) > serverTime()
+		or player:GetAttribute("DungeonEliminated") == true
+		or player:GetAttribute("DungeonSpectating") == true
+		or player:GetAttribute("CapeInvisibleToEnemies") == true
 	then
 		return nil
 	end

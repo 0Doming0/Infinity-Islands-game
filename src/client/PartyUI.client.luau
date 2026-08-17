@@ -410,10 +410,35 @@ render = function()
 		for _, member in ipairs(party.Members or {}) do
 			local suffix = member.IsLeader and "  ★ LIDER" or ""
 			local canKick = isLeader and member.UserId ~= player.UserId
-			row(member.DisplayName .. suffix, canKick and "REMOVER" or nil, function()
+			local nextIsland = math.max(1, (tonumber(member.ResumeIslandIndex) or 2) - 1)
+			row(member.DisplayName .. suffix .. "  • Próxima: Ilha " .. tostring(nextIsland), canKick and "REMOVER" or nil, function()
 				invoke("Kick", { UserId = member.UserId })
 				render()
 			end, true)
+		end
+		local coop = party.Coop or {}
+		local targetIsland = math.max(1, (tonumber(coop.TargetIslandIndex) or 2) - 1)
+		section("ROTA COOPERATIVA", COLORS.Accent)
+		row(
+			(coop.Mode == "Visit" and "VISITA" or "PROGRESSÃO")
+				.. "  •  Destino: Ilha " .. tostring(targetIsland),
+			isLeader and "IR JUNTOS" or nil,
+			function()
+				invoke("StartCoopTravel")
+				render()
+			end
+		)
+		if isLeader then
+			row("Jogar a rota do integrante mais atrás", "USAR", function()
+				invoke("SetCoopMode", { Mode = "Progression" })
+				render()
+			end)
+			for _, member in ipairs(party.Members or {}) do
+				row("Visitar a rota de " .. member.DisplayName, "VISITAR", function()
+					invoke("SetCoopMode", { Mode = "Visit", TargetUserId = member.UserId })
+					render()
+				end)
+			end
 		end
 		if isLeader and #(party.Members or {}) < (state.MaxMembers or 4) then
 			section("CONVIDAR JOGADORES")

@@ -279,15 +279,19 @@ local function publish()
 	)
 	workspace:SetAttribute(
 		"DungeonObjectiveTitle",
-		cleared
-			and "ILHA CONCLUIDA"
-			or CombatRouteProgressionConfig.ObjectiveTitle
+		routeComplete
+			and "ROTA CONCLUÍDA"
+			or cleared
+				and "ILHA CONCLUÍDA"
+				or CombatRouteProgressionConfig.ObjectiveTitle
 	)
 	workspace:SetAttribute(
 		"DungeonObjectiveDescription",
-		cleared
-			and "Continue ou arrisque uma ilha mais forte."
-			or CombatRouteProgressionConfig.ObjectiveDescription
+		routeComplete
+			and "CONTINUE LUTANDO PARA EVOLUIR"
+			or cleared
+				and "PRÓXIMA ILHA LIBERADA"
+				or CombatRouteProgressionConfig.ObjectiveDescription
 	)
 
 	workspace:SetAttribute(

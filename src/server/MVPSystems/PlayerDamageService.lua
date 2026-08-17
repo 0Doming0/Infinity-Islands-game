@@ -598,6 +598,19 @@ function PlayerDamageService.IsProtected(
 			"AssistedIslandTransport"
 	end
 
+	if player:GetAttribute(
+		"DungeonUpgradeProtectionActive"
+	) == true
+	then
+		return true,
+			"UpgradeChoice:"
+				.. tostring(
+					player:GetAttribute(
+						"DungeonUpgradeProtectionReason"
+					) or "Upgrade"
+				)
+	end
+
 	if (
 		tonumber(
 			player:GetAttribute(

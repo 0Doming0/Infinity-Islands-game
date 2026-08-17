@@ -33,9 +33,16 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 
 local PlayerLevelConfig = require(
 	ReplicatedStorage.Shared.Configs.PlayerLevelConfig
+)
+local PlayerDataService = require(
+	script.Parent.Parent.BlockParkour:WaitForChild("PlayerDataService_SkyDungeon_V10")
+)
+local UpgradeChoiceProtectionService = require(
+	ServerScriptService.MVPSystems:WaitForChild("UpgradeChoiceProtectionService")
 )
 
 local PlayerLevelService = {}
@@ -209,7 +216,7 @@ local function enforceDamageMultiplier(player)
 
 	player:SetAttribute(
 		"RunDamageDealtMultiplierSource",
-		"PlayerLevelV1"
+		PlayerLevelConfig.Version
 	)
 
 	player:SetAttribute(
@@ -494,6 +501,14 @@ local function applyPower(
 end
 
 local function initializePlayerState(player)
+	PlayerDataService.Load(player)
+	local saved = PlayerDataService.GetLevelProgress(player)
+	if saved then
+		player:SetAttribute("PlayerLevel", cleanLevel(saved.Level))
+		player:SetAttribute("PlayerXP", cleanXP(saved.XP))
+		player:SetAttribute("PlayerTotalXP", cleanXP(saved.TotalXP))
+		player:SetAttribute("PlayerLevelUpCount", math.max(0, cleanLevel(saved.Level) - 1))
+	else
 	local sameVersion =
 		player:GetAttribute(
 			"PlayerLevelVersion"
@@ -516,6 +531,7 @@ local function initializePlayerState(player)
 			"PlayerLevelUpCount",
 			0
 		)
+	end
 	end
 
 	publishPlayer(player)
@@ -788,6 +804,19 @@ function PlayerLevelService.AwardXP(
 		return false, "InvalidXPAmount"
 	end
 
+	-- Quem visita a rota de um amigo pode ajudar e continuar evoluindo, mas nao
+	-- recebe a economia completa de uma ilha muito acima do proprio checkpoint.
+	local reasonText = tostring(reason or "")
+	if string.sub(reasonText, 1, #"MobDefeated:") == "MobDefeated:"
+		or string.sub(reasonText, 1, #"XPCollectible:") == "XPCollectible:"
+	then
+		local modifier = math.clamp(tonumber(player:GetAttribute("PartyCoopXPModifier")) or 1, 0.05, 1)
+		if modifier < 1 then
+			amount = math.max(1, math.floor(amount * modifier + 0.5))
+			player:SetAttribute("LastPartyCoopXPModifier", modifier)
+		end
+	end
+
 	local oldLevel =
 		currentLevel(player)
 
@@ -865,6 +894,7 @@ function PlayerLevelService.AwardXP(
 		"PlayerTotalXP",
 		totalXP
 	)
+	PlayerDataService.SetLevelProgress(player, level, xp, totalXP)
 
 	xpGrantSerial += 1
 
@@ -913,6 +943,13 @@ function PlayerLevelService.AwardXP(
 		player:SetAttribute(
 			"PlayerLevelUpSerial",
 			levelUpSerial
+		)
+		-- A apresentacao de level up dura cerca de 2.4 s no cliente. O pequeno
+		-- excedente cobre latencia sem transformar a animacao em invencibilidade.
+		UpgradeChoiceProtectionService.BeginTimed(
+			player,
+			"LevelUpPresentation",
+			3
 		)
 	end
 
@@ -1010,6 +1047,12 @@ function PlayerLevelService.SetLevelForTesting(
 	player:SetAttribute(
 		"PlayerXP",
 		0
+	)
+	PlayerDataService.SetLevelProgress(
+		player,
+		level,
+		0,
+		cleanXP(player:GetAttribute("PlayerTotalXP"))
 	)
 
 	applyPower(

@@ -1056,11 +1056,17 @@ local function awardManagedMobXP(
 			)
 
 		if success then
+			local companionXP = math.max(
+				1,
+				math.floor(
+					amount * math.clamp(tonumber(player:GetAttribute("PartyCoopXPModifier")) or 1, 0.05, 1) + 0.5
+				)
+			)
 			local companionOk, companionError = pcall(
 				CompanionService.RecordDefeat,
 				player,
 				model,
-				amount
+				companionXP
 			)
 			if not companionOk then
 				warn("[MonsterSpawner] Falha ao processar companheiro: " .. tostring(companionError))
@@ -1252,6 +1258,27 @@ local function publishPlanConcurrency(plan)
 		"MobSpawnConcurrencyVersion",
 		IslandMobSpawnConfig.Version
 	)
+end
+
+-- Publica a composicao restante do objetivo. O cliente usa somente esses
+-- atributos para escrever uma lista clara, sem precisar contar mobs locais.
+local function publishObjectiveVariantProgress(plan)
+	if not plan or not plan.Island or not plan.Island.Parent then
+		return
+	end
+	local order = plan.ObjectiveVariantOrder or {}
+	plan.Island:SetAttribute("MobObjectiveVariantOrder", table.concat(order, ","))
+	plan.Island:SetAttribute("MobObjectiveVariantProgressVersion", "V2")
+	for _, variant in ipairs(order) do
+		plan.Island:SetAttribute(
+			"MobObjectiveRemaining_" .. variant,
+			math.max(0, math.floor(tonumber(plan.ObjectiveVariantRemaining and plan.ObjectiveVariantRemaining[variant]) or 0))
+		)
+		plan.Island:SetAttribute(
+			"MobObjectiveInitial_" .. variant,
+			math.max(0, math.floor(tonumber(plan.ObjectiveVariantInitial and plan.ObjectiveVariantInitial[variant]) or 0))
+		)
+	end
 end
 
 local function unregisterMonster(model)
@@ -2278,6 +2305,17 @@ local function spawnClone(
 			damager
 		)
 
+		local plan = plansByIndex[current.GlobalIslandIndex]
+		if plan and (plan.ObjectiveDefeatedCount or 0) < (plan.TargetCount or 0) then
+			plan.ObjectiveDefeatedCount = (plan.ObjectiveDefeatedCount or 0) + 1
+			local variant = tostring(clone:GetAttribute("SlimeVariant") or "Green")
+			local remaining = plan.ObjectiveVariantRemaining
+			if remaining and (remaining[variant] or 0) > 0 then
+				remaining[variant] -= 1
+			end
+			publishObjectiveVariantProgress(plan)
+		end
+
 		unregisterMonster(clone)
 
 		for _, descendant in ipairs(
@@ -2974,6 +3012,17 @@ local function buildPlan(
 			)
 	end
 
+	local objectiveVariantOrder = {}
+	local objectiveVariantRemaining = {}
+	for _, variant in ipairs(rosterSnapshot.Roster or {}) do
+		variant = tostring(variant or "Green")
+		if objectiveVariantRemaining[variant] == nil then
+			table.insert(objectiveVariantOrder, variant)
+			objectiveVariantRemaining[variant] = 0
+		end
+		objectiveVariantRemaining[variant] += 1
+	end
+
 	local plan = {
 		Island = island,
 		GlobalIslandIndex =
@@ -3009,6 +3058,10 @@ local function buildPlan(
 		Cells = cells,
 		Roster = rosterSnapshot.Roster,
 		RosterSnapshot = rosterSnapshot,
+		ObjectiveVariantOrder = objectiveVariantOrder,
+		ObjectiveVariantRemaining = objectiveVariantRemaining,
+		ObjectiveVariantInitial = table.clone(objectiveVariantRemaining),
+		ObjectiveDefeatedCount = 0,
 		-- TargetCount is the route kill quota, not a lifetime spawn cap.
 		TargetCount = target,
 		KillQuota = target,
@@ -3249,6 +3302,7 @@ local function buildPlan(
 			","
 		)
 	)
+	publishObjectiveVariantProgress(plan)
 	island:SetAttribute(
 		"MobPlanSeed",
 		seed
@@ -4176,6 +4230,34 @@ end
 
 function MonsterSpawner.GetActiveCount()
 	return monsterCount
+end
+
+-- Estado serializavel para HUDs. Diferente dos atributos do Model, esta fonte
+-- continua disponivel mesmo quando a ilha ainda nao foi replicada ao cliente.
+function MonsterSpawner.GetObjectiveState(islandIndex)
+	local plan = plansByIndex[cleanIndex(islandIndex)]
+	if not plan then
+		return nil
+	end
+
+	local variants = {}
+	for _, variant in ipairs(plan.ObjectiveVariantOrder or {}) do
+		table.insert(variants, {
+			Variant = tostring(variant),
+			Initial = math.max(0, math.floor(tonumber(plan.ObjectiveVariantInitial and plan.ObjectiveVariantInitial[variant]) or 0)),
+			Remaining = math.max(0, math.floor(tonumber(plan.ObjectiveVariantRemaining and plan.ObjectiveVariantRemaining[variant]) or 0)),
+		})
+	end
+
+	return {
+		Version = "IslandObjectiveStateV1",
+		Ready = #variants > 0,
+		IslandIndex = plan.GlobalIslandIndex,
+		Cleared = plan.Island and plan.Island:GetAttribute("Cleared") == true,
+		TargetCount = math.max(0, math.floor(tonumber(plan.TargetCount) or 0)),
+		DefeatedCount = math.max(0, math.floor(tonumber(plan.ObjectiveDefeatedCount) or 0)),
+		Variants = variants,
+	}
 end
 
 function MonsterSpawner.GetCombatTargets()

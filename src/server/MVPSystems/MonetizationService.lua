@@ -548,9 +548,15 @@ local function isGlobalStoreProduct(definition)
 	return definition ~= nil
 		and definition.Enabled ~= false
 		and definition.Id ~= "ReviveNoCoinLoss"
+		-- A loja do Dungeon so expoe beneficios que pertencem ao loop atual.
+		-- Boosts de ilhas, elites e roletas eram parte do sistema antigo e nao
+		-- devem ser vendidos enquanto nao fizerem parte da experiencia publicada.
 		and (
-			definition.ProductType == "DeveloperProduct"
-			or definition.ProductType == "GamePass"
+			definition.Id == "CompanionSlot"
+			or definition.Id == "AzureWings"
+			or definition.Id == "RoyalWings"
+			or definition.Id == "CelestialWings"
+			or definition.Id == "InvisibilityCape"
 		)
 end
 
@@ -656,6 +662,30 @@ local function grantPaidSpin(player, purchaseSourceId)
 	return success == true
 end
 
+local function grantCompanionSlot(player)
+	PlayerDataService.Load(player)
+	local granted, newLimit = PlayerDataService.GrantCompanionEquipSlot(player)
+	-- O prompt ja bloqueia o limite maximo. Caso duas compras cheguem juntas,
+	-- concluimos o recibo excedente sem deixar uma transacao paga presa.
+	if not granted then
+		player:SetAttribute("CompanionSlotPurchasePending", false)
+		player:SetAttribute("CompanionSlotPurchaseTarget", nil)
+		return true
+	end
+	player:SetAttribute("CompanionEquipSlots", newLimit)
+	player:SetAttribute("CompanionSlotPurchasePending", false)
+	player:SetAttribute("CompanionSlotPurchaseTarget", nil)
+	MarketingOfferService.MarkPurchased(player, "CompanionSlot")
+	if event then
+		event:FireClient(player, {
+			Action = "PurchaseGranted",
+			ProductId = "CompanionSlot",
+			Message = string.format("Slot %d de companheiro desbloqueado!", newLimit),
+		})
+	end
+	return true
+end
+
 local function clearSpinAgainPurchase(player)
 	PlayerDataService.ClearPendingSpinAgainPurchase(player)
 	player:SetAttribute("SpinAgainPurchasePending", false)
@@ -688,6 +718,7 @@ local function registerDeveloperProducts()
 	local elite = MonetizationCatalog.Get("EliteExpedition")
 	local spin = MonetizationCatalog.Get("PaidWheelSpin")
 	local spinAgain = MonetizationCatalog.Get("SpinAgain")
+	local companionSlot = MonetizationCatalog.Get("CompanionSlot")
 	DeveloperProductService.Register(treasure.ProductId, treasure.Id, function(player)
 		return grantBoost(player, treasure.Id, "Treasure")
 	end)
@@ -698,6 +729,7 @@ local function registerDeveloperProducts()
 		return grantPaidSpin(player, spin.Id)
 	end)
 	DeveloperProductService.Register(spinAgain.ProductId, spinAgain.Id, grantSpinAgain)
+	DeveloperProductService.Register(companionSlot.ProductId, companionSlot.Id, grantCompanionSlot)
 end
 
 local function validateConfiguration()

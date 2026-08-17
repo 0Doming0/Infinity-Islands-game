@@ -29,7 +29,6 @@ Config.KillFeedbackRootNames =
 Config.LevelUpFeedbackRootNames =
 	table.freeze({
 		"LevelUpFeedback",
-		"LevelUpPanel",
 		"LevelUpBanner",
 		"LevelUp",
 	})

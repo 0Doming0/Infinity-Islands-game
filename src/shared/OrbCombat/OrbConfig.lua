@@ -1,5 +1,5 @@
 local OrbConfig = {
-	Version = "OrbProgressionV3",
+	Version = "OrbProgressionV5_RareAdditionalOrbs",
 	ChoiceLevels = (function()
 		local levels = {}
 		for level = 3, 100 do
@@ -12,6 +12,9 @@ local OrbConfig = {
 	OrbLevelXPBase = 100,
 	OrbLevelXPGrowth = 1.75,
 	MaxEquippedOrbs = 2,
+	-- O primeiro Orb e garantido. Depois disso, cada recompensa de nivel tem
+	-- apenas esta chance de oferecer um segundo Orb ainda nao possuido.
+	AdditionalOrbChancePerMilestone = 0.015,
 	MaxRange = 90,
 	AttackCooldown = 0.65,
 	DamageLimits = {
@@ -130,6 +133,27 @@ local OrbConfig = {
 	},
 }
 
+-- The Lemonade HUD presents one card for each Orb, not a separate technical
+-- upgrade picker. These are the existing, already functional combat abilities
+-- unlocked automatically as that Orb reaches levels 2–4.
+OrbConfig.LevelAbilities = table.freeze({
+	Fire = table.freeze({
+		[2] = "Fire_Spread",
+		[3] = "Fire_Nebula",
+		[4] = "Fire_Burn",
+	}),
+	Ice = table.freeze({
+		[2] = "Ice_SlowField",
+		[3] = "Ice_Shatter",
+		[4] = "Ice_Freeze",
+	}),
+	Shadow = table.freeze({
+		[2] = "Shadow_Control",
+		[3] = "Shadow_Rapid",
+		[4] = "Shadow_Control",
+	}),
+})
+
 function OrbConfig.GetOrb(name)
 	if typeof(name) ~= "string" then
 		return nil
@@ -230,6 +254,25 @@ function OrbConfig.GetSpecializedUpgrade(name, upgradeId)
 	return nil
 end
 
+function OrbConfig.GetMilestoneAbility(name, orbLevel)
+	orbLevel = OrbConfig.CleanLevel(orbLevel)
+	local abilityId = OrbConfig.LevelAbilities[name] and OrbConfig.LevelAbilities[name][orbLevel]
+	local ability = OrbConfig.GetSpecializedUpgrade(name, abilityId)
+	if not ability then
+		return nil, 0
+	end
+
+	-- A repeated entry means the same ability improves again. Its rank is
+	-- deterministic, so old saves cannot receive more than intended.
+	local rank = 0
+	for scheduledLevel, scheduledId in pairs(OrbConfig.LevelAbilities[name]) do
+		if scheduledLevel <= orbLevel and scheduledId == abilityId then
+			rank += 1
+		end
+	end
+	return ability, rank
+end
+
 function OrbConfig.GetUpgradeOptions(name, currentLevel, player)
 	local orb = OrbConfig.GetOrb(name)
 	currentLevel = OrbConfig.CleanLevel(currentLevel)
@@ -279,7 +322,30 @@ function OrbConfig.GetUpgradeSummary(name, currentLevel)
 	if currentLevel >= OrbConfig.MaxOrbLevel then
 		return string.format("Level %d  |  MAX", currentLevel)
 	end
-	return string.format("Level %d → %d  |  escolha um atributo", currentLevel, currentLevel + 1)
+
+	local current = OrbConfig.GetOrbAtLevel(name, currentLevel)
+	local next = OrbConfig.GetOrbAtLevel(name, currentLevel + 1)
+	local details = {}
+	local damageGain = (tonumber(next.Damage) or 0) - (tonumber(current.Damage) or 0)
+	if damageGain > 0 then
+		table.insert(details, string.format("Dano +%g", damageGain))
+	end
+	local burnGain = (tonumber(next.BurnDamage) or 0) - (tonumber(current.BurnDamage) or 0)
+	if burnGain > 0 then
+		table.insert(details, string.format("Queimadura +%g", burnGain))
+	end
+	local durationGain = (tonumber(next.StatusDuration) or 0) - (tonumber(current.StatusDuration) or 0)
+	if durationGain > 0 then
+		table.insert(details, string.format("Efeito +%.1fs", durationGain))
+	end
+	local cooldownGain = (tonumber(current.Cooldown) or 0) - (tonumber(next.Cooldown) or 0)
+	if cooldownGain > 0.001 then
+		table.insert(details, string.format("Ataque +%.0f%%", cooldownGain / math.max(0.01, tonumber(current.Cooldown) or 1) * 100))
+	end
+	if #details == 0 then
+		table.insert(details, "Mais poder")
+	end
+	return string.format("Level %d → %d  |  %s", currentLevel, currentLevel + 1, table.concat(details, " • "))
 end
 
 return table.freeze(OrbConfig)

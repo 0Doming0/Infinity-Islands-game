@@ -12,7 +12,7 @@ local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
-local villagerEvent = ReplicatedStorage:WaitForChild("VillagerEvent")
+local villagerEvent = ReplicatedStorage:FindFirstChild("VillagerEvent")
 local monetizationEvent = ReplicatedStorage:WaitForChild("MonetizationEvent")
 local request = ReplicatedStorage:WaitForChild("MonetizationRequest")
 local personalMerchantOpen = playerGui:FindFirstChild("PersonalSkyMerchantOpen")
@@ -37,13 +37,13 @@ local COLORS = {
 	Warning = Color3.fromRGB(255, 177, 79),
 }
 
-local oldGui = playerGui:FindFirstChild("MonetizationUI")
+local oldGui = playerGui:FindFirstChild("DungeonShopUI")
 if oldGui then
 	oldGui:Destroy()
 end
 
 local gui = Instance.new("ScreenGui")
-gui.Name = "MonetizationUI"
+gui.Name = "DungeonShopUI"
 gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
 gui.DisplayOrder = 45
@@ -463,6 +463,7 @@ expirationConstraint.Parent = expirationToast
 
 local entries = {}
 local currentIndex = 1
+local currentStoreMode = "Global"
 local renderSerial = 0
 local productInfoCache = {}
 local merchantOpen = false
@@ -720,12 +721,18 @@ local function closeMerchant(notifyServer)
 	merchantOpen = false
 	panel.Visible = false
 	backdrop.Visible = false
-	player:SetAttribute("PersonalSkyMerchantUIState", "Closed")
+	if currentStoreMode == "Global" then
+		player:SetAttribute("DungeonShopUIState", "Closed")
+	else
+		player:SetAttribute("PersonalSkyMerchantUIState", "Closed")
+	end
 	restoreCamera()
-	if wasOpen and notifyServer ~= false then
+	if wasOpen and currentStoreMode ~= "Global" and notifyServer ~= false then
 		-- Fechar a janela nao recusa a recomendacao nem aposenta o NPC. Enquanto
 		-- a ilha existir, o jogador pode conversar com o mesmo mercador novamente.
-		villagerEvent:FireServer({ action = "closeShop" })
+		if villagerEvent then
+			villagerEvent:FireServer({ action = "closeShop" })
+		end
 	end
 end
 
@@ -758,7 +765,24 @@ local function openMerchant(preloadedStore)
 		return
 	end
 	merchantOpen = true
+	currentStoreMode = "Personal"
+	merchantTitle.Text = "MERCADOR DO CEU"
 	player:SetAttribute("PersonalSkyMerchantUIState", "Open")
+	releaseFirstPerson()
+	backdrop.Visible = true
+	panel.Visible = true
+	renderStore(store)
+end
+
+local function openGlobalStore()
+	local success, store = pcall(request.InvokeServer, request, "OpenGlobalStore")
+	if not success or type(store) ~= "table" or type(store.Entries) ~= "table" or #store.Entries == 0 then
+		return
+	end
+	merchantOpen = true
+	currentStoreMode = "Global"
+	merchantTitle.Text = "LOJA DA EXPEDICAO"
+	player:SetAttribute("DungeonShopUIState", "Open")
 	releaseFirstPerson()
 	backdrop.Visible = true
 	panel.Visible = true
@@ -775,7 +799,7 @@ buyButton.Activated:Connect(function()
 		return
 	end
 	buyButton.Active = false
-	local result = invoke("Prompt", entry.Id)
+	local result = invoke(currentStoreMode == "Global" and "PromptGlobal" or "Prompt", entry.Id)
 	buyButton.Active = true
 	if result and result.Store then
 		renderStore(result.Store, entry.Id)
@@ -805,6 +829,41 @@ end
 closeButton.Activated:Connect(requestClose)
 backdrop.Activated:Connect(requestClose)
 
+-- O botao visual e construido manualmente dentro de DungeonHUD no Studio.
+-- Esta interface so cuida do painel e das compras; assim nenhum botao extra
+-- e criado pelo script e o binding continua funcionando mesmo se DungeonHUD
+-- aparecer alguns instantes depois deste LocalScript.
+local boundShopButtons = {}
+
+local function bindDungeonHudShopButton(button)
+	if not button:IsA("GuiButton") or boundShopButtons[button] then
+		return
+	end
+	boundShopButtons[button] = true
+	button.Activated:Connect(openGlobalStore)
+	button.Destroying:Connect(function()
+		boundShopButtons[button] = nil
+	end)
+end
+
+local function findAndBindDungeonHudShopButton()
+	local dungeonHud = playerGui:FindFirstChild("DungeonHUD")
+	if not dungeonHud then
+		return
+	end
+	local shopButton = dungeonHud:FindFirstChild("ShopButton", true)
+	if shopButton then
+		bindDungeonHudShopButton(shopButton)
+	end
+end
+
+findAndBindDungeonHudShopButton()
+playerGui.DescendantAdded:Connect(function(descendant)
+	if descendant.Name == "ShopButton" and descendant:IsA("GuiButton") then
+		task.defer(findAndBindDungeonHudShopButton)
+	end
+end)
+
 player.CharacterAdded:Connect(function()
 	if merchantOpen then
 		closeMerchant()
@@ -823,6 +882,7 @@ UserInputService.InputBegan:Connect(function(input, processed)
 	end
 end)
 
+if villagerEvent then
 villagerEvent.OnClientEvent:Connect(function(data)
 	if type(data) ~= "table" then
 		return
@@ -842,6 +902,7 @@ villagerEvent.OnClientEvent:Connect(function(data)
 		closeMerchant(false)
 	end
 end)
+end
 
 monetizationEvent.OnClientEvent:Connect(function(data)
 	if type(data) ~= "table" then
@@ -861,7 +922,8 @@ monetizationEvent.OnClientEvent:Connect(function(data)
 		if merchantOpen then
 			local current = entries[currentIndex]
 			task.defer(function()
-				local success, store = pcall(request.InvokeServer, request, "GetStore")
+			local action = currentStoreMode == "Global" and "OpenGlobalStore" or "GetStore"
+			local success, store = pcall(request.InvokeServer, request, action)
 				if success and type(store) == "table" then
 					renderStore(store, current and current.Id)
 				end

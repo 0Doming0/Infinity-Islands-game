@@ -478,7 +478,7 @@ local function updateCape(now)
 	local readyAt = tonumber(player:GetAttribute("CapeReadyAt")) or 0
 	local duration = numberFrom(entitlementData, "CapeDurationSeconds", "CapeDurationSeconds", 14)
 	local cooldown = numberFrom(entitlementData, "CapeCooldownSeconds", "CapeCooldownSeconds", 45)
-	local active = player:GetAttribute("InvisibleToEnemies") == true and activeUntil > now
+	local active = player:GetAttribute("CapeInvisibleToEnemies") == true and activeUntil > now
 	if active then
 		local remaining = activeUntil - now
 		setCommand(

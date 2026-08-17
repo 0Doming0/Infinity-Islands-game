@@ -49,6 +49,12 @@ Config.DeathAngularSpeed = 8
 
 Config.RuntimeFolderName = "DungeonXPCollectibles"
 
+-- Each visual template is replicated and preloaded before combat begins. This
+-- moves mesh, texture, bone and effect initialization out of the first mob
+-- death, which is the only moment that used to cause a cold-start hitch.
+Config.PrewarmFolderName = "DungeonXPCollectiblePrewarm"
+Config.PrewarmTemplateDelaySeconds = 0.12
+
 -- Visual presentation.
 Config.VisualScale = 0.75
 Config.FixedRotation = true

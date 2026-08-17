@@ -11,6 +11,8 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
+local CollectibleConfig = require(ReplicatedStorage.Shared.Configs.MobXPCollectibleConfig)
+
 local MANIFEST_NAME = "SkyDungeonAssetPreloadManifest"
 local INITIAL_DELAY_SECONDS = 1.5
 local NORMAL_BATCH_SIZE = 5
@@ -57,7 +59,48 @@ local function readContentIds(manifest)
 	return result
 end
 
+local function prewarmXPCollectibleVisuals()
+	local folder = ReplicatedStorage:WaitForChild(CollectibleConfig.PrewarmFolderName, 10)
+	if not folder then
+		player:SetAttribute("XPCollectiblePrewarmState", "Unavailable")
+		return
+	end
+
+	while folder.Parent and folder:GetAttribute("Ready") ~= true do
+		folder:GetAttributeChangedSignal("Ready"):Wait()
+	end
+	if not folder.Parent then
+		player:SetAttribute("XPCollectiblePrewarmState", "Unavailable")
+		return
+	end
+
+	local templates = folder:GetChildren()
+	table.sort(templates, function(a, b)
+		return a.Name < b.Name
+	end)
+
+	player:SetAttribute("XPCollectiblePrewarmState", "Loading")
+	player:SetAttribute("XPCollectiblePrewarmTotal", #templates)
+	player:SetAttribute("XPCollectiblePrewarmCompleted", 0)
+
+	for index, template in ipairs(templates) do
+		local success, errorMessage = pcall(ContentProvider.PreloadAsync, ContentProvider, { template })
+		if not success then
+			warn("[SkyDungeon] Prewarm de coletavel falhou: " .. tostring(errorMessage))
+		end
+		player:SetAttribute("XPCollectiblePrewarmCompleted", index)
+		if index < #templates then
+			local _, pauseSeconds = getPacing()
+			task.wait(pauseSeconds)
+			RunService.Heartbeat:Wait()
+		end
+	end
+
+	player:SetAttribute("XPCollectiblePrewarmState", "Complete")
+end
+
 task.wait(INITIAL_DELAY_SECONDS)
+prewarmXPCollectibleVisuals()
 local manifest = waitForManifest()
 if not manifest then
 	player:SetAttribute("AssetPreloadState", "ManifestUnavailable")

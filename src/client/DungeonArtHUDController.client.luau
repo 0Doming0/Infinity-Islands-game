@@ -1,13 +1,18 @@
 local CollectionService = game:GetService("CollectionService")
 local GuiService = game:GetService("GuiService")
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local StarterGui = game:GetService("StarterGui")
 local TweenService = game:GetService("TweenService")
 
+local RemoteRegistry = require(ReplicatedStorage.Shared.Utilities.RemoteRegistry)
+local islandObjectiveEvent = RemoteRegistry.Get("Dungeon", "IslandObjectiveState", "RemoteEvent")
+local islandObjectiveRequest = RemoteRegistry.Get("Dungeon", "IslandObjectiveStateRequest", "RemoteFunction")
+
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
-local VERSION = "AuthoredHUDV19SafeIntegration"
+local VERSION = "AuthoredHUDV21AuthoritativeVariantObjectives"
 
 local aliases = {
 	ObjectivePanel = {"ObjectivePanel", "Objective", "ObjectiveFrame", "ObjectiveContainer", "ObjectiveHolder"},
@@ -34,6 +39,7 @@ local islandMarkers = {}
 local hostileMarkers = {}
 local portrait = {host = nil, viewport = nil, character = nil, pending = false}
 local connections = {}
+local islandStatus = {panel = nil, title = nil, cachedKey = nil, cachedIsland = nil, serverState = nil, requestInFlight = false}
 
 local function normalize(value)
 	return string.lower(string.gsub(tostring(value or ""), "[^%w]", ""))
@@ -135,6 +141,315 @@ end
 
 local function setText(object, value)
 	if isText(object) then object.Text = tostring(value or "") end
+end
+
+-- Objetivo permanente da arena atual. Nao usa fundo para manter a leitura do
+-- combate limpa em PC e celular.
+local function ensureIslandStatus()
+	if not hud then return nil end
+	local panel = islandStatus.panel
+	if panel and panel.Parent == hud then return panel end
+	panel = hud:FindFirstChild("RuntimeIslandStatus")
+	if not panel or not panel:IsA("Frame") then
+		panel = Instance.new("Frame")
+		panel.Name = "RuntimeIslandStatus"
+		panel.AnchorPoint = Vector2.new(0.5, 0)
+		panel.Position = UDim2.fromScale(0.5, 0.125)
+		panel.Size = UDim2.fromScale(0.84, 0)
+		panel.AutomaticSize = Enum.AutomaticSize.Y
+		panel.BackgroundTransparency = 1
+		panel.BorderSizePixel = 0
+		panel.ZIndex = 24
+		panel.Parent = hud
+	end
+	panel.AnchorPoint = Vector2.new(0.5, 0)
+	panel.Position = UDim2.fromScale(0.5, 0.125)
+	panel.Size = UDim2.fromScale(0.84, 0)
+	panel.BackgroundTransparency = 1
+	panel.AutomaticSize = Enum.AutomaticSize.Y
+	for _, child in ipairs(panel:GetChildren()) do
+		if child:IsA("UIStroke") then child.Enabled = false end
+	end
+	local padding = panel:FindFirstChildOfClass("UIPadding") or Instance.new("UIPadding")
+	padding.PaddingLeft = UDim.new(0, 6)
+	padding.PaddingRight = UDim.new(0, 6)
+	padding.PaddingTop = UDim.new(0, 2)
+	padding.PaddingBottom = UDim.new(0, 2)
+	padding.Parent = panel
+	local layout = panel:FindFirstChildOfClass("UIListLayout") or Instance.new("UIListLayout")
+	layout.FillDirection = Enum.FillDirection.Vertical
+	layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Padding = UDim.new(0, 2)
+	layout.Parent = panel
+	local title = panel:FindFirstChild("Title")
+	if not title or not title:IsA("TextLabel") then
+		title = Instance.new("TextLabel")
+		title.Name = "Title"
+	end
+	title.LayoutOrder = 1
+	title.Size = UDim2.new(1, 0, 0, 28)
+	title.AutomaticSize = Enum.AutomaticSize.None
+	title.BackgroundTransparency = 1
+	title.Font = Enum.Font.GothamBold
+	title.TextScaled = true
+	title.TextWrapped = true
+	title.TextColor3 = Color3.fromRGB(255, 255, 255)
+	title.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+	title.TextStrokeTransparency = 0.35
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.ZIndex = 25
+	title.Parent = panel
+	local titleConstraint = title:FindFirstChildOfClass("UITextSizeConstraint") or Instance.new("UITextSizeConstraint")
+	titleConstraint.MinTextSize = 14
+	titleConstraint.MaxTextSize = 26
+	titleConstraint.Parent = title
+	local oldDetail = panel:FindFirstChild("Detail")
+	if oldDetail and oldDetail:IsA("TextLabel") then oldDetail:Destroy() end
+	islandStatus.panel, islandStatus.title = panel, title
+	return panel
+end
+
+local function currentIslandModel()
+	local key = player:GetAttribute("CurrentIslandKey")
+	if key == islandStatus.cachedKey and islandStatus.cachedIsland and islandStatus.cachedIsland.Parent then
+		return islandStatus.cachedIsland
+	end
+	islandStatus.cachedKey = key
+	islandStatus.cachedIsland = nil
+	if typeof(key) == "string" and key ~= "" then
+		local named = workspace:FindFirstChild(key, true)
+		if named and named:IsA("Model") then
+			islandStatus.cachedIsland = named
+		else
+			local currentIndex = math.max(0, math.floor(tonumber(player:GetAttribute("CurrentGlobalIslandIndex")) or 0))
+			for _, candidate in ipairs(workspace:GetDescendants()) do
+				if candidate:IsA("Model") and (
+					candidate:GetAttribute("IslandKey") == key
+					or (currentIndex > 0 and tonumber(candidate:GetAttribute("GlobalIslandIndex")) == currentIndex)
+				) then
+					islandStatus.cachedIsland = candidate
+					break
+				end
+			end
+		end
+	end
+	return islandStatus.cachedIsland
+end
+
+-- Cores de leitura extraidas da parte interna/principal das variantes em
+-- BlockParkour/SlimeVariants. A cor e aplicada apenas ao nome do inimigo.
+local variantInfo = {
+	Green = {Names = {"slime verde", "slimes verdes"}, Color = "#59AB54"},
+	Blue = {Names = {"slime azul", "slimes azuis"}, Color = "#3766FF"},
+	Red = {Names = {"slime vermelho", "slimes vermelhos"}, Color = "#AA1D1D"},
+	Fire = {Names = {"slime de fogo", "slimes de fogo"}, Color = "#FF701F"},
+	Ice = {Names = {"slime de gelo", "slimes de gelo"}, Color = "#64EFFF"},
+	Lightning = {Names = {"slime do raio", "slimes do raio"}, Color = "#F8F8FF"},
+	Golden = {Names = {"slime dourado", "slimes dourados"}, Color = "#E8B130"},
+	White = {Names = {"slime branco", "slimes brancos"}, Color = "#FFFFFF"},
+}
+
+local function orderedObjectiveVariants(island)
+	local order = {}
+	local seen = {}
+
+	local function addVariants(serialized)
+		for _, variant in ipairs(string.split(tostring(serialized or ""), ",")) do
+			if variant ~= "" and not seen[variant] then
+				seen[variant] = true
+				table.insert(order, variant)
+			end
+		end
+	end
+
+	-- O atributo e a fonte principal, pois acompanha a contagem restante. O
+	-- resumo do roster e uma reserva para o breve instante de replicacao em que
+	-- a ilha ja apareceu no cliente, mas seus atributos ainda nao chegaram.
+	addVariants(island:GetAttribute("MobObjectiveVariantOrder"))
+	if #order == 0 then
+		addVariants(island:GetAttribute("MobRosterSummary"))
+	end
+
+	return order
+end
+
+local function rosterVariantCounts(island)
+	local counts = {}
+	for _, variant in ipairs(string.split(tostring(island:GetAttribute("MobRosterSummary") or ""), ",")) do
+		if variant ~= "" then
+			counts[variant] = (counts[variant] or 0) + 1
+		end
+	end
+	return counts
+end
+
+local function appendObjectiveLine(lines, variant, initial, remaining)
+	if initial <= 0 then return end
+	local info = variantInfo[variant] or {Names = {"slime", "slimes"}, Color = "#FFFFFF"}
+	-- Enquanto a tarefa esta ativa, a quantidade e a que ainda falta. Quando a
+	-- variante termina, mostramos a meta original riscada para confirmar a tarefa.
+	local displayCount = remaining > 0 and remaining or initial
+	local mobName = displayCount == 1 and info.Names[1] or info.Names[2]
+	table.insert(lines, {
+		DisplayCount = displayCount,
+		MobName = mobName,
+		Color = info.Color,
+		Completed = remaining <= 0,
+	})
+end
+
+local function setObjectiveLines(panel, lines)
+	local seen = {}
+	for index, line in ipairs(lines) do
+		local name = "ObjectiveLine_" .. tostring(index)
+		seen[name] = true
+		local label = panel:FindFirstChild(name)
+		if not label or not label:IsA("TextLabel") then
+			label = Instance.new("TextLabel")
+			label.Name = name
+			label.Size = UDim2.new(1, 0, 0, 24)
+			label.AutomaticSize = Enum.AutomaticSize.None
+			label.BackgroundTransparency = 1
+			label.Font = Enum.Font.GothamMedium
+			label.TextScaled = true
+			label.TextWrapped = true
+			label.TextColor3 = Color3.fromRGB(255, 255, 255)
+			label.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+			label.TextStrokeTransparency = 0.4
+			label.RichText = true
+			label.TextXAlignment = Enum.TextXAlignment.Left
+			label.ZIndex = 25
+			local constraint = Instance.new("UITextSizeConstraint")
+			constraint.MinTextSize = 12
+			constraint.MaxTextSize = 22
+			constraint.Parent = label
+			label.Parent = panel
+		end
+		label.LayoutOrder = index + 1
+		if typeof(line) == "table" then
+			label.RichText = true
+			label.TextTransparency = line.Completed and 0.35 or 0
+			local format = line.Completed
+				and "<s>• %d <font color=\"%s\">%s</font></s>"
+				or "• %d <font color=\"%s\">%s</font>"
+			label.Text = string.format(
+				format,
+				line.DisplayCount,
+				line.Color,
+				line.MobName
+			)
+		else
+			label.RichText = false
+			label.TextTransparency = 0
+			label.Text = tostring(line)
+		end
+	end
+	for _, child in ipairs(panel:GetChildren()) do
+		if child:IsA("TextLabel") and string.sub(child.Name, 1, 14) == "ObjectiveLine_" and not seen[child.Name] then
+			child:Destroy()
+		end
+	end
+end
+
+local function syncIslandStatus()
+	local panel = ensureIslandStatus()
+	if not panel then return end
+	local lines = {}
+	local currentIndex = math.max(0, math.floor(tonumber(player:GetAttribute("CurrentGlobalIslandIndex")) or 0))
+	local authoritativeState = islandStatus.serverState
+
+	-- Fonte principal: vem do servidor e nao depende de a ilha estar carregada
+	-- no Workspace local. E a unica fonte usada quando o estado estiver pronto.
+	if authoritativeState and authoritativeState.IslandIndex == currentIndex then
+		if authoritativeState.Cleared == true then
+			setObjectiveLines(panel, lines)
+			panel.Visible = false
+			return
+		end
+		if authoritativeState.Ready == true then
+			setText(islandStatus.title, "ELIMINE MAIS:")
+			for _, entry in ipairs(authoritativeState.Variants or {}) do
+				local variant = tostring(entry.Variant or "Green")
+				local initial = math.max(0, math.floor(tonumber(entry.Initial) or 0))
+				local remaining = math.max(0, math.floor(tonumber(entry.Remaining) or initial))
+				appendObjectiveLine(lines, variant, initial, remaining)
+			end
+			if #lines > 0 then
+				setObjectiveLines(panel, lines)
+				panel.Visible = true
+				return
+			end
+		end
+	end
+
+	-- Reserva para uma versao antiga do servidor ou durante a primeira resposta
+	-- remota. A UI nunca usa uma contagem total generica como objetivo final.
+	local island = currentIslandModel()
+	-- Entre uma ilha e outra, CurrentIslandKey pode chegar antes do Model ser
+	-- replicado no cliente. Nessa pequena janela, nao ha atributos para ler.
+	if not island then
+		setObjectiveLines(panel, lines)
+		panel.Visible = false
+		return
+	end
+	if island:GetAttribute("Cleared") == true then
+		setObjectiveLines(panel, lines)
+		panel.Visible = false
+		return
+	end
+
+	setText(islandStatus.title, "ELIMINE MAIS:")
+	local rosterCounts = rosterVariantCounts(island)
+	for _, variant in ipairs(orderedObjectiveVariants(island)) do
+		local initial = math.max(0, math.floor(tonumber(island:GetAttribute("MobObjectiveInitial_" .. variant)) or rosterCounts[variant] or 0))
+		local remainingAttribute = island:GetAttribute("MobObjectiveRemaining_" .. variant)
+		local remaining = remainingAttribute == nil
+			and initial
+			or math.max(0, math.floor(tonumber(remainingAttribute) or 0))
+
+		appendObjectiveLine(lines, variant, initial, remaining)
+	end
+	if #lines == 0 then
+		-- Nunca mostramos uma contagem total generica: ela esconderia as variantes
+		-- que o jogador realmente precisa derrotar. Esta mensagem dura somente ate
+		-- o roster/atributos da ilha chegarem ao cliente.
+		table.insert(lines, "• Preparando objetivos...")
+	end
+	setObjectiveLines(panel, lines)
+	panel.Visible = true
+end
+
+local function acceptIslandObjectiveState(state)
+	if type(state) ~= "table" then return end
+	local islandIndex = math.max(0, math.floor(tonumber(state.IslandIndex) or 0))
+	if islandIndex <= 0 then return end
+	state.IslandIndex = islandIndex
+	state.Variants = type(state.Variants) == "table" and state.Variants or {}
+	islandStatus.serverState = state
+	dirty = true
+end
+
+local function requestIslandObjectiveState()
+	if islandStatus.requestInFlight then return end
+	local islandIndex = math.max(0, math.floor(tonumber(player:GetAttribute("CurrentGlobalIslandIndex")) or 0))
+	if islandIndex <= 0 then
+		islandStatus.serverState = nil
+		return
+	end
+
+	islandStatus.requestInFlight = true
+	task.spawn(function()
+		local ok, state = pcall(function()
+			return islandObjectiveRequest:InvokeServer()
+		end)
+		islandStatus.requestInFlight = false
+		if ok then
+			acceptIslandObjectiveState(state)
+		else
+			warn("[DungeonArtHUDController] Nao foi possivel obter o objetivo da ilha")
+		end
+	end)
 end
 
 local function resolveBar(root, wanted)
@@ -346,6 +661,7 @@ local function syncMinimap()
 	if not map or not root then return end
 	if map.PlayerArrow then map.PlayerArrow.Visible = true; map.PlayerArrow.AnchorPoint = Vector2.new(0.5, 0.5); map.PlayerArrow.Position = UDim2.fromScale(0.5, 0.5); local look = root.CFrame.LookVector; map.PlayerArrow.Rotation = math.deg(math.atan2(look.X, -look.Z)) end
 	local seen = {}
+	local visibleIslandsByGlobalIndex = {}
 	if map.IslandContainer then
 		for _, folder in ipairs(CollectionService:GetTagged("DungeonGameplayMarkers")) do
 			local position, island = markerPosition(folder)
@@ -355,26 +671,44 @@ local function syncMinimap()
 				local marker = islandMarkers[folder]
 				if not marker or not marker.Parent then marker = cloneMarker(map.SmallIslandTemplate or map.MediumIslandTemplate or map.LargeIslandTemplate, "Island_" .. island.Name, map.IslandContainer); islandMarkers[folder] = marker end
 				if marker then marker.Position = screenPosition; marker.Visible = true; setText(text(marker, {"LevelText", "Level", "RecommendedLevel"}), island:GetAttribute("RecommendedLevel") or island:GetAttribute("IslandLevel") or "") end
-			end
-		end
-	end
-	for source, marker in pairs(islandMarkers) do if not seen[source] or not source.Parent then if marker.Parent then marker:Destroy() end; islandMarkers[source] = nil end end
-	local seenMobs = {}
-	if map.MarkerContainer and map.HostileMobTemplate then
-		for _, target in ipairs(CollectionService:GetTagged("CombatTarget")) do
-			if target:IsA("Model") and target.Parent and target:GetAttribute("Peaceful") ~= true then
-				local targetRoot = target:FindFirstChild("HumanoidRootPart", true) or target.PrimaryPart
-				local screenPosition = targetRoot and mapPosition(map, targetRoot.Position, root)
-				if screenPosition then
-					seenMobs[target] = true
-					local marker = hostileMarkers[target]
-					if not marker or not marker.Parent then marker = cloneMarker(map.HostileMobTemplate, "HostileMob", map.MarkerContainer); hostileMarkers[target] = marker end
-					if marker then marker.Position = screenPosition; marker.Visible = true end
+				local globalIslandIndex = tonumber(island:GetAttribute("GlobalIslandIndex") or island:GetAttribute("ProgressionIslandIndex") or folder:GetAttribute("GlobalIslandIndex"))
+				if globalIslandIndex then
+					visibleIslandsByGlobalIndex[math.floor(globalIslandIndex)] = {Source = folder, Marker = marker, Position = screenPosition}
 				end
 			end
 		end
 	end
-	for source, marker in pairs(hostileMarkers) do if not seenMobs[source] or not source.Parent then if marker.Parent then marker:Destroy() end; hostileMarkers[source] = nil end end
+	for source, marker in pairs(islandMarkers) do if not seen[source] or not source.Parent then if marker.Parent then marker:Destroy() end; islandMarkers[source] = nil end end
+
+	-- O mapa representa uma ilha, nao cada slime. Mesmo que haja dez mobs vivos,
+	-- ela recebe somente um HostileMobMarker logo acima do icone da ilha.
+	local activeMobIslands = {}
+	if map.MarkerContainer and map.HostileMobTemplate then
+		for _, target in ipairs(CollectionService:GetTagged("CombatTarget")) do
+			if target:IsA("Model") and target.Parent and target:GetAttribute("Peaceful") ~= true then
+				local globalIslandIndex = tonumber(target:GetAttribute("GlobalIslandIndex") or target:GetAttribute("RouteIslandIndex"))
+				local islandInfo = globalIslandIndex and visibleIslandsByGlobalIndex[math.floor(globalIslandIndex)]
+				if islandInfo then
+					activeMobIslands[islandInfo.Source] = islandInfo
+				end
+			end
+		end
+
+		for source, islandInfo in pairs(activeMobIslands) do
+			local marker = hostileMarkers[source]
+			if not marker or not marker.Parent then
+				marker = cloneMarker(map.HostileMobTemplate, "HostileMob_" .. source.Name, map.MarkerContainer)
+				hostileMarkers[source] = marker
+			end
+			if marker then
+				marker.AnchorPoint = Vector2.new(0.5, 1)
+				marker.Position = UDim2.new(islandInfo.Position.X.Scale, islandInfo.Position.X.Offset, islandInfo.Position.Y.Scale, islandInfo.Position.Y.Offset - 10)
+				marker.ZIndex = math.max(marker.ZIndex, (islandInfo.Marker and islandInfo.Marker.ZIndex or 1) + 1)
+				marker.Visible = true
+			end
+		end
+	end
+	for source, marker in pairs(hostileMarkers) do if not activeMobIslands[source] or not source.Parent then if marker.Parent then marker:Destroy() end; hostileMarkers[source] = nil end end
 end
 
 local function recover()
@@ -385,6 +719,7 @@ local function recover()
 	if refs.MiniMap then refs.MiniMap.Visible = true end
 	syncStatus()
 	syncObjective()
+	syncIslandStatus()
 end
 
 playerGui.DescendantAdded:Connect(function() dirty = true end)
@@ -398,7 +733,13 @@ player.CharacterAdded:Connect(function(character)
 end)
 GuiService.MenuOpened:Connect(function() menuOpen = true end)
 GuiService.MenuClosed:Connect(function() menuOpen = false; recover() end)
-for _, attribute in ipairs({"PlayerLevel", "PlayerXP", "PlayerXPToNextLevel"}) do player:GetAttributeChangedSignal(attribute):Connect(function() dirty = true end) end
+for _, attribute in ipairs({"PlayerLevel", "PlayerXP", "PlayerXPToNextLevel", "CurrentIslandKey", "CurrentIslandDisplayLabel", "CurrentCycleIndex"}) do player:GetAttributeChangedSignal(attribute):Connect(function() dirty = true end) end
+player:GetAttributeChangedSignal("CurrentGlobalIslandIndex"):Connect(function()
+	islandStatus.serverState = nil
+	dirty = true
+	requestIslandObjectiveState()
+end)
+islandObjectiveEvent.OnClientEvent:Connect(acceptIslandObjectiveState)
 for _, attribute in ipairs({"DungeonObjectiveId", "DungeonObjectiveState", "DungeonObjectiveTitle", "DungeonObjectiveDescription", "DungeonObjectiveProgress", "DungeonObjectiveTarget", "DungeonObjectiveGlobalIslandIndex", "DungeonCurrentObjectiveIsland"}) do workspace:GetAttributeChangedSignal(attribute):Connect(syncObjective) end
 
 RunService.Heartbeat:Connect(function(dt)
@@ -412,6 +753,7 @@ RunService.Heartbeat:Connect(function(dt)
 		if refs.MiniMap then refs.MiniMap.Visible = true end
 		syncStatus()
 		syncObjective()
+		syncIslandStatus()
 	end
 end)
 
@@ -420,9 +762,11 @@ RunService.RenderStepped:Connect(function(dt)
 	if mapElapsed >= 0.1 then mapElapsed = 0; syncMinimap() end
 end)
 
-player:SetAttribute("DungeonArtHUDMode", "SafeAuthoredHUDWithStatusObjectiveMinimap")
+player:SetAttribute("DungeonArtHUDMode", "SafeAuthoredHUDWithTransparentIslandObjectiveList")
 player:SetAttribute("DungeonArtHUDCreatesVisuals", false)
 resolve()
 syncStatus()
 syncObjective()
+syncIslandStatus()
+task.defer(requestIslandObjectiveState)
 print("[DungeonArtHUDController] HUD autoral integrado sem alterar o movimento do personagem")

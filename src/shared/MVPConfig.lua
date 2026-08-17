@@ -172,6 +172,10 @@ local Config = {
 
 	Analytics = {
 		Enabled = true,
+		-- O funil historico mede mercador, santuarios e outros sistemas que nao
+		-- definem a retencao do MVP atual. O funil InfinityIslandsCoreLoopV2
+		-- substitui essa leitura durante o teste pago.
+		EnableLegacyOnboardingFunnel = false,
 		DebugLogs = false,
 		EnemyEncounterDistanceStuds = 36,
 		ChestFoundDistanceStuds = 18,
@@ -198,6 +202,9 @@ local Config = {
 		MaxMembers = 4,
 		InviteLifetimeSeconds = 30,
 		IndicatorDistanceStuds = 70,
+		-- Visitas permitem jogar junto em uma ilha adiantada sem transformar a
+		-- cooperacao em atalho de progressao/XP.
+		VisitorXPModifier = 0.35,
 		Mission = {
 			Id = "PartyExpedition",
 			Title = "EXPEDIÇÃO EM GRUPO",
@@ -286,10 +293,25 @@ local Config = {
 	},
 
 	Chests = {
-		NormalIslandChance = 0.18,
+		-- Baús comuns acompanham a progressão da ilha dentro do ciclo atual.
+		-- A Ilha Inicial e as primeiras ilhas continuam raras; as últimas
+		-- ilhas do ciclo ficam visualmente mais recompensadoras, sem criar
+		-- uma quantidade ilimitada de modelos/prompt no servidor.
+		-- Baús comuns são a recompensa visual frequente do ciclo. Eles ficam
+		-- bem mais prováveis que os baús raros, especialmente no fim do ciclo.
+		NormalIslandChance = 0.30,
+		NormalMaximumIslandChance = 0.85,
+		NormalChancePerCycleLevel = 0.05,
+		NormalBaseChests = 1,
+		NormalExtraChestEveryCycleLevels = 3,
+		NormalMaximumChests = 4,
 		MimicChance = 0.1,
 		NormalMinimumCoins = 15,
 		NormalMaximumCoins = 40,
+		-- XP do baú comum sai em fragmentos físicos, como o XP dos mobs. O raro
+		-- continua significativamente mais valioso (RareChestConfig).
+		NormalMinimumXP = 30,
+		NormalMaximumXP = 60,
 		MimicMinimumCoins = 40,
 		MimicMaximumCoins = 90,
 		TreasureMinimumChests = 4,

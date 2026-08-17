@@ -137,6 +137,14 @@ local function setOnIslandHierarchy(record, name, value)
 	end
 end
 
+local function isInitialIslandRecord(record)
+	return record
+		and (
+			(record.Node and record.Node:GetAttribute("IsInitialIsland") == true)
+			or (record.IslandModel and record.IslandModel:GetAttribute("IsInitialIsland") == true)
+		)
+end
+
 local function publishRecord(record)
 	if not record then
 		return
@@ -154,7 +162,11 @@ local function publishRecord(record)
 	)
 	setOnIslandHierarchy(record, "MobSpawnedCount", record.SpawnedCount)
 	setOnIslandHierarchy(record, "MobAliveCount", record.AliveCount)
-	setOnIslandHierarchy(record, "InfiniteMobRespawnEnabled", true)
+	setOnIslandHierarchy(
+		record,
+		"InfiniteMobRespawnEnabled",
+		false
+	)
 	setOnIslandHierarchy(record, "CombatActivationSerial", record.ActivationSerial)
 	setOnIslandHierarchy(record, "CombatActivatedAt", record.ActivatedAt)
 	setOnIslandHierarchy(record, "CombatClearedAt", record.ClearedAt)
@@ -389,16 +401,30 @@ local function tryClear(index, reason)
 
 	clearSerial += 1
 
-	-- Do not set CombatState to Cleared.
-	-- Active combat must continue after progression completion.
+	-- A completed arena is safe. Keeping this state final prevents a later
+	-- occupancy reconciliation from generating another wave on the same island.
+	record.State = States.Cleared
 	publishRecord(record)
 
 	workspace:SetAttribute("DungeonLastClearedIslandIndex", index)
 	workspace:SetAttribute("DungeonLastClearedIslandAt", record.ClearedAt)
 	workspace:SetAttribute("DungeonIslandCombatClearSerial", clearSerial)
+	-- Cada jogador que estava nesta arena agora possui um momento seguro
+	-- individual. Sistemas de recompensa podem usar isso sem travar o combate
+	-- nem depender de um estado global de transporte.
+	for _, player in ipairs(Players:GetPlayers()) do
+		if cleanIndex(player:GetAttribute("CurrentGlobalIslandIndex")) == index then
+			player:SetAttribute("DungeonLastSafeIslandIndex", index)
+			player:SetAttribute("DungeonLastSafeIslandAt", record.ClearedAt)
+		end
+	end
+	if isInitialIslandRecord(record) then
+		workspace:SetAttribute("DungeonInitialIslandCleared", true)
+		workspace:SetAttribute("DungeonInitialIslandClearedAt", record.ClearedAt)
+	end
 	workspace:SetAttribute(
 		"DungeonIslandCombatCompletionPolicy",
-		"KillQuotaDoesNotStopCombat"
+		"SharedCoopQuotaStopsIslandCombat"
 	)
 
 	safeCallback(
@@ -643,7 +669,7 @@ local function publishService()
 	)
 	workspace:SetAttribute(
 		"DungeonIslandCombatStateMachine",
-		"Dormant>Ready>Active"
+		"Dormant>Ready>Active>Cleared"
 	)
 	workspace:SetAttribute(
 		"DungeonIslandCombatTargetPolicy",
@@ -651,9 +677,12 @@ local function publishService()
 	)
 	workspace:SetAttribute(
 		"DungeonIslandCombatProgressionPolicy",
-		"KillQuotaDoesNotStopCombat"
+		"SharedCoopQuotaStopsIslandCombat"
 	)
-	workspace:SetAttribute("DungeonInfiniteIslandMobs", true)
+	workspace:SetAttribute(
+		"DungeonInfiniteIslandMobs",
+		IslandCombatConfig.ContinuousRespawn == true
+	)
 
 	local registered = 0
 	local active = 0
@@ -918,7 +947,7 @@ function IslandCombatService.GetIslandSnapshot(
 		),
 		MobSpawnedCount = record.SpawnedCount,
 		MobAliveCount = record.AliveCount,
-		InfiniteMobRespawnEnabled = true,
+		InfiniteMobRespawnEnabled = false,
 		ActivationSerial = record.ActivationSerial,
 		ActivatedAt = record.ActivatedAt,
 		ClearedAt = record.ClearedAt,

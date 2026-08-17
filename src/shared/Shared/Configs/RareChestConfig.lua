@@ -11,16 +11,18 @@
 
 local Config = {}
 
-Config.Version = "RareChestV1PhysicalXP"
+Config.Version = "RareChestV3SparseIslandRoll"
 
-Config.MinimumGlobalIslandIndex = 2
+Config.MinimumGlobalIslandIndex = 3
 
--- Roughly 2 rare chests across a normal 5-island active window.
-Config.IslandsPerActiveChest = 3
-Config.MinimumActiveChests = 1
-Config.MaximumActiveChests = 4
+-- Cada ilha de combate recebe uma rolagem determinística. Assim, abrir um
+-- raro não faz o serviço colocar outro imediatamente na mesma janela do
+-- mundo. Em média há um raro a cada quatorze ilhas elegíveis.
+Config.RareChestIslandChance = 0.07
+Config.IslandRollSalt = 9137
+Config.MaximumActiveChests = 1
 
-Config.MaximumChestsPerIsland = 2
+Config.MaximumChestsPerIsland = 1
 Config.ReconcileInterval = 1.5
 
 Config.MinimumChestSpacing = 12
@@ -32,10 +34,11 @@ Config.PromptObjectText = "Baú Raro"
 Config.PromptDistance = 9
 Config.PromptHoldDuration = 0.15
 
--- A rare chest should feel meaningful, but remains secondary to combat.
-Config.BaseXP = 45
-Config.XPPerIslandLevel = 8
-Config.MaximumXP = 180
+-- Um raro precisa ser um momento de recompensa perceptível: cerca de 4x o
+-- valor anterior, sem substituir o XP principal vindo dos mobs.
+Config.BaseXP = 180
+Config.XPPerIslandLevel = 30
+Config.MaximumXP = 720
 
 Config.OpenDestroyDelay = 0.65
 
@@ -65,29 +68,43 @@ function Config.GetXPReward(islandLevel)
 	)
 end
 
+function Config.IsIslandEligible(
+	globalIslandIndex
+)
+	local index =
+		math.max(
+			0,
+			math.floor(
+				tonumber(
+					globalIslandIndex
+				) or 0
+			)
+		)
+
+	if index < Config.MinimumGlobalIslandIndex then
+		return false
+	end
+
+	local random = Random.new(index * Config.IslandRollSalt)
+	return random:NextNumber() <= Config.RareChestIslandChance
+end
+
 function Config.GetDesiredActiveChestCount(
-	materializedIslandCount
+	eligibleIslandCount
 )
 	local count =
 		math.max(
 			0,
 			math.floor(
 				tonumber(
-					materializedIslandCount
+					eligibleIslandCount
 				) or 0
 			)
 		)
 
-	if count <= 0 then
-		return 0
-	end
-
 	return math.clamp(
-		math.ceil(
-			count
-				/ Config.IslandsPerActiveChest
-		),
-		Config.MinimumActiveChests,
+		count,
+		0,
 		Config.MaximumActiveChests
 	)
 end

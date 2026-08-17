@@ -82,7 +82,9 @@ local function setWaveAttributes(island, record)
 	)
 	island:SetAttribute(
 		"MobRespawnPolicy",
-		"FullWaveAfterCooldown"
+		record.Completed == true
+			and "StopAfterIslandClear"
+			or "BoundedWaveAfterCooldown"
 	)
 	island:SetAttribute(
 		"MobIndividualRefillEnabled",
@@ -102,6 +104,27 @@ local function setWaveAttributes(island, record)
 	)
 end
 
+local function stopAfterIslandClear(island, record)
+	if island:GetAttribute("Cleared") ~= true then
+		return false
+	end
+
+	-- A completion can happen during the same death callback that started a
+	-- wave cooldown. Invalidating its token makes that delayed callback inert.
+	record.Completed = true
+	record.RefillLocked = true
+	record.CooldownActive = false
+	record.CooldownToken += 1
+	island:SetAttribute("MobWaveCooldownEndsAt", nil)
+	setWaveAttributes(island, record)
+
+	if island:GetAttribute("CombatState") ~= "Cleared" then
+		island:SetAttribute("CombatState", "Cleared")
+	end
+
+	return true
+end
+
 local function desiredBlockedState(record)
 	if record.CooldownActive then
 		return "RespawnCooldown"
@@ -115,6 +138,10 @@ local function desiredBlockedState(record)
 end
 
 local function enforceBlockedState(island, record)
+	if stopAfterIslandClear(island, record) then
+		return
+	end
+
 	if record.Enforcing then
 		return
 	end
@@ -142,6 +169,10 @@ local function finishCooldown(island, record, token)
 		return
 	end
 
+	if stopAfterIslandClear(island, record) then
+		return
+	end
+
 	record.CooldownActive = false
 	record.RefillLocked = false
 	record.WaveNumber += 1
@@ -159,6 +190,10 @@ local function finishCooldown(island, record, token)
 end
 
 local function beginCooldown(island, record)
+	if stopAfterIslandClear(island, record) then
+		return
+	end
+
 	if record.CooldownActive then
 		return
 	end
@@ -195,6 +230,10 @@ local function beginCooldown(island, record)
 end
 
 local function onDefeatedChanged(island, record)
+	if stopAfterIslandClear(island, record) then
+		return
+	end
+
 	local defeated = math.max(
 		0,
 		math.floor(
@@ -220,6 +259,9 @@ local function onDefeatedChanged(island, record)
 end
 
 local function onAliveChanged(island, record)
+	if stopAfterIslandClear(island, record) then
+		return
+	end
 	local alive = math.max(
 		0,
 		math.floor(
@@ -270,6 +312,7 @@ local function trackIsland(island)
 		RefillLocked = false,
 		CooldownActive = false,
 		CooldownToken = 0,
+		Completed = island:GetAttribute("Cleared") == true,
 		WaveNumber = 0,
 		LastDefeatedCount = math.max(
 			0,
@@ -292,6 +335,16 @@ local function trackIsland(island)
 			"MobDefeatedCount"
 		):Connect(function()
 			onDefeatedChanged(island, record)
+		end)
+	)
+
+	-- IslandCombatService publishes CombatState before Cleared. Watching the
+	-- explicit completion flag ensures a cooldown already queued by that same
+	-- final death can never revive the arena afterward.
+	table.insert(
+		record.Connections,
+		island:GetAttributeChangedSignal("Cleared"):Connect(function()
+			stopAfterIslandClear(island, record)
 		end)
 	)
 
@@ -332,6 +385,7 @@ local function trackIsland(island)
 	)
 
 	task.defer(function()
+		stopAfterIslandClear(island, record)
 		onAliveChanged(island, record)
 	end)
 end
@@ -373,7 +427,7 @@ workspace:SetAttribute(
 )
 workspace:SetAttribute(
 	"DungeonMobWaveRespawnPolicy",
-	"FullWaveAfterCooldown"
+	"BoundedWaveAfterCooldown"
 )
 workspace:SetAttribute(
 	"DungeonMobWaveRespawnCooldownSeconds",
@@ -381,7 +435,7 @@ workspace:SetAttribute(
 )
 
 print(
-	"[MobWaveCooldown] Ready - full wave cooldown = "
+	"[MobWaveCooldown] Ready - bounded wave cooldown = "
 		.. tostring(Config.WaveRespawnCooldownSeconds)
 		.. "s"
 )

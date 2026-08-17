@@ -1,17 +1,15 @@
 --[[
 	Infinity Islands - Task 30
-	IslandCombatConfig V2 - Continuous Combat
+	IslandCombatConfig V4 - Shared Cooperative Arenas
 
-	Cleared now means the kill quota was completed.
-	It no longer means the island has no living enemies.
-
-	CombatState remains Active while a player occupies the island, allowing
-	MonsterSpawner to keep refilling open MaxAlive slots after progression.
+	Cleared means the shared kill quota was completed. All players present in
+	the arena cooperate on one limited population; a cleared island becomes safe
+	for the group. RecommendedLevel is still not a hard gate.
 ]]
 
 local IslandCombatConfig = {}
 
-IslandCombatConfig.Version = "IslandCombatV2Continuous"
+IslandCombatConfig.Version = "IslandCombatV4SharedCoop"
 
 IslandCombatConfig.States = table.freeze({
 	Dormant = "Dormant",
@@ -25,8 +23,8 @@ IslandCombatConfig.RequireTargetCountBeforeClear = true
 IslandCombatConfig.ReadyLookahead = 1
 
 IslandCombatConfig.ProgressionPolicy =
-	"KillQuotaDoesNotStopCombat"
+	"SharedCoopQuotaStopsIslandCombat"
 
-IslandCombatConfig.ContinuousRespawn = true
+IslandCombatConfig.ContinuousRespawn = false
 
 return table.freeze(IslandCombatConfig)

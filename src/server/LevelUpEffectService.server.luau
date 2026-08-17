@@ -2,7 +2,7 @@ local Players = game:GetService("Players")
 local ServerStorage = game:GetService("ServerStorage")
 local Debris = game:GetService("Debris")
 
-local EFFECT_LIFETIME = 5
+local EFFECT_LIFETIME = 3
 local EFFECT_PARTICLE_COUNT = 45
 
 local function activateLevelUpEffect(player)

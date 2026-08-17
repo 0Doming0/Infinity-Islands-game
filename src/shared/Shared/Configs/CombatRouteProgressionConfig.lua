@@ -5,18 +5,17 @@
 
 local CombatRouteProgressionConfig = {}
 
-CombatRouteProgressionConfig.Version = "CombatRouteProgressionV1"
+CombatRouteProgressionConfig.Version = "CombatRouteProgressionV2ClearPresentation"
 
 CombatRouteProgressionConfig.DefaultTotalIslandCount = 24
 CombatRouteProgressionConfig.FutureLookahead = 3
 CombatRouteProgressionConfig.ReconcileSeconds = 0.20
 
 CombatRouteProgressionConfig.ObjectiveId = "ClearIsland"
-CombatRouteProgressionConfig.ObjectiveTitle = "DERROTE OS INIMIGOS"
+CombatRouteProgressionConfig.ObjectiveTitle = "LIMPE A ILHA"
 CombatRouteProgressionConfig.ObjectiveDescription =
-	"Elimine todos os inimigos para liberar a próxima ilha."
+	"DERROTE TODOS OS INIMIGOS"
 
-CombatRouteProgressionConfig.GateText =
-	"DERROTE OS INIMIGOS"
+CombatRouteProgressionConfig.GateText = "LIMPE A ILHA"
 
 return table.freeze(CombatRouteProgressionConfig)

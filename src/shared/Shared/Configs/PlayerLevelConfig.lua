@@ -16,8 +16,8 @@
 
 local PlayerLevelConfig = {}
 
-PlayerLevelConfig.Version = "PlayerLevelV1"
-PlayerLevelConfig.PersistencePolicy = "RunScopedV1"
+PlayerLevelConfig.Version = "PlayerLevelV2"
+PlayerLevelConfig.PersistencePolicy = "PersistentProfileV2"
 
 PlayerLevelConfig.StartingLevel = 1
 PlayerLevelConfig.MaximumLevel = 100
