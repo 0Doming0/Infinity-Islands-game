@@ -2,10 +2,12 @@
 --
 -- Regra normal: enquadra a ILHA e a direcao da rota.
 -- Excecao curta da ilha inicial: enquanto InstantOnboardingController publicar
--- DungeonInitialGuideTarget E a SITUAÇÃO ATUAL ainda estiver pendente, a POSICAO
--- continua sendo a camera inteligente da ilha, mas o FOCO aponta suavemente
--- para o slime orientado. A conclusao do objetivo tem prioridade sobre a
--- existencia de mobs restantes na ilha.
+-- DungeonInitialGuideTarget E a SITUAÇÃO ATUAL ainda nao tiver sido concluida
+-- pela primeira vez, a POSICAO continua sendo a camera inteligente da ilha,
+-- mas o FOCO aponta suavemente para o slime orientado.
+--
+-- A conclusao da primeira ilha e um latch: morte/respawn nunca reativa esse
+-- foco. Progresso salvo alem da ilha inicial tambem desativa o guia ao entrar.
 --
 -- Durante o transporte este controller cede a camera ao controller do voo.
 
@@ -17,7 +19,7 @@ local Workspace = game:GetService("Workspace")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local VERSION = "IslandSmartMobileCameraV4_ObjectiveCompleteAuthority"
+local VERSION = "IslandSmartMobileCameraV5_InitialGuideCompletedOnce"
 local BIND_NAME = "DungeonCameraController"
 local CAMERA_HEIGHT = 28
 local CAMERA_DISTANCE = 22
@@ -39,6 +41,7 @@ local cachedIsland
 local cachedIslandIndex
 local lastRouteDirection
 local lastRouteSideCenter
+local initialGuideCompletedOnce = player:GetAttribute("DungeonInitialCombatGuideCompletedOnce") == true
 
 local function isMobile()
 	return player:GetAttribute("DungeonMobileMode") == true
@@ -73,15 +76,42 @@ local function currentIslandIndex()
 	return value and math.max(1, math.floor(value)) or 1
 end
 
-local function initialSituationComplete()
-	if currentIslandIndex() ~= 1 then
-		return true
-	end
-
+local function hasInitialCompletionSignal()
 	return player:GetAttribute("DungeonCurrentObjectiveComplete") == true
 		or player:GetAttribute("DungeonLinearObjectiveComplete") == true
 		or player:GetAttribute("DungeonInitialCombatGuideComplete") == true
 		or player:GetAttribute("DungeonManualAdvanceReady") == true
+end
+
+local function savedProgressPassedInitialIsland()
+	local resume = math.floor(tonumber(player:GetAttribute("SavedResumeIslandIndex")) or 1)
+	local highest = math.floor(tonumber(player:GetAttribute("SavedHighestCompletedIslandIndex")) or 0)
+	return resume > 1 or highest >= 1
+end
+
+local function latchInitialGuideCompletion()
+	if initialGuideCompletedOnce then
+		return true
+	end
+
+	if currentIslandIndex() > 1
+		or savedProgressPassedInitialIsland()
+		or hasInitialCompletionSignal()
+	then
+		initialGuideCompletedOnce = true
+		player:SetAttribute("DungeonInitialCombatGuideCompletedOnce", true)
+		player:SetAttribute("DungeonInitialCombatGuideCompletedOnceAt", Workspace:GetServerTimeNow())
+		return true
+	end
+
+	return false
+end
+
+local function initialSituationComplete()
+	if latchInitialGuideCompletion() then
+		return true
+	end
+	return currentIslandIndex() ~= 1
 end
 
 local function findAnchor(container, names)
@@ -206,8 +236,8 @@ local function routeFrame(root)
 end
 
 local function guideTargetPosition()
-	-- A conclusao da SITUAÇÃO ATUAL e a autoridade principal. Mobs extras vivos
-	-- nao podem manter a camera presa ao tutorial depois que o objetivo terminou.
+	-- Depois que a situacao inicial foi concluida UMA VEZ, nenhum respawn pode
+	-- voltar a ativar foco de tutorial, mesmo se os mobs continuarem existindo.
 	if initialSituationComplete()
 		or player:GetAttribute("DungeonInitialCombatGuideActive") ~= true
 	then
@@ -404,21 +434,25 @@ local function resetGuideFocusIfComplete()
 	if not initialSituationComplete() then
 		return
 	end
-	-- No proximo render, routeFrame reassume imediatamente o foco. A posicao
-	-- continua suave, mas a camera deixa de olhar para o mob sem esperar ele morrer.
 	cameraCFrame = nil
 	focusPosition = nil
 	player:SetAttribute("DungeonMobileCameraGuideTarget", nil)
 end
 
 player.CharacterAdded:Connect(function()
+	-- Nao limpamos initialGuideCompletedOnce aqui. O tutorial da primeira ilha
+	-- existe somente ate a primeira conclusao, nao a cada vida do personagem.
 	cameraCFrame = nil
 	focusPosition = nil
 	invalidateIslandCache()
-	task.defer(refresh)
+	task.defer(function()
+		latchInitialGuideCompletion()
+		refresh()
+	end)
 end)
 player:GetAttributeChangedSignal("DungeonMobileMode"):Connect(refresh)
 player:GetAttributeChangedSignal("CurrentGlobalIslandIndex"):Connect(function()
+	latchInitialGuideCompletion()
 	invalidateIslandCache()
 	refresh()
 end)
@@ -432,6 +466,8 @@ for _, attributeName in ipairs({
 	"DungeonLinearObjectiveComplete",
 	"DungeonInitialCombatGuideComplete",
 	"DungeonManualAdvanceReady",
+	"SavedResumeIslandIndex",
+	"SavedHighestCompletedIslandIndex",
 }) do
 	player:GetAttributeChangedSignal(attributeName):Connect(resetGuideFocusIfComplete)
 end
@@ -443,6 +479,7 @@ Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
 	focusPosition = nil
 end)
 
+latchInitialGuideCompletion()
 player:SetAttribute("DungeonMobileCameraControllerLoaded", true)
 refresh()
 
