@@ -47,7 +47,6 @@
         "OrbCombatClient": { "$attributes": { "_lemonadeUniqueId": "yL4rINgcyL4r" }, "$path": "src/client/OrbCombatClient.client.luau" },
         "OrbVisualClient": { "$attributes": { "_lemonadeUniqueId": "eRM8snrpeRM8" }, "$path": "src/client/OrbVisualClient.client.luau" },
         "ProgressiveAssetPreloader": { "$attributes": { "_lemonadeUniqueId": "w15dIiCww15d" }, "$path": "src/client/ProgressiveAssetPreloader.client.luau" },
-        "SneakController": { "$attributes": { "_lemonadeUniqueId": "jNhvFDVHjNhv" }, "$path": "src/client/SneakController.client.luau" },
         "SprintController": { "$attributes": { "_lemonadeUniqueId": "btus714Cbtus" }, "$path": "src/client/SprintController.client.luau" },
         "SwordInputClient": { "$attributes": { "_lemonadeUniqueId": "zSwxXMESzSwx" }, "$path": "src/client/SwordInputClient.client.luau" },
         "UI": { "$className": "Folder", "$path": "src/client/UI" },
