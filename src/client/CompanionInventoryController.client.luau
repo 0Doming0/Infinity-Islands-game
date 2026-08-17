@@ -11,8 +11,9 @@ local Workspace = game:GetService("Workspace")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local VERSION = "AuthoredRealtimeResponsiveV4_FirstUnlockGate"
+local VERSION = "AuthoredRealtimeResponsiveV5_TopOverlay"
 local RESPONSIVE_SCALE_NAME = "CompanionResponsiveScale"
+local INVENTORY_DISPLAY_ORDER = 1000
 local VIEWPORT_PADDING = Vector2.new(28, 28)
 local MAX_RESPONSIVE_SCALE = 1.12
 local MIN_RESPONSIVE_SCALE = 0.25
@@ -267,8 +268,6 @@ local function applyLauncherState(root)
 
 	local unlocked = hasUnlockedCompanion()
 
-	-- invisible=true e uma trava do DungeonHUDBootstrap. Ela so deve ser
-	-- removida quando o jogador realmente possuir ao menos um companion.
 	if unlocked and root:GetAttribute("invisible") == true then
 		root:SetAttribute("invisible", nil)
 	end
@@ -648,11 +647,15 @@ local function bindInventoryGui(gui)
 	inventoryGui:SetAttribute("invisible", nil)
 	inventoryGui.Enabled = true
 	inventoryGui.ResetOnSpawn = false
-
-	-- A posicao Y autorada passa a usar o topo REAL da viewport, sem a margem
-	-- automatica reservada pelo Roblox para a top bar/CoreGui.
 	inventoryGui.IgnoreGuiInset = true
+
+	-- DisplayOrder e a autoridade correta contra outros ScreenGuis. Mantemos
+	-- ZIndexBehavior em Sibling para preservar a ordem interna autorada no Studio.
+	inventoryGui.DisplayOrder = INVENTORY_DISPLAY_ORDER
+	inventoryGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 	inventoryGui:SetAttribute("CompanionIgnoreGuiInset", true)
+	inventoryGui:SetAttribute("CompanionDisplayOrder", INVENTORY_DISPLAY_ORDER)
+	inventoryGui:SetAttribute("CompanionOverlayPolicy", "TopGameplayScreenGui")
 	inventoryGui:SetAttribute("CompanionInventoryControllerVersion", VERSION)
 
 	mainFrame = findNamedDescendant(gui, { "MainFrame" })
@@ -673,8 +676,10 @@ local function bindInventoryGui(gui)
 	mainFrame:SetAttribute("invisible", nil)
 	mainFrame.Visible = false
 	mainFrame:SetAttribute("CompanionPositionPolicy", "IgnoreRobloxTopInset")
+	mainFrame:SetAttribute("CompanionOverlayPolicy", "ScreenGuiDisplayOrder1000")
 	player:SetAttribute("DungeonCompanionInventoryOpen", false)
 	player:SetAttribute("DungeonCompanionInventoryIgnoreGuiInset", true)
+	player:SetAttribute("DungeonCompanionInventoryDisplayOrder", INVENTORY_DISPLAY_ORDER)
 
 	if companionList:IsA("ScrollingFrame") then
 		companionList.AutomaticCanvasSize = Enum.AutomaticSize.Y
@@ -738,8 +743,6 @@ if initialGui then
 	bindInventoryGui(initialGui)
 end
 
--- O launcher deve iniciar oculto ate o servidor confirmar que existe ao menos
--- um companion salvo/desbloqueado.
 scanLaunchers()
 updateAllLaunchers()
 
@@ -777,3 +780,4 @@ end)
 
 player:SetAttribute("DungeonCompanionInventoryControllerVersion", VERSION)
 player:SetAttribute("DungeonCompanionButtonUnlockPolicy", "VisibleAfterFirstCompanion")
+player:SetAttribute("DungeonCompanionInventoryOverlayPolicy", "DisplayOrder1000")
