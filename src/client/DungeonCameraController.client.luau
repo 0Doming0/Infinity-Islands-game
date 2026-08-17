@@ -1,8 +1,11 @@
 -- DungeonCameraController: unica autoridade da camera mobile durante gameplay.
 --
--- A camera enquadra a ILHA e a direcao da rota. Ela nunca mira automaticamente
--- no mob selecionado pelo ataque. Assim o combate pode escolher/perseguir alvos
--- sem fazer a camera abandonar a leitura espacial da arena.
+-- Regra normal: enquadra a ILHA e a direcao da rota.
+-- Excecao curta da ilha inicial: enquanto InstantOnboardingController publicar
+-- DungeonInitialGuideTarget, a POSICAO continua sendo a camera inteligente da
+-- ilha, mas o FOCO aponta suavemente para o slime orientado. Quando a cota
+-- termina, o ObjectValue e limpo e a camera volta automaticamente ao modo
+-- inteligente normal.
 --
 -- Durante o transporte este controller cede a camera ao controller do voo.
 
@@ -12,8 +15,9 @@ local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 
 local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
 
-local VERSION = "IslandSmartMobileCameraV2"
+local VERSION = "IslandSmartMobileCameraV3_InitialGuideFocus"
 local BIND_NAME = "DungeonCameraController"
 local CAMERA_HEIGHT = 28
 local CAMERA_DISTANCE = 22
@@ -190,6 +194,34 @@ local function routeFrame(root)
 	return direction, focus, sideCenter
 end
 
+local function guideTargetPosition()
+	if currentIslandIndex() ~= 1
+		or player:GetAttribute("DungeonInitialCombatGuideActive") ~= true
+	then
+		return nil
+	end
+
+	local holder = playerGui:FindFirstChild("DungeonInitialGuideTarget")
+	local target = holder and holder:IsA("ObjectValue") and holder.Value or nil
+	if not target or not target:IsA("Model") or not target:IsDescendantOf(Workspace) then
+		return nil
+	end
+
+	local humanoid = target:FindFirstChildWhichIsA("Humanoid", true)
+	if not humanoid or humanoid.Health <= 0 then
+		return nil
+	end
+
+	local targetRoot = target:FindFirstChild("HumanoidRootPart", true)
+		or target.PrimaryPart
+		or target:FindFirstChildWhichIsA("BasePart", true)
+	if not targetRoot or not targetRoot:IsA("BasePart") then
+		return nil
+	end
+
+	return targetRoot.Position + Vector3.new(0, math.max(1, targetRoot.Size.Y * 0.35), 0), target
+end
+
 local function humanoidModel(instance)
 	local current = instance
 	while current and current ~= Workspace do
@@ -286,6 +318,13 @@ local function update(dt)
 	camera.CameraType = Enum.CameraType.Scriptable
 
 	local direction, desiredFocus, sideCenter = routeFrame(root)
+	local guideFocus, guideTarget = guideTargetPosition()
+	local cameraMode = "IslandRouteFollow"
+	if guideFocus then
+		desiredFocus = guideFocus
+		cameraMode = "InitialAttackGuide"
+	end
+
 	local desiredPosition = desiredCameraPosition(root, direction, desiredFocus)
 	local positionAlpha = 1 - math.exp(-POSITION_SPEED * math.max(dt, 0))
 	local rotationAlpha = 1 - math.exp(-ROTATION_SPEED * math.max(dt, 0))
@@ -306,10 +345,14 @@ local function update(dt)
 
 	player:SetAttribute("DungeonMobileCameraActive", true)
 	player:SetAttribute("DungeonMobileCameraPolicy", VERSION)
-	player:SetAttribute("DungeonMobileCameraMode", "IslandRouteFollow")
+	player:SetAttribute("DungeonMobileCameraMode", cameraMode)
 	player:SetAttribute("DungeonMobileCameraForward", direction)
 	player:SetAttribute("DungeonMobileCameraFocusWorld", focusPosition)
 	player:SetAttribute("DungeonMobileCameraSideCenterWorld", sideCenter)
+	player:SetAttribute(
+		"DungeonMobileCameraGuideTarget",
+		guideTarget and guideTarget.Name or nil
+	)
 end
 
 local function eligible()
