@@ -137,6 +137,8 @@ local function resumeAtPersonalIsland(player)
 				player:SetAttribute("DungeonPersonalResumeSucceeded", true)
 				player:SetAttribute("DungeonPersonalResumeState", "Succeeded")
 				player:SetAttribute("DungeonPersonalResumeError", nil)
+				player:SetAttribute("DungeonLastRespawnIslandIndex", resume)
+				player:SetAttribute("DungeonLastRespawnPositionedAt", workspace:GetServerTimeNow())
 				return true
 			end
 			player:SetAttribute("DungeonPersonalResumeState", "WaitingToPosition")
@@ -164,13 +166,14 @@ local function bindPlayer(player)
 		end
 	end)
 	player.CharacterAdded:Connect(function()
-		-- Se o personagem nasceu antes da rota ficar pronta, ou se a primeira
-		-- tentativa expirou, tente novamente no proximo nascimento.
+		-- Cada NOVO personagem precisa ser reposicionado no checkpoint pessoal.
+		-- DungeonPersonalResumeSucceeded pertence ao personagem anterior e nao
+		-- pode impedir o reposicionamento depois de uma morte/respawn.
+		player:SetAttribute("DungeonPersonalResumeSucceeded", false)
 		task.delay(0.5, function()
 			if player.Parent == Players
 				and player:GetAttribute("IslandProgressPersistenceReady") == true
 				and cleanIndex(player:GetAttribute("SavedResumeIslandIndex")) > 1
-				and player:GetAttribute("DungeonPersonalResumeSucceeded") ~= true
 				and workspace:GetAttribute("DungeonStandaloneWorldReady") == true
 			then
 				resumeAtPersonalIsland(player)
