@@ -43,6 +43,7 @@
         "LevelUpPanelAnimation": { "$attributes": { "_lemonadeUniqueId": "wcB9xxWIwcB9" }, "$path": "src/client/LevelUpPanelAnimation.client.luau" },
         "MobHitScaleClient": { "$path": "src/client/MobHitScaleClient.client.luau" },
         "MobileChestProximityUI": { "$path": "src/client/MobileChestProximityUI.client.luau" },
+        "MobileControlIconDecorator": { "$path": "src/client/MobileControlIconDecorator.client.luau" },
         "MobileControls": { "$path": "src/client/MobileControls.client.luau" },
         "DungeonShopUI": { "$path": "src/client/MonetizationUI.client.luau" },
         "OrbCombatClient": { "$attributes": { "_lemonadeUniqueId": "yL4rINgcyL4r" }, "$path": "src/client/OrbCombatClient.client.luau" },
