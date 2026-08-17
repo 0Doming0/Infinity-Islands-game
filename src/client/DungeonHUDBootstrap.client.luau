@@ -3,7 +3,8 @@
 
 	Responsabilidades:
 	1. garantir que o DungeonHUD autorado no Studio exista em PlayerGui;
-	2. respeitar o atributo GUI `invisible = true` como override autoral.
+	2. respeitar o atributo GUI `invisible = true` como override autoral;
+	3. aplicar pequenos ajustes visuais globais em GUIs temporarias do gameplay.
 
 	Nenhum elemento visual e criado aqui alem do clone completo do DungeonHUD
 	quando o Roblox ainda nao o copiou para PlayerGui.
@@ -19,6 +20,25 @@ local visibilityBindings = setmetatable({}, { __mode = "k" })
 
 local function isVisibilityObject(instance)
 	return instance:IsA("GuiObject") or instance:IsA("LayerCollector")
+end
+
+local function normalizeGameplayGui(instance)
+	if not instance or not instance.Parent then
+		return
+	end
+
+	-- O guia da ilha inicial deve orientar sem dominar a tela.
+	if instance:IsA("BillboardGui")
+		and instance.Name == "DungeonInitialAttackSword"
+	then
+		instance.Size = UDim2.fromOffset(26, 26)
+		instance.StudsOffsetWorldSpace = Vector3.new(0, 3.1, 0)
+		instance.MaxDistance = 90
+		player:SetAttribute(
+			"DungeonInitialAttackSwordVisualPolicy",
+			"Compact26px"
+		)
+	end
 end
 
 local function forceInvisibleIfRequested(instance)
@@ -41,6 +61,8 @@ local function forceInvisibleIfRequested(instance)
 end
 
 local function bindVisibilityAttribute(instance)
+	normalizeGameplayGui(instance)
+
 	if not isVisibilityObject(instance) then
 		return
 	end
