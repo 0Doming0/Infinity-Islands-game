@@ -1,12 +1,9 @@
 -- SkyDungeon - entrada de ataque sem controlar layout mobile.
 --
--- O Roblox Studio passa a ser a autoridade visual dos controles de toque.
+-- O Roblox Studio e a autoridade visual dos controles de toque.
 -- Este script NAO cria botao mobile, NAO define Position/Size/AnchorPoint e
--- NAO move o personagem ate um inimigo. Ele apenas conecta os botoes de ataque
--- existentes no DungeonHUD ao Tool.Activated.
---
--- SwordInputClient continua responsavel por combo, buffer, animacao e pela
--- assistencia leve de direcao no momento do golpe.
+-- NAO move o personagem. Ele conecta os botoes de ataque existentes ao
+-- Tool.Activated; MobileAttackAutoWalk adiciona a aproximacao enquanto segura.
 
 local ContextActionService = game:GetService("ContextActionService")
 local Players = game:GetService("Players")
@@ -21,7 +18,7 @@ local CombatConfig = require(
 )
 
 local ACTION_NAME = "SkyDungeonAttack"
-local VERSION = "AuthoredMobileAttackLayoutV1"
+local VERSION = "AuthoredMobileAttackLayoutV2"
 
 local ATTACK_BUTTON_NAMES = {
 	swordattackbutton = true,
@@ -100,8 +97,8 @@ local function refreshButton(button)
 		return
 	end
 
-	-- Visibilidade e a unica propriedade visual que este controller pode tocar.
-	-- Position, Size e AnchorPoint pertencem exclusivamente ao layout do Studio.
+	-- Visibilidade e a unica propriedade visual tocada aqui.
+	-- Position, Size e AnchorPoint pertencem exclusivamente ao Studio.
 	button.Visible = isMobileDungeon()
 		and equippedSword ~= nil
 		and player:GetAttribute("IsDowned") ~= true
@@ -206,7 +203,6 @@ end
 
 task.defer(scanButtons)
 
-player:SetAttribute("DungeonMobileHoldAttackReady", false)
-player:SetAttribute("DungeonMobileAutoEngageState", "DisabledForAuthoredControls")
+-- Nao sobrescrever mais os estados publicados pelo MobileAttackAutoWalk.
 player:SetAttribute("DungeonMobileAttackLayoutOwnedByStudio", true)
 player:SetAttribute("DungeonMobileAttackControllerVersion", VERSION)
