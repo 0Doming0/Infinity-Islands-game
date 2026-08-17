@@ -1,7 +1,7 @@
--- Progressao visual nao bloqueante do MVP.
--- Nenhum level-up abre painel ou captura input: jogador, Orb e companion usam
--- apenas um toast curto. Upgrades de companion sao confirmados automaticamente
--- escolhendo uma melhoria valida aleatoria para variar cada companheiro.
+-- Player level-up usa o LevelUpPanel autorado no Studio com a animacao original.
+-- Orbs e companions continuam usando toasts curtos para nao interromper combate.
+-- Se LevelUpPanel tiver invisible=true (ou estiver ausente), o player level-up
+-- volta automaticamente para o toast simples como fallback.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -12,12 +12,21 @@ local CompanionCatalog = require(ReplicatedStorage:WaitForChild("CompanionCatalo
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local VERSION = "NonBlockingProgressionToastV4_CompanionLevelIcon"
+local VERSION = "AuthoredPlayerLevelPanelV5_WithToastFallback"
 local TOAST_GUI_NAME = "ProgressionLevelToastGui"
+
+-- Toasts de Orb/companion e fallback do level do jogador.
 local DISPLAY_SECONDS = 1.35
 local COMPANION_DISPLAY_SECONDS = 0.9
 local FADE_SECONDS = 0.18
 local COMPANION_FADE_SECONDS = 0.12
+
+-- Animacao original do LevelUpPanel, restaurada da versao autorada.
+local PANEL_SHOW_TIME = 0.42
+local PANEL_HIDE_TIME = 0.32
+local PANEL_DISPLAY_TIME = 2.4
+local PANEL_SLIDE_OFFSET = 42
+
 local random = Random.new()
 
 local toastGui
@@ -25,37 +34,232 @@ local toastHolder
 local toastIcon
 local toastLabel
 local toastSerial = 0
+
+local levelPanel
+local levelPanelInitialPosition
+local levelPanelTransparencyValues = {}
+local levelPanelAnimationSerial = 0
+local levelPanelInvisibleConnection
 local lastPlayerLevelSerial
 local lastOrbLevels = {}
-local panelConnections = setmetatable({}, { __mode = "k" })
+
 local companionOfferSerials = {}
 local pendingCompanionUpgrades = {}
 
-local function suppressLevelUpPanel(root)
-	if not root then
+local function isTextObject(instance)
+	return instance
+		and (
+			instance:IsA("TextLabel")
+			or instance:IsA("TextButton")
+			or instance:IsA("TextBox")
+		)
+end
+
+local function findLevelUpPanel()
+	local dungeonHud = playerGui:FindFirstChild("DungeonHUD")
+	local direct = dungeonHud and dungeonHud:FindFirstChild("LevelUpPanel", true)
+	if direct and direct:IsA("GuiObject") then
+		return direct
+	end
+
+	-- Fallback de descoberta para manter o asset funcionando caso o ScreenGui
+	-- seja renomeado, sem criar uma segunda copia do painel.
+	for _, descendant in ipairs(playerGui:GetDescendants()) do
+		if descendant.Name == "LevelUpPanel" and descendant:IsA("GuiObject") then
+			return descendant
+		end
+	end
+	return nil
+end
+
+local function setLevelPanelFade(value)
+	if not levelPanel then
 		return
 	end
-	local panel = root:FindFirstChild("LevelUpPanel", true)
-	if not panel or not panel:IsA("GuiObject") then
+
+	for object, values in pairs(levelPanelTransparencyValues) do
+		if object.Parent then
+			object.BackgroundTransparency = values.BackgroundTransparency
+				+ (1 - values.BackgroundTransparency) * value
+
+			if values.TextTransparency ~= nil then
+				object.TextTransparency = values.TextTransparency
+					+ (1 - values.TextTransparency) * value
+			end
+			if values.ImageTransparency ~= nil then
+				object.ImageTransparency = values.ImageTransparency
+					+ (1 - values.ImageTransparency) * value
+			end
+		end
+	end
+end
+
+local function restoreLevelPanelFade()
+	setLevelPanelFade(0)
+end
+
+local function stopAndHideLevelPanel()
+	levelPanelAnimationSerial += 1
+	if levelPanel and levelPanel.Parent then
+		levelPanel.Visible = false
+		if levelPanelInitialPosition then
+			levelPanel.Position = levelPanelInitialPosition
+		end
+		restoreLevelPanelFade()
+	end
+end
+
+local function bindLevelPanelInvisibleAttribute()
+	if levelPanelInvisibleConnection then
+		levelPanelInvisibleConnection:Disconnect()
+		levelPanelInvisibleConnection = nil
+	end
+	if not levelPanel then
 		return
 	end
-	panel.Visible = false
-	if panelConnections[panel] then
-		return
-	end
-	panelConnections[panel] = panel:GetPropertyChangedSignal("Visible"):Connect(function()
-		if panel.Parent and panel.Visible then
-			panel.Visible = false
+
+	levelPanelInvisibleConnection = levelPanel:GetAttributeChangedSignal("invisible"):Connect(function()
+		if levelPanel and levelPanel:GetAttribute("invisible") == true then
+			stopAndHideLevelPanel()
 		end
 	end)
 end
 
-local function suppressAllLegacyPanels()
-	for _, child in ipairs(playerGui:GetChildren()) do
-		if child:IsA("ScreenGui") then
-			suppressLevelUpPanel(child)
-		end
+local function captureLevelUpPanel()
+	local current = findLevelUpPanel()
+	if not current then
+		return false
 	end
+
+	if current ~= levelPanel then
+		levelPanel = current
+		levelPanelInitialPosition = levelPanel.Position
+		levelPanelTransparencyValues = {}
+
+		-- Mesma estrategia da animacao original: respeita os valores autorados no
+		-- Studio e apenas interpola temporariamente ate transparencia total.
+		for _, descendant in ipairs(levelPanel:GetDescendants()) do
+			if descendant:IsA("GuiObject") then
+				levelPanelTransparencyValues[descendant] = {
+					BackgroundTransparency = descendant.BackgroundTransparency,
+					TextTransparency = isTextObject(descendant)
+						and descendant.TextTransparency
+						or nil,
+					ImageTransparency = (
+						descendant:IsA("ImageLabel") or descendant:IsA("ImageButton")
+					) and descendant.ImageTransparency or nil,
+				}
+			end
+		end
+		bindLevelPanelInvisibleAttribute()
+	end
+
+	return true
+end
+
+local function updateLevelPanelText(level)
+	if not captureLevelUpPanel() then
+		return
+	end
+	local levelText = levelPanel:FindFirstChild("LevelText", true)
+	if isTextObject(levelText) then
+		levelText.Text = string.format("Level %d", level)
+	end
+end
+
+local function levelPanelAllowed()
+	return captureLevelUpPanel()
+		and levelPanel.Parent ~= nil
+		and levelPanel:GetAttribute("invisible") ~= true
+end
+
+local function hideLevelPanelAnimated(expectedSerial)
+	if not levelPanelAllowed() then
+		stopAndHideLevelPanel()
+		return
+	end
+	if expectedSerial and expectedSerial ~= levelPanelAnimationSerial then
+		return
+	end
+
+	local currentSerial = levelPanelAnimationSerial
+	local hiddenPosition = levelPanelInitialPosition + UDim2.fromOffset(0, -PANEL_SLIDE_OFFSET)
+
+	local positionTween = TweenService:Create(
+		levelPanel,
+		TweenInfo.new(PANEL_HIDE_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+		{ Position = hiddenPosition }
+	)
+	local fadeValue = Instance.new("NumberValue")
+	fadeValue.Value = 0
+	local fadeConnection = fadeValue.Changed:Connect(setLevelPanelFade)
+	local fadeTween = TweenService:Create(
+		fadeValue,
+		TweenInfo.new(PANEL_HIDE_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+		{ Value = 1 }
+	)
+
+	positionTween:Play()
+	fadeTween:Play()
+	positionTween.Completed:Wait()
+	fadeConnection:Disconnect()
+	fadeValue:Destroy()
+
+	if currentSerial == levelPanelAnimationSerial and levelPanel then
+		levelPanel.Visible = false
+		levelPanel.Position = levelPanelInitialPosition
+		restoreLevelPanelFade()
+	end
+end
+
+local function showLevelPanelAnimated(level)
+	if not levelPanelAllowed() then
+		return false
+	end
+
+	updateLevelPanelText(level)
+	levelPanelAnimationSerial += 1
+	local currentSerial = levelPanelAnimationSerial
+	local hiddenPosition = levelPanelInitialPosition + UDim2.fromOffset(0, -PANEL_SLIDE_OFFSET)
+
+	levelPanel.Visible = true
+	levelPanel.Position = hiddenPosition
+	setLevelPanelFade(1)
+
+	local positionTween = TweenService:Create(
+		levelPanel,
+		TweenInfo.new(PANEL_SHOW_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ Position = levelPanelInitialPosition }
+	)
+	local fadeValue = Instance.new("NumberValue")
+	fadeValue.Value = 1
+	local fadeConnection = fadeValue.Changed:Connect(setLevelPanelFade)
+	local fadeTween = TweenService:Create(
+		fadeValue,
+		TweenInfo.new(PANEL_SHOW_TIME, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		{ Value = 0 }
+	)
+
+	positionTween:Play()
+	fadeTween:Play()
+	positionTween.Completed:Wait()
+	fadeConnection:Disconnect()
+	fadeValue:Destroy()
+
+	if currentSerial ~= levelPanelAnimationSerial then
+		return true
+	end
+	if levelPanel:GetAttribute("invisible") == true then
+		stopAndHideLevelPanel()
+		return true
+	end
+
+	restoreLevelPanelFade()
+	task.wait(PANEL_DISPLAY_TIME)
+	if currentSerial == levelPanelAnimationSerial then
+		hideLevelPanelAnimated(currentSerial)
+	end
+	return true
 end
 
 local function ensureToast()
@@ -202,6 +406,7 @@ local function onPlayerLevelUp()
 		return
 	end
 	lastPlayerLevelSerial = serial
+
 	local level = math.max(
 		1,
 		math.floor(
@@ -210,7 +415,14 @@ local function onPlayerLevelUp()
 				or 1
 		)
 	)
-	showToast("NÍVEL " .. tostring(level) .. "!", Color3.fromRGB(255, 239, 118))
+
+	if levelPanelAllowed() then
+		player:SetAttribute("DungeonPlayerLevelUpPresentation", "LevelUpPanel")
+		task.spawn(showLevelPanelAnimated, level)
+	else
+		player:SetAttribute("DungeonPlayerLevelUpPresentation", "ToastFallback")
+		showToast("NÍVEL " .. tostring(level) .. "!", Color3.fromRGB(255, 239, 118))
+	end
 end
 
 local function bindOrbLevelNotifications()
@@ -356,8 +568,6 @@ local function bindCompanionProgression()
 			return
 		end
 		if payload.Action == "Offer" then
-			-- Nao mostramos nada antes da confirmacao; isso evita interromper o
-			-- combate e garante que o toast represente uma melhoria realmente aplicada.
 			autoAcceptCompanionOffer(payload, request)
 		elseif payload.Action == "Selected" then
 			showConfirmedCompanionUpgrade(payload)
@@ -367,17 +577,36 @@ local function bindCompanionProgression()
 end
 
 player:GetAttributeChangedSignal("PlayerLevelUpSerial"):Connect(onPlayerLevelUp)
-playerGui.ChildAdded:Connect(function(child)
-	task.defer(suppressLevelUpPanel, child)
+
+playerGui.ChildAdded:Connect(function()
+	task.defer(function()
+		if captureLevelUpPanel() and levelPanel then
+			levelPanel.Visible = false
+			levelPanel.Position = levelPanelInitialPosition
+			restoreLevelPanelFade()
+		end
+	end)
 end)
+
 playerGui.DescendantAdded:Connect(function(descendant)
 	if descendant.Name == "LevelUpPanel" and descendant:IsA("GuiObject") then
-		task.defer(suppressAllLegacyPanels)
+		task.defer(function()
+			if captureLevelUpPanel() and levelPanel then
+				levelPanel.Visible = false
+				levelPanel.Position = levelPanelInitialPosition
+				restoreLevelPanelFade()
+			end
+		end)
 	end
 end)
 
 task.defer(function()
-	suppressAllLegacyPanels()
+	if captureLevelUpPanel() and levelPanel then
+		levelPanel.Visible = false
+		levelPanel.Position = levelPanelInitialPosition
+		restoreLevelPanelFade()
+	end
+
 	ensureToast()
 	bindOrbLevelNotifications()
 
@@ -394,6 +623,8 @@ task.defer(function()
 end)
 
 player:SetAttribute("DungeonProgressionToastVersion", VERSION)
-player:SetAttribute("DungeonBlockingLevelUpPanelDisabled", true)
+player:SetAttribute("DungeonBlockingLevelUpPanelDisabled", false)
+player:SetAttribute("DungeonPlayerLevelUpPanelPolicy", "AuthoredPanelUnlessInvisibleTrue")
+player:SetAttribute("DungeonPlayerLevelUpToastFallback", true)
 player:SetAttribute("DungeonCompanionLevelUpChoicePolicy", "AutomaticRandomAvailableUpgrade")
 player:SetAttribute("DungeonCompanionUpgradeToastPolicy", "ConfirmedQuickLevelIcon")
