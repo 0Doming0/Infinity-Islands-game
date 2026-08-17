@@ -1,15 +1,9 @@
-local service = require(
-	script.Parent.DungeonRuntime.AssistedIslandTransportService
-)
+-- Transporte automatico legado desativado.
+-- ManualIslandAdvance.server.luau e a unica autoridade de progressao e voo.
+-- Nao iniciar DungeonRuntime.AssistedIslandTransportService evita conflito com
+-- RecommendedLevel, auto-flight antigo, guidance e estados duplicados.
 
-local ok, result, detail = pcall(service.Start)
-if not ok or (result == false and detail ~= "AlreadyStarted") then
-	workspace:SetAttribute("DungeonAssistedTransportReady", false)
-	workspace:SetAttribute(
-		"DungeonAssistedTransportBootstrapError",
-		tostring(ok and detail or result)
-	)
-	warn("[AssistedIslandTransport] Falha ao iniciar: " .. tostring(ok and detail or result))
-else
-	workspace:SetAttribute("DungeonAssistedTransportBootstrapError", nil)
-end
+workspace:SetAttribute("DungeonAssistedTransportReady", false)
+workspace:SetAttribute("DungeonAssistedTransportLegacyDisabled", true)
+workspace:SetAttribute("DungeonAssistedTransportBootstrapError", nil)
+workspace:SetAttribute("DungeonAssistedTransportAuthority", "ManualIslandAdvance")
