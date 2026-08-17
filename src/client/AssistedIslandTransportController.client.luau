@@ -1,6 +1,6 @@
 -- AssistedIslandTransportController: UI minima do fluxo linear.
 --
--- Objetivo concluido -> AVANCAR -> voo -> proxima ilha.
+-- Objetivo concluido -> AVANCAR -> voo -> pouso -> 3...2...1 -> VA! + apito.
 -- Sem seta de rota, guidance, RecommendedLevel ou segunda confirmacao.
 
 local Players = game:GetService("Players")
@@ -14,7 +14,7 @@ local Config = require(ReplicatedStorage.Shared.Configs.AssistedIslandTransportC
 local RemoteRegistry = require(ReplicatedStorage.Shared.Utilities.RemoteRegistry)
 local remote = RemoteRegistry.Get("Navigation", "AssistedIslandTransport", "RemoteEvent")
 
-local VERSION = "LinearTransportClientV1"
+local VERSION = "LinearTransportClientV2_ReleaseCountdownWhistle"
 local CAMERA_BIND = "AssistedIslandTransportCamera"
 
 local readyToken
@@ -22,6 +22,9 @@ local submitting = false
 local focusPosition
 local savedCamera
 local cameraBound = false
+local landingDeadline = 0
+local landingCounting = false
+local releaseVisualSerial = 0
 
 local gui = playerGui:FindFirstChild("AssistedIslandTransportHUD")
 if not gui or not gui:IsA("ScreenGui") then
@@ -34,12 +37,12 @@ gui.IgnoreGuiInset = true
 gui.DisplayOrder = 96
 gui.Enabled = true
 
--- Remove residuos criados pela versao antiga deste mesmo controller.
+-- Remove somente residuos que realmente pertenciam ao fluxo visual antigo.
+-- LandingCountdown volta a ser parte ativa do fluxo atual.
 for _, name in ipairs({
 	"InputBlocker",
 	"WarningPanel",
 	"WarningBanner",
-	"LandingCountdown",
 }) do
 	local old = gui:FindFirstChild(name)
 	if old and old:GetAttribute("LinearTransportKeep") ~= true then
@@ -117,6 +120,29 @@ message:SetAttribute("LinearTransportKeep", true)
 message.Visible = false
 message.Text = ""
 
+local landingCount = gui:FindFirstChild("LandingCountdown")
+if not landingCount or not landingCount:IsA("TextLabel") then
+	if landingCount then
+		landingCount:Destroy()
+	end
+	landingCount = Instance.new("TextLabel")
+	landingCount.Name = "LandingCountdown"
+	landingCount.AnchorPoint = Vector2.new(0.5, 0.5)
+	landingCount.Position = UDim2.fromScale(0.5, 0.42)
+	landingCount.Size = UDim2.fromOffset(240, 180)
+	landingCount.BackgroundTransparency = 1
+	landingCount.Font = Enum.Font.GothamBlack
+	landingCount.TextColor3 = Color3.fromRGB(255, 255, 255)
+	landingCount.TextStrokeColor3 = Color3.fromRGB(22, 29, 49)
+	landingCount.TextStrokeTransparency = 0.05
+	landingCount.TextScaled = true
+	landingCount.ZIndex = 24
+	landingCount.Parent = gui
+end
+landingCount:SetAttribute("LinearTransportKeep", true)
+landingCount.Visible = false
+landingCount.Text = ""
+
 local function showReady(token, destination)
 	token = tonumber(token)
 	if not token then
@@ -158,6 +184,13 @@ end
 local function hideMessage()
 	message.Visible = false
 	message.Text = ""
+end
+
+local function hideLandingCount()
+	landingCounting = false
+	landingDeadline = 0
+	landingCount.Visible = false
+	landingCount.Text = ""
 end
 
 local function captureCamera()
@@ -237,11 +270,28 @@ local function startFlightCamera(position)
 end
 
 local function playWhistle()
-	local sound = Instance.new("Sound")
-	sound.Name = "LinearIslandTransportWhistle"
-	sound.SoundId = tostring(Config.ReleaseWhistleSoundId or "rbxasset://sounds/electronicpingshort.wav")
-	sound.Volume = tonumber(Config.ReleaseWhistleVolume) or 0.8
-	sound.PlaybackSpeed = tonumber(Config.ReleaseWhistlePlaybackSpeed) or 1.2
+	-- Preserva o asset customizado antigo caso ele exista; caso contrario usa
+	-- o fallback configurado. A simplificacao anterior ignorava esse template.
+	local template = ReplicatedStorage:FindFirstChild("AssistedTransportWhistle", true)
+	local sound
+	if template and template:IsA("Sound") then
+		sound = template:Clone()
+	else
+		sound = Instance.new("Sound")
+		local configuredId = tostring(
+			ReplicatedStorage:GetAttribute("AssistedTransportWhistleSoundId")
+				or Config.ReleaseWhistleSoundId
+				or "rbxasset://sounds/electronicpingshort.wav"
+		)
+		if string.match(configuredId, "^%d+$") then
+			configuredId = "rbxassetid://" .. configuredId
+		end
+		sound.SoundId = configuredId
+		sound.Volume = tonumber(Config.ReleaseWhistleVolume) or 0.8
+		sound.PlaybackSpeed = tonumber(Config.ReleaseWhistlePlaybackSpeed) or 1.25
+	end
+
+	sound.Name = "AssistedTransportReleaseWhistle"
 	sound.Parent = SoundService
 	sound:Play()
 	sound.Ended:Once(function()
@@ -251,6 +301,43 @@ local function playWhistle()
 		if sound.Parent then
 			sound:Destroy()
 		end
+	end)
+
+	player:SetAttribute("DungeonTransportReleaseWhistlePlayed", true)
+	player:SetAttribute(
+		"DungeonTransportReleaseWhistleSerial",
+		(tonumber(player:GetAttribute("DungeonTransportReleaseWhistleSerial")) or 0) + 1
+	)
+end
+
+local function beginLandingCountdown()
+	releaseVisualSerial += 1
+	landingCounting = true
+	landingDeadline = workspace:GetServerTimeNow()
+		+ math.max(0, tonumber(Config.LandingCountdownSeconds) or 3)
+	landingCount.Visible = true
+	landingCount.Text = tostring(math.max(1, math.ceil(landingDeadline - workspace:GetServerTimeNow())))
+	player:SetAttribute("DungeonTransportLandingCountdownActive", true)
+	player:SetAttribute("DungeonTransportLandingCountdownSeconds", tonumber(Config.LandingCountdownSeconds) or 3)
+end
+
+local function showReleaseVisual()
+	releaseVisualSerial += 1
+	local serial = releaseVisualSerial
+	landingCounting = false
+	landingDeadline = 0
+	landingCount.Visible = true
+	landingCount.Text = "VÁ!"
+	player:SetAttribute("DungeonTransportLandingCountdownActive", false)
+	player:SetAttribute("DungeonTransportReleaseVisual", "VA")
+	playWhistle()
+
+	task.delay(0.7, function()
+		if serial ~= releaseVisualSerial then
+			return
+		end
+		landingCount.Visible = false
+		landingCount.Text = ""
 	end)
 end
 
@@ -272,28 +359,47 @@ remote.OnClientEvent:Connect(function(payload)
 	local action = payload.Action
 	if action == "ReadyToAdvance" then
 		hideMessage()
+		hideLandingCount()
 		showReady(payload.ReadyToken, payload.DestinationIndex)
 	elseif action == "Warning" then
 		readyToken = nil
 		hideButton()
+		hideLandingCount()
 		showMessage("AVANÇANDO PARA A PRÓXIMA ILHA")
-		playWhistle()
 	elseif action == "BeginFlight" then
 		hideButton()
+		hideLandingCount()
 		showMessage("PRÓXIMA ILHA")
 		focusPosition = payload.FocusPosition or payload.DestinationPosition
 		startFlightCamera(focusPosition)
 	elseif action == "Landed" then
 		focusPosition = payload.FocusPosition or focusPosition
-		showMessage("CHEGOU!")
+		hideMessage()
+		beginLandingCountdown()
 	elseif action == "Release" then
+		-- O servidor restaura o personagem imediatamente antes deste evento.
+		-- Portanto o apito e o VA! coincidem com o instante real de liberacao.
 		stopFlightCamera()
 		hideMessage()
+		showReleaseVisual()
 		task.defer(syncReady)
 	elseif action == "Cancel" then
 		stopFlightCamera()
 		hideMessage()
+		hideLandingCount()
 		task.defer(syncReady)
+	end
+end)
+
+RunService.RenderStepped:Connect(function()
+	if not landingCounting or not landingCount.Visible then
+		return
+	end
+	local remaining = math.max(0, math.ceil(landingDeadline - workspace:GetServerTimeNow()))
+	if remaining > 0 then
+		landingCount.Text = tostring(remaining)
+	else
+		landingCount.Text = "1"
 	end
 end)
 
@@ -311,6 +417,7 @@ player.CharacterRemoving:Connect(function()
 	stopFlightCamera()
 	hideButton()
 	hideMessage()
+	hideLandingCount()
 end)
 
 -- Neutraliza atributos visuais da antiga guidance para leitores legados.
@@ -318,8 +425,10 @@ player:SetAttribute("DungeonRouteArrowVisible", false)
 player:SetAttribute("DungeonRouteArrowEligible", false)
 player:SetAttribute("DungeonTransportClientVersion", VERSION)
 player:SetAttribute("DungeonAdvanceButtonReady", true)
+player:SetAttribute("DungeonTransportReleaseCountdownPolicy", "3SecondsThenWhistleOnRelease")
 task.defer(syncReady)
 
 script.Destroying:Connect(function()
 	stopFlightCamera()
+	hideLandingCount()
 end)
