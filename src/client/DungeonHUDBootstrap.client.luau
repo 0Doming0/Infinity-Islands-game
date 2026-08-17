@@ -4,7 +4,8 @@
 	Responsabilidades:
 	1. garantir que o DungeonHUD autorado no Studio exista em PlayerGui;
 	2. respeitar o atributo GUI `invisible = true` como override autoral;
-	3. aplicar pequenos ajustes visuais globais em GUIs temporarias do gameplay.
+	3. aplicar pequenos ajustes visuais globais em GUIs temporarias do gameplay;
+	4. manter PlayerStatus.LevelText sincronizado com o nivel atual do jogador.
 
 	Nenhum elemento visual e criado aqui alem do clone completo do DungeonHUD
 	quando o Roblox ainda nao o copiou para PlayerGui.
@@ -17,6 +18,7 @@ local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
 local visibilityBindings = setmetatable({}, { __mode = "k" })
+local levelTextBindings = setmetatable({}, { __mode = "k" })
 
 local function isVisibilityObject(instance)
 	return instance:IsA("GuiObject") or instance:IsA("LayerCollector")
@@ -157,12 +159,85 @@ local function validHud(instance)
 		and instance.Name == "DungeonHUD"
 end
 
+local function currentPlayerLevel()
+	return math.max(
+		1,
+		math.floor(
+			tonumber(player:GetAttribute("PlayerLevel"))
+				or tonumber(player:GetAttribute("Level"))
+				or 1
+		)
+	)
+end
+
+local function directPlayerStatusLevelText(hud)
+	if not validHud(hud) then
+		return nil
+	end
+
+	local playerStatus = hud:FindFirstChild("PlayerStatus", true)
+	if not playerStatus or not playerStatus:IsA("GuiObject") then
+		return nil
+	end
+
+	-- IMPORTANTE: FindFirstChild sem recursive=true. O LevelText autorado e filho
+	-- direto de PlayerStatus; nao devemos capturar outro LevelText do Portrait,
+	-- minimapa ou qualquer outro componente do HUD.
+	local levelText = playerStatus:FindFirstChild("LevelText")
+	if levelText and (
+		levelText:IsA("TextLabel")
+		or levelText:IsA("TextButton")
+		or levelText:IsA("TextBox")
+	) then
+		return levelText
+	end
+
+	return nil
+end
+
+local function updatePlayerStatusLevelText(hud)
+	local levelText = directPlayerStatusLevelText(hud)
+	if not levelText then
+		player:SetAttribute("DungeonPlayerStatusLevelTextBound", false)
+		return false
+	end
+
+	levelText.Text = tostring(currentPlayerLevel())
+	levelText:SetAttribute("DungeonLevelSource", "PlayerLevel")
+	player:SetAttribute("DungeonPlayerStatusLevelTextBound", true)
+	player:SetAttribute("DungeonPlayerStatusLevelTextValue", currentPlayerLevel())
+	return true
+end
+
+local function bindPlayerStatusLevelText(hud)
+	if not validHud(hud) then
+		return
+	end
+
+	updatePlayerStatusLevelText(hud)
+	if levelTextBindings[hud] then
+		return
+	end
+
+	local connections = {}
+	levelTextBindings[hud] = connections
+
+	-- Se o LevelText/PlayerStatus chegar alguns frames depois por clone/sync,
+	-- sincroniza assim que entrar no HUD.
+	table.insert(connections, hud.DescendantAdded:Connect(function(instance)
+		if instance.Name == "LevelText" or instance.Name == "PlayerStatus" then
+			task.defer(updatePlayerStatusLevelText, hud)
+		end
+	end))
+end
+
 local function configure(hud)
 	hud.Enabled = true
 	hud.ResetOnSpawn = false
 	hud:SetAttribute("ResponsiveGenericOptOut", true)
 	hud:SetAttribute("DungeonHUDBootstrapReady", true)
 	scanVisibilityAttributes(hud)
+	bindPlayerStatusLevelText(hud)
 	return hud
 end
 
@@ -230,6 +305,7 @@ if hud then
 	player:SetAttribute("DungeonHUDBootstrapReady", true)
 	player:SetAttribute("DungeonHUDBootstrapError", nil)
 	player:SetAttribute("DungeonGUIInvisibleAttributePolicy", "invisible=true => hidden")
+	updatePlayerStatusLevelText(hud)
 
 	print(
 		"[DungeonHUDBootstrap] DungeonHUD pronto; atributo invisible=true respeitado."
@@ -246,6 +322,23 @@ else
 			.. "O HUD precisa permanecer criado manualmente no StarterGui."
 	)
 end
+
+-- PlayerLevel e a autoridade atual usada pelo fluxo de level-up. Level fica
+-- somente como fallback de compatibilidade para dados/sistemas antigos.
+player:GetAttributeChangedSignal("PlayerLevel"):Connect(function()
+	local activeHud = currentHud()
+	if activeHud then
+		updatePlayerStatusLevelText(activeHud)
+	end
+end)
+player:GetAttributeChangedSignal("Level"):Connect(function()
+	if player:GetAttribute("PlayerLevel") == nil then
+		local activeHud = currentHud()
+		if activeHud then
+			updatePlayerStatusLevelText(activeHud)
+		end
+	end
+end)
 
 -- Evita uma segunda copia automatica do DungeonHUD apos o carregamento.
 playerGui.ChildAdded:Connect(function(child)
