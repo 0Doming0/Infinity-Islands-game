@@ -2,10 +2,10 @@
 --
 -- Regra normal: enquadra a ILHA e a direcao da rota.
 -- Excecao curta da ilha inicial: enquanto InstantOnboardingController publicar
--- DungeonInitialGuideTarget, a POSICAO continua sendo a camera inteligente da
--- ilha, mas o FOCO aponta suavemente para o slime orientado. Quando a cota
--- termina, o ObjectValue e limpo e a camera volta automaticamente ao modo
--- inteligente normal.
+-- DungeonInitialGuideTarget E a SITUAÇÃO ATUAL ainda estiver pendente, a POSICAO
+-- continua sendo a camera inteligente da ilha, mas o FOCO aponta suavemente
+-- para o slime orientado. A conclusao do objetivo tem prioridade sobre a
+-- existencia de mobs restantes na ilha.
 --
 -- Durante o transporte este controller cede a camera ao controller do voo.
 
@@ -17,7 +17,7 @@ local Workspace = game:GetService("Workspace")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local VERSION = "IslandSmartMobileCameraV3_InitialGuideFocus"
+local VERSION = "IslandSmartMobileCameraV4_ObjectiveCompleteAuthority"
 local BIND_NAME = "DungeonCameraController"
 local CAMERA_HEIGHT = 28
 local CAMERA_DISTANCE = 22
@@ -71,6 +71,17 @@ local function currentIslandIndex()
 		or tonumber(Workspace:GetAttribute("DungeonObjectiveGlobalIslandIndex"))
 		or tonumber(Workspace:GetAttribute("DungeonCurrentObjectiveIsland"))
 	return value and math.max(1, math.floor(value)) or 1
+end
+
+local function initialSituationComplete()
+	if currentIslandIndex() ~= 1 then
+		return true
+	end
+
+	return player:GetAttribute("DungeonCurrentObjectiveComplete") == true
+		or player:GetAttribute("DungeonLinearObjectiveComplete") == true
+		or player:GetAttribute("DungeonInitialCombatGuideComplete") == true
+		or player:GetAttribute("DungeonManualAdvanceReady") == true
 end
 
 local function findAnchor(container, names)
@@ -195,7 +206,9 @@ local function routeFrame(root)
 end
 
 local function guideTargetPosition()
-	if currentIslandIndex() ~= 1
+	-- A conclusao da SITUAÇÃO ATUAL e a autoridade principal. Mobs extras vivos
+	-- nao podem manter a camera presa ao tutorial depois que o objetivo terminou.
+	if initialSituationComplete()
 		or player:GetAttribute("DungeonInitialCombatGuideActive") ~= true
 	then
 		return nil
@@ -387,6 +400,17 @@ local function invalidateIslandCache()
 	lastRouteSideCenter = nil
 end
 
+local function resetGuideFocusIfComplete()
+	if not initialSituationComplete() then
+		return
+	end
+	-- No proximo render, routeFrame reassume imediatamente o foco. A posicao
+	-- continua suave, mas a camera deixa de olhar para o mob sem esperar ele morrer.
+	cameraCFrame = nil
+	focusPosition = nil
+	player:SetAttribute("DungeonMobileCameraGuideTarget", nil)
+end
+
 player.CharacterAdded:Connect(function()
 	cameraCFrame = nil
 	focusPosition = nil
@@ -403,6 +427,14 @@ player:GetAttributeChangedSignal("DungeonAssistedTransportActive"):Connect(funct
 	cameraCFrame = nil
 	focusPosition = nil
 end)
+for _, attributeName in ipairs({
+	"DungeonCurrentObjectiveComplete",
+	"DungeonLinearObjectiveComplete",
+	"DungeonInitialCombatGuideComplete",
+	"DungeonManualAdvanceReady",
+}) do
+	player:GetAttributeChangedSignal(attributeName):Connect(resetGuideFocusIfComplete)
+end
 Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
 	savedType = nil
 	savedSubject = nil
