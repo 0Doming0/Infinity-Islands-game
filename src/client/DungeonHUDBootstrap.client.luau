@@ -22,6 +22,56 @@ local function isVisibilityObject(instance)
 	return instance:IsA("GuiObject") or instance:IsA("LayerCollector")
 end
 
+local function isInitialAttackText(instance)
+	if not instance:IsA("TextLabel") or instance.Name ~= "AttackText" then
+		return false
+	end
+
+	local parent = instance.Parent
+	while parent and parent ~= playerGui do
+		if parent:IsA("ScreenGui") and parent.Name == "DungeonInitialAttackGuide" then
+			return true
+		end
+		parent = parent.Parent
+	end
+
+	return false
+end
+
+local function applyTransportMessageStyle(label)
+	-- Mesmo estilo visual de AssistedIslandTransportHUD.TransportMessage:
+	-- texto limpo, sem painel, branco com contorno preto e escala responsiva.
+	label.BackgroundTransparency = 1
+	label.BorderSizePixel = 0
+	label.Font = Enum.Font.GothamBlack
+	label.TextColor3 = Color3.new(1, 1, 1)
+	label.TextStrokeColor3 = Color3.new(0, 0, 0)
+	label.TextStrokeTransparency = 0.25
+	label.TextScaled = true
+
+	local corner = label:FindFirstChildOfClass("UICorner")
+	if corner then
+		corner:Destroy()
+	end
+
+	local constraint = label:FindFirstChildOfClass("UITextSizeConstraint")
+	if not constraint then
+		constraint = Instance.new("UITextSizeConstraint")
+		constraint.Parent = label
+	end
+	constraint.MinTextSize = 16
+	constraint.MaxTextSize = 30
+
+	label:SetAttribute(
+		"DungeonInitialAttackTextVisualPolicy",
+		"TransportMessageStyle"
+	)
+	player:SetAttribute(
+		"DungeonInitialAttackTextVisualPolicy",
+		"TransportMessageStyle"
+	)
+end
+
 local function normalizeGameplayGui(instance)
 	if not instance or not instance.Parent then
 		return
@@ -38,6 +88,8 @@ local function normalizeGameplayGui(instance)
 			"DungeonInitialAttackSwordVisualPolicy",
 			"Compact26px"
 		)
+	elseif isInitialAttackText(instance) then
+		applyTransportMessageStyle(instance)
 	end
 end
 
