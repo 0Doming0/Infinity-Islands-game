@@ -1,13 +1,14 @@
 -- ChestNativePromptMode
 --
--- Politica simples de interacao de baus para o MVP:
--- deixa o proprio ProximityPrompt do Roblox desenhar e processar a interface
--- correta para teclado, gamepad e touch. Nao existe UI customizada de bau aqui.
+-- Politica hibrida de interacao de baus:
+--   PC/gamepad: ProximityPrompt nativo do Roblox.
+--   Mobile: MobileChestProximityUI troca o Style localmente para Custom e mostra
+--   um botao fixo na HUD quando o personagem entra no alcance fisico do bau.
 --
--- Os servicos de bau continuam sendo a unica autoridade de recompensa/abertura;
--- este script altera somente a apresentacao/input nativo dos prompts marcados.
+-- Os servicos de bau continuam sendo a unica autoridade de recompensa/abertura.
+-- Este script apenas garante uma configuracao base consistente dos prompts.
 
-local VERSION = "ChestNativePromptV1_RobloxDefault"
+local VERSION = "ChestPromptBaseV2_NativeDesktopMobileProximityUI"
 
 local observed = setmetatable({}, { __mode = "k" })
 
@@ -17,14 +18,14 @@ local function isChestPrompt(prompt)
 		and prompt:GetAttribute("UseSubtleChestPrompt") == true
 end
 
-local function applyNativeMode(prompt)
+local function applyBaseMode(prompt)
 	if not isChestPrompt(prompt) or not prompt.Parent then
 		return
 	end
 
-	-- Default delega toda a adaptacao de dispositivo ao engine do Roblox:
-	-- PC mostra a tecla configurada, gamepad mostra o botao e mobile recebe
-	-- a interface tocavel nativa do ProximityPrompt.
+	-- O servidor publica Default como base. Em dispositivos touch, o cliente
+	-- MobileChestProximityUI esconde esse visual localmente (Style=Custom) e usa
+	-- um botao de tela baseado exclusivamente em distancia do personagem.
 	prompt.Style = Enum.ProximityPromptStyle.Default
 	prompt.KeyboardKeyCode = Enum.KeyCode.E
 	prompt.GamepadKeyCode = Enum.KeyCode.ButtonX
@@ -34,8 +35,8 @@ local function applyNativeMode(prompt)
 		prompt.ActionText = "Abrir"
 	end
 
-	prompt:SetAttribute("DungeonNativeChestPrompt", true)
-	prompt:SetAttribute("DungeonNativeChestPromptVersion", VERSION)
+	prompt:SetAttribute("DungeonChestPromptBaseConfigured", true)
+	prompt:SetAttribute("DungeonChestPromptBaseVersion", VERSION)
 end
 
 local function observePrompt(prompt)
@@ -44,12 +45,11 @@ local function observePrompt(prompt)
 	end
 	observed[prompt] = true
 
-	applyNativeMode(prompt)
+	applyBaseMode(prompt)
 
-	-- Alguns sistemas podem marcar o prompt logo depois de parentear. Este
-	-- listener garante que ele ainda migre para o modo nativo sem polling.
+	-- Alguns sistemas marcam o prompt logo depois de parentear.
 	prompt:GetAttributeChangedSignal("UseSubtleChestPrompt"):Connect(function()
-		applyNativeMode(prompt)
+		applyBaseMode(prompt)
 	end)
 end
 
@@ -66,5 +66,6 @@ workspace.DescendantAdded:Connect(function(descendant)
 end)
 
 workspace:SetAttribute("DungeonChestInteractionVersion", VERSION)
-workspace:SetAttribute("DungeonChestInteractionPolicy", "RobloxNativeProximityPrompt")
-workspace:SetAttribute("DungeonChestCustomClientUIEnabled", false)
+workspace:SetAttribute("DungeonChestInteractionPolicy", "NativeDesktop_MobileDistanceButton")
+workspace:SetAttribute("DungeonChestMobileCameraDependency", false)
+workspace:SetAttribute("DungeonChestMobileProximityUIExpected", true)
