@@ -1,12 +1,12 @@
 -- MobileChestProximityUI
 --
--- Interacao de bau pensada especificamente para mobile sem depender da camera
--- para escolher o alvo. O personagem entra no alcance fisico de um bau, o bau
--- valido mais proximo vira o alvo e recebe um BillboardGui local tocavel acima
--- dele. Sair do alcance esconde o indicador.
+-- Interacao de bau para mobile sem depender da camera ou de toque em UI.
+-- Quando o personagem entra no alcance fisico de um bau, o bau valido mais
+-- proximo recebe um BillboardGui local acima dele. O texto e apenas visual.
+-- Ao personagem encostar no volume do bau, o mesmo ProximityPrompt e acionado
+-- automaticamente.
 --
 -- A autoridade continua sendo o ProximityPrompt + servico de bau do servidor.
--- Este script apenas escolhe um prompt por distancia e aciona o mesmo prompt.
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -16,22 +16,25 @@ local UserInputService = game:GetService("UserInputService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local VERSION = "MobileChestProximityUIV2_DistanceBillboardTouch"
-local SCAN_INTERVAL = 0.08
-local TAP_DEBOUNCE = 0.28
+local VERSION = "MobileChestProximityUIV3_DistanceBillboardAutoContact"
+local SCAN_INTERVAL = 0.06
+local AUTO_TRIGGER_DEBOUNCE = 0.35
 local SHOW_TIME = 0.14
 local HIDE_TIME = 0.10
+local CONTACT_PADDING = 0.30
+local CONTACT_VERTICAL_ALLOWANCE = 2.0
 
 local trackedPrompts = setmetatable({}, { __mode = "k" })
 local trackedConnections = setmetatable({}, { __mode = "k" })
 
 local activePrompt = nil
 local scanAccumulator = 0
-local lastTapAt = 0
+local lastAutoTriggerAt = 0
 local visualSerial = 0
+local contactPrompt = nil
 
 local billboard
-local touchButton
+local visualFrame
 local titleLabel
 local subtitleLabel
 
@@ -144,16 +147,39 @@ local function isPromptInRange(prompt)
 	return promptDistance(prompt) <= activationDistance(prompt)
 end
 
+local function isCharacterTouchingChest(prompt)
+	local root = characterRoot()
+	local chest = chestModelForPrompt(prompt)
+	if not root or not chest or not chest.Parent then
+		return false
+	end
+
+	local boxCFrame, boxSize = chest:GetBoundingBox()
+	local localRoot = boxCFrame:PointToObjectSpace(root.Position)
+
+	-- Expande o volume do bau pelo raio aproximado do personagem. Assim o
+	-- gatilho acontece quando o corpo encosta no bau, sem depender de Touched,
+	-- camera, raycast de tela ou de uma GUI clicavel.
+	local characterRadiusX = root.Size.X * 0.5 + CONTACT_PADDING
+	local characterRadiusZ = root.Size.Z * 0.5 + CONTACT_PADDING
+	local characterHalfHeight = root.Size.Y * 0.5 + CONTACT_VERTICAL_ALLOWANCE
+
+	local insideX = math.abs(localRoot.X) <= boxSize.X * 0.5 + characterRadiusX
+	local insideZ = math.abs(localRoot.Z) <= boxSize.Z * 0.5 + characterRadiusZ
+	local insideY = math.abs(localRoot.Y) <= boxSize.Y * 0.5 + characterHalfHeight
+	return insideX and insideZ and insideY
+end
+
 local function ensureCustomMobileStyle(prompt)
 	if isChestPrompt(prompt) and prompt.Style ~= Enum.ProximityPromptStyle.Custom then
-		-- O prompt nativo fica escondido apenas neste cliente touch. A escolha do
-		-- bau continua sendo feita por distancia; o BillboardGui e apenas visual.
+		-- No mobile o prompt nativo fica escondido localmente. O BillboardGui
+		-- informa a interacao e o contato do personagem dispara a abertura.
 		prompt.Style = Enum.ProximityPromptStyle.Custom
 	end
 end
 
 local function ensureUI()
-	if billboard and billboard.Parent and touchButton and touchButton.Parent then
+	if billboard and billboard.Parent and visualFrame and visualFrame.Parent then
 		return
 	end
 
@@ -166,20 +192,17 @@ local function ensureUI()
 	billboard.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 	billboard.Parent = playerGui
 
-	-- O botao ocupa uma area maior que o texto, mas permanece invisivel. Isso
-	-- deixa o toque confortavel no celular sem desenhar uma caixa na tela.
-	touchButton = Instance.new("TextButton")
-	touchButton.Name = "OpenChestTouchTarget"
-	touchButton.AnchorPoint = Vector2.new(0.5, 0.5)
-	touchButton.Position = UDim2.fromScale(0.5, 0.5)
-	touchButton.Size = UDim2.fromScale(1, 1)
-	touchButton.BackgroundTransparency = 1
-	touchButton.BorderSizePixel = 0
-	touchButton.Text = ""
-	touchButton.AutoButtonColor = false
-	touchButton.Active = true
-	touchButton.ZIndex = 20
-	touchButton.Parent = billboard
+	-- Apenas visual: nao ha TextButton nem captura de toque.
+	visualFrame = Instance.new("Frame")
+	visualFrame.Name = "ChestContactHint"
+	visualFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+	visualFrame.Position = UDim2.fromScale(0.5, 0.5)
+	visualFrame.Size = UDim2.fromScale(1, 1)
+	visualFrame.BackgroundTransparency = 1
+	visualFrame.BorderSizePixel = 0
+	visualFrame.Active = false
+	visualFrame.ZIndex = 20
+	visualFrame.Parent = billboard
 
 	titleLabel = Instance.new("TextLabel")
 	titleLabel.Name = "ActionText"
@@ -195,23 +218,23 @@ local function ensureUI()
 	titleLabel.TextStrokeTransparency = 0.18
 	titleLabel.TextTransparency = 1
 	titleLabel.ZIndex = 21
-	titleLabel.Parent = touchButton
+	titleLabel.Parent = visualFrame
 
 	subtitleLabel = Instance.new("TextLabel")
-	subtitleLabel.Name = "TouchHint"
+	subtitleLabel.Name = "ContactHint"
 	subtitleLabel.AnchorPoint = Vector2.new(0.5, 0)
 	subtitleLabel.Position = UDim2.new(0.5, 0, 0, 43)
 	subtitleLabel.Size = UDim2.new(1, -20, 0, 22)
 	subtitleLabel.BackgroundTransparency = 1
 	subtitleLabel.Font = Enum.Font.GothamBold
-	subtitleLabel.Text = "TOQUE PARA ABRIR"
+	subtitleLabel.Text = "ENCOSTE PARA ABRIR"
 	subtitleLabel.TextColor3 = Color3.fromRGB(205, 232, 255)
 	subtitleLabel.TextSize = 12
 	subtitleLabel.TextStrokeColor3 = Color3.fromRGB(12, 18, 27)
 	subtitleLabel.TextStrokeTransparency = 0.35
 	subtitleLabel.TextTransparency = 1
 	subtitleLabel.ZIndex = 21
-	subtitleLabel.Parent = touchButton
+	subtitleLabel.Parent = visualFrame
 end
 
 local function setTextStyle(prompt)
@@ -219,7 +242,7 @@ local function setTextStyle(prompt)
 	local label = tostring(prompt:GetAttribute("ChestPromptLabel") or prompt.ObjectText or "Baú")
 
 	titleLabel.Text = rare and "ABRIR BAÚ RARO" or "ABRIR BAÚ"
-	subtitleLabel.Text = string.upper(label) .. "  •  TOQUE"
+	subtitleLabel.Text = string.upper(label) .. "  •  ENCOSTE"
 
 	if rare then
 		titleLabel.TextColor3 = Color3.fromRGB(255, 229, 121)
@@ -232,12 +255,14 @@ end
 
 local function hideUI(immediate)
 	activePrompt = nil
+	contactPrompt = nil
 	visualSerial += 1
 	local serial = visualSerial
 
 	player:SetAttribute("DungeonMobileChestVisible", false)
 	player:SetAttribute("DungeonMobileChestDistance", nil)
 	player:SetAttribute("DungeonMobileChestTarget", nil)
+	player:SetAttribute("DungeonMobileChestContact", false)
 
 	if not billboard then
 		return
@@ -310,6 +335,30 @@ local function showUI(prompt, distance)
 	player:SetAttribute("DungeonMobileChestTarget", prompt.Name)
 end
 
+local function triggerPrompt(prompt)
+	if not prompt or not isPromptInRange(prompt) then
+		return
+	end
+
+	local now = os.clock()
+	if now - lastAutoTriggerAt < AUTO_TRIGGER_DEBOUNCE then
+		return
+	end
+	lastAutoTriggerAt = now
+
+	-- Mantem exatamente o caminho que ja funcionava no botao mobile: o mesmo
+	-- ProximityPrompt dispara Triggered e o servidor continua validando tudo.
+	prompt:InputHoldBegin()
+	local hold = math.max(0.05, tonumber(prompt.HoldDuration) or 0)
+	task.delay(hold, function()
+		pcall(function()
+			prompt:InputHoldEnd()
+		end)
+	end)
+
+	player:SetAttribute("DungeonMobileChestLastAutoOpenAt", workspace:GetServerTimeNow())
+end
+
 local function chooseNearestPrompt()
 	local bestPrompt = nil
 	local bestDistance = math.huge
@@ -346,32 +395,18 @@ local function updateNearestPrompt()
 		end
 		player:SetAttribute("DungeonMobileChestDistance", math.floor(distance * 10 + 0.5) / 10)
 	end
-end
 
-local function triggerActivePrompt()
-	local prompt = activePrompt
-	if not prompt or not isPromptInRange(prompt) then
-		hideUI(false)
-		return
+	local touching = isCharacterTouchingChest(prompt)
+	player:SetAttribute("DungeonMobileChestContact", touching)
+
+	if touching then
+		if contactPrompt ~= prompt then
+			contactPrompt = prompt
+			triggerPrompt(prompt)
+		end
+	elseif contactPrompt == prompt then
+		contactPrompt = nil
 	end
-
-	local now = os.clock()
-	if now - lastTapAt < TAP_DEBOUNCE then
-		return
-	end
-	lastTapAt = now
-
-	-- Usa o mesmo caminho de input do ProximityPrompt. Triggered continua
-	-- chegando ao servidor, que valida jogador vivo, distancia e recompensa.
-	prompt:InputHoldBegin()
-	local hold = math.max(0.05, tonumber(prompt.HoldDuration) or 0)
-	task.delay(hold, function()
-		pcall(function()
-			prompt:InputHoldEnd()
-		end)
-	end)
-
-	player:SetAttribute("DungeonMobileChestLastTapAt", workspace:GetServerTimeNow())
 end
 
 local function trackPrompt(prompt)
@@ -422,7 +457,6 @@ local function untrackPrompt(prompt)
 end
 
 ensureUI()
-touchButton.Activated:Connect(triggerActivePrompt)
 
 for _, descendant in ipairs(workspace:GetDescendants()) do
 	if descendant:IsA("ProximityPrompt") then
@@ -456,7 +490,8 @@ player.CharacterRemoving:Connect(function()
 end)
 
 player:SetAttribute("DungeonMobileChestUIVersion", VERSION)
-player:SetAttribute("DungeonMobileChestUIPolicy", "NearestChestByDistance_BillboardTouch")
+player:SetAttribute("DungeonMobileChestUIPolicy", "NearestChestByDistance_BillboardAutoContact")
 player:SetAttribute("DungeonMobileChestCameraDependency", false)
 player:SetAttribute("DungeonMobileChestWorldTapDependency", false)
 player:SetAttribute("DungeonMobileChestFixedHUD", false)
+player:SetAttribute("DungeonMobileChestRequiresTap", false)
