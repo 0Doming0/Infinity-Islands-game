@@ -1,21 +1,18 @@
--- Avanco confirmado pelo jogador entre arenas.
--- Fluxo: missao concluida -> ReadyToAdvance -> botao AVANCAR -> voo automatico.
+-- Progressao linear entre ilhas.
+-- Regra unica para a ilha inicial e todas as seguintes:
+-- SITUAÇÃO ATUAL concluida -> AVANÇAR -> transporte para a proxima ilha.
+-- Nao existe RecommendedLevel, hard gate ou caminho especial de tutorial aqui.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
-local ServerScriptService = game:GetService("ServerScriptService")
 
 local Config = require(ReplicatedStorage.Shared.Configs.AssistedIslandTransportConfig)
-local IslandProgressionConfig = require(ReplicatedStorage.Shared.Configs.IslandProgressionConfig)
 local RemoteRegistry = require(ReplicatedStorage.Shared.Utilities.RemoteRegistry)
 local DungeonGenerator = require(script.Parent.DungeonRuntime.DungeonGenerator)
-local MonsterSpawner = require(
-	ServerScriptService:WaitForChild("BlockParkour"):WaitForChild("MonsterSpawner")
-)
 
 local remote = RemoteRegistry.Get("Navigation", "AssistedIslandTransport", "RemoteEvent")
-local VERSION = "ManualIslandAdvanceV3_AuthoritativeClear"
+local VERSION = "LinearManualIslandAdvanceV4"
 local states = setmetatable({}, { __mode = "k" })
 
 local function now()
@@ -37,9 +34,9 @@ local function markerCFrame(marker)
 end
 
 local function markerPosition(marker)
-	local cf = markerCFrame(marker)
-	if cf then
-		return cf.Position
+	local cframe = markerCFrame(marker)
+	if cframe then
+		return cframe.Position
 	end
 	if typeof(marker) == "Instance" and marker:IsA("Model") and marker.Parent then
 		return marker:GetPivot().Position
@@ -47,20 +44,11 @@ local function markerPosition(marker)
 	return nil
 end
 
-local function islandFor(context)
-	return type(context) == "table" and (context.IslandModel or context.Model) or nil
-end
-
 local function livingCharacter(player)
 	local character = player.Character
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 	local root = character and character:FindFirstChild("HumanoidRootPart")
-	if not character
-		or not humanoid
-		or humanoid.Health <= 0
-		or not root
-		or not root:IsA("BasePart")
-	then
+	if not character or not humanoid or humanoid.Health <= 0 or not root or not root:IsA("BasePart") then
 		return nil
 	end
 	return character, humanoid, root
@@ -86,55 +74,28 @@ local function routeTotal()
 	))
 end
 
-local function recommendedLevel(index, context)
-	local island = islandFor(context)
-	return math.max(1, math.floor(
-		tonumber(
-			island and (
-				island:GetAttribute("RecommendedLevel")
-					or island:GetAttribute("IslandLevel")
-			)
-		)
-			or IslandProgressionConfig.GetRecommendedLevel(index)
-	))
-end
+local function objectiveComplete(player, index)
+	local objectiveIndex = cleanIndex(player:GetAttribute("DungeonLinearObjectiveIsland"))
+	if objectiveIndex == index and player:GetAttribute("DungeonLinearObjectiveComplete") == true then
+		return true
+	end
 
--- A fonte da verdade da missao ja existe no MonsterSpawner/objetivo da ilha.
--- O atributo do Model fica como fallback porque o CombatRouteProgressionService
--- tambem o publica quando a ilha e concluida.
-local function currentMissionCleared(index, context)
-	local island = islandFor(context)
-	if island and (
+	local context = DungeonGenerator.GetRouteIslandContext(index)
+	local island = context and (context.IslandModel or context.Model)
+	return island ~= nil and (
 		island:GetAttribute("Cleared") == true
-			or island:GetAttribute("CombatRouteCleared") == true
-	) then
-		return true
-	end
-
-	local ok, objectiveState = pcall(MonsterSpawner.GetObjectiveState, index)
-	if ok and type(objectiveState) == "table" and objectiveState.Cleared == true then
-		return true
-	end
-
-	local objectiveIndex = tonumber(
-		workspace:GetAttribute("DungeonObjectiveGlobalIslandIndex")
-			or workspace:GetAttribute("DungeonCurrentObjectiveIsland")
+		or island:GetAttribute("CombatRouteCleared") == true
+		or island:GetAttribute("LinearObjectiveComplete") == true
 	)
-	if objectiveIndex
-		and math.floor(objectiveIndex) == index
-		and workspace:GetAttribute("DungeonObjectiveState") == "Completed"
-	then
-		return true
-	end
-
-	local clearedFeedbackIsland = tonumber(
-		workspace:GetAttribute("DungeonIslandClearFeedbackIsland")
-	)
-	return clearedFeedbackIsland ~= nil
-		and math.floor(clearedFeedbackIsland) == index
 end
 
-local function resolveEligibility(player, allowBusy)
+local function fire(player, payload)
+	if player.Parent == Players then
+		remote:FireClient(player, payload)
+	end
+end
+
+local function resolve(player, allowBusy)
 	if Config.ManualAdvanceEnabled ~= true or not playerCanTravel(player) then
 		return nil, "Unavailable"
 	end
@@ -144,9 +105,9 @@ local function resolveEligibility(player, allowBusy)
 		return nil, "Unavailable"
 	end
 	if not allowBusy and (
-		state.Phase == "Flying"
+		state.Phase == "Warning"
+		or state.Phase == "Flying"
 		or state.Phase == "Landing"
-		or state.Phase == "Warning"
 	) then
 		return nil, "Busy"
 	end
@@ -164,34 +125,25 @@ local function resolveEligibility(player, allowBusy)
 	if total <= 0 or currentIndex >= total then
 		return nil, "NoNextIsland"
 	end
-
-	local currentContext = DungeonGenerator.GetRouteIslandContext(currentIndex)
-	if Config.RequireCurrentIslandCleared
-		and not currentMissionCleared(currentIndex, currentContext)
-	then
-		return nil, "CurrentIslandNotCleared"
+	if not objectiveComplete(player, currentIndex) then
+		return nil, "CurrentSituationNotComplete"
 	end
 
 	local destinationIndex = currentIndex + 1
 	DungeonGenerator.RequestRouteThrough(destinationIndex)
 	local destinationContext = DungeonGenerator.GetRouteIslandContext(destinationIndex)
-	local requiredLevel = recommendedLevel(destinationIndex, destinationContext)
 
-	-- RecommendedLevel e apenas aviso no CombatRouteProgressionService.
-	-- Nunca bloquear o botao/voo por nivel se a missao atual foi concluida.
 	return {
 		CurrentIndex = currentIndex,
 		DestinationIndex = destinationIndex,
-		CurrentContext = currentContext,
 		DestinationContext = destinationContext,
-		RecommendedLevel = requiredLevel,
 	}, nil
 end
 
-local function fire(player, payload)
-	if player.Parent == Players then
-		remote:FireClient(player, payload)
-	end
+local function clearReadyAttributes(player)
+	player:SetAttribute("DungeonManualAdvanceReady", false)
+	player:SetAttribute("DungeonManualAdvanceReadyToken", nil)
+	player:SetAttribute("DungeonManualAdvanceReadySource", nil)
 end
 
 local function hideReady(player, reason)
@@ -203,27 +155,18 @@ local function hideReady(player, reason)
 		state.Phase = "Idle"
 		state.ReadyForSourceIndex = nil
 		state.ReadyDestinationIndex = nil
-		player:SetAttribute("DungeonManualAdvanceReady", false)
+		clearReadyAttributes(player)
 		player:SetAttribute("DungeonAssistedTransportState", "Idle")
-		fire(player, {
-			Action = "AdvanceUnavailable",
-			Reason = reason or "Unavailable",
-		})
+		fire(player, { Action = "AdvanceUnavailable", Reason = reason or "Unavailable" })
 	end
 end
 
 local function publishReady(player, eligibility)
 	local state = states[player]
-	if not state
-		or state.Phase == "Flying"
-		or state.Phase == "Landing"
-		or state.Phase == "Warning"
-	then
+	if not state or state.Phase == "Warning" or state.Phase == "Flying" or state.Phase == "Landing" then
 		return
 	end
-	if state.Phase == "Ready"
-		and state.ReadyForSourceIndex == eligibility.CurrentIndex
-	then
+	if state.Phase == "Ready" and state.ReadyForSourceIndex == eligibility.CurrentIndex then
 		return
 	end
 
@@ -231,16 +174,18 @@ local function publishReady(player, eligibility)
 	state.Phase = "Ready"
 	state.ReadyForSourceIndex = eligibility.CurrentIndex
 	state.ReadyDestinationIndex = eligibility.DestinationIndex
+
 	player:SetAttribute("DungeonManualAdvanceReady", true)
+	player:SetAttribute("DungeonManualAdvanceReadyToken", state.ReadyToken)
 	player:SetAttribute("DungeonManualAdvanceReadySource", eligibility.CurrentIndex)
 	player:SetAttribute("DungeonAssistedTransportState", "ReadyToAdvance")
 	player:SetAttribute("DungeonAssistedTransportDestination", eligibility.DestinationIndex)
 
-	local destinationContext = eligibility.DestinationContext
-	local destinationPosition = destinationContext and (
-		markerPosition(destinationContext.ObjectiveAnchor)
-			or markerPosition(destinationContext.Floor)
-			or markerPosition(destinationContext.SafeSpawn)
+	local context = eligibility.DestinationContext
+	local destinationPosition = context and (
+		markerPosition(context.ObjectiveAnchor)
+			or markerPosition(context.Floor)
+			or markerPosition(context.SafeSpawn)
 	) or nil
 
 	fire(player, {
@@ -248,18 +193,15 @@ local function publishReady(player, eligibility)
 		ReadyToken = state.ReadyToken,
 		SourceIndex = eligibility.CurrentIndex,
 		DestinationIndex = eligibility.DestinationIndex,
-		DestinationLabel = "ILHA " .. tostring(math.max(1, eligibility.DestinationIndex - 1)),
+		DestinationLabel = "ILHA " .. tostring(eligibility.DestinationIndex),
 		DestinationPosition = destinationPosition,
-		RecommendedLevel = eligibility.RecommendedLevel,
 	})
 end
 
 local function restoreCharacter(state)
 	local character = state.Character
-	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-		or state.Humanoid
-	local root = character and character:FindFirstChild("HumanoidRootPart")
-		or state.Root
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid") or state.Humanoid
+	local root = character and character:FindFirstChild("HumanoidRootPart") or state.Root
 
 	if root and root.Parent then
 		root.Anchored = false
@@ -270,17 +212,11 @@ local function restoreCharacter(state)
 		end)
 	end
 	if humanoid and humanoid.Parent then
-		humanoid.WalkSpeed = (tonumber(state.WalkSpeedWas) or 0) > 0
-			and state.WalkSpeedWas
-			or 16
+		humanoid.WalkSpeed = (tonumber(state.WalkSpeedWas) or 0) > 0 and state.WalkSpeedWas or 16
 		if state.UseJumpPowerWas then
-			humanoid.JumpPower = (tonumber(state.JumpPowerWas) or 0) > 0
-				and state.JumpPowerWas
-				or 50
+			humanoid.JumpPower = (tonumber(state.JumpPowerWas) or 0) > 0 and state.JumpPowerWas or 50
 		else
-			humanoid.JumpHeight = (tonumber(state.JumpHeightWas) or 0) > 0
-				and state.JumpHeightWas
-				or 7.2
+			humanoid.JumpHeight = (tonumber(state.JumpHeightWas) or 0) > 0 and state.JumpHeightWas or 7.2
 		end
 		humanoid.AutoRotate = state.AutoRotateWas ~= false
 		humanoid.PlatformStand = false
@@ -294,8 +230,8 @@ local function restoreCharacter(state)
 end
 
 local function quadraticBezier(a, b, c, t)
-	local i = 1 - t
-	return i * i * a + 2 * i * t * b + t * t * c
+	local inverse = 1 - t
+	return inverse * inverse * a + 2 * inverse * t * b + t * t * c
 end
 
 local function waitForDestination(player, index, flightToken)
@@ -325,7 +261,7 @@ local function cancelTravel(player, reason)
 	state.WaitingForArrivalIndex = nil
 	state.ReadyForSourceIndex = nil
 	state.ReadyDestinationIndex = nil
-	player:SetAttribute("DungeonManualAdvanceReady", false)
+	clearReadyAttributes(player)
 	player:SetAttribute("DungeonAssistedTransportActive", nil)
 	player:SetAttribute("DungeonAssistedTransportState", "Idle")
 	player:SetAttribute("DungeonAssistedTransportDestination", nil)
@@ -340,11 +276,7 @@ local function performFlight(player, eligibility, flightToken)
 
 	local destinationContext = eligibility.DestinationContext
 	if not destinationContext or not markerCFrame(destinationContext.SafeSpawn) then
-		destinationContext = waitForDestination(
-			player,
-			eligibility.DestinationIndex,
-			flightToken
-		)
+		destinationContext = waitForDestination(player, eligibility.DestinationIndex, flightToken)
 	end
 	if not destinationContext then
 		cancelTravel(player, "DestinationUnavailable")
@@ -372,7 +304,7 @@ local function performFlight(player, eligibility, flightToken)
 	state.JumpPowerWas = humanoid.JumpPower
 	state.JumpHeightWas = humanoid.JumpHeight
 	state.UseJumpPowerWas = humanoid.UseJumpPower
-	player:SetAttribute("DungeonManualAdvanceReady", false)
+	clearReadyAttributes(player)
 	player:SetAttribute("DungeonAssistedTransportActive", true)
 	player:SetAttribute("DungeonAssistedTransportState", "Flying")
 
@@ -385,11 +317,7 @@ local function performFlight(player, eligibility, flightToken)
 
 	local startPosition = root.Position
 	local endPosition = destinationCFrame.Position
-	local horizontal = Vector3.new(
-		endPosition.X - startPosition.X,
-		0,
-		endPosition.Z - startPosition.Z
-	)
+	local horizontal = Vector3.new(endPosition.X - startPosition.X, 0, endPosition.Z - startPosition.Z)
 	local distance = horizontal.Magnitude
 	local arcHeight = math.clamp(
 		distance * Config.ArcHeightPerHorizontalStud,
@@ -399,19 +327,12 @@ local function performFlight(player, eligibility, flightToken)
 	local lateral = Vector3.zero
 	if distance > 0.01 then
 		local side = Vector3.new(-horizontal.Z, 0, horizontal.X).Unit
-		local sign = ((player.UserId + eligibility.DestinationIndex) % 2 == 0)
-			and 1
-			or -1
+		local sign = ((player.UserId + eligibility.DestinationIndex) % 2 == 0) and 1 or -1
 		lateral = side
-			* math.min(
-				distance * Config.LateralCurvePerHorizontalStud,
-				Config.MaximumLateralCurveStuds
-			)
+			* math.min(distance * Config.LateralCurvePerHorizontalStud, Config.MaximumLateralCurveStuds)
 			* sign
 	end
-	local control = (startPosition + endPosition) / 2
-		+ Vector3.new(0, arcHeight, 0)
-		+ lateral
+	local control = (startPosition + endPosition) / 2 + Vector3.new(0, arcHeight, 0) + lateral
 
 	fire(player, {
 		Action = "BeginFlight",
@@ -424,19 +345,10 @@ local function performFlight(player, eligibility, flightToken)
 
 	local startedAt = now()
 	while state.FlightToken == flightToken and playerCanTravel(player) do
-		local linear = math.clamp(
-			(now() - startedAt) / Config.FlightDurationSeconds,
-			0,
-			1
-		)
+		local linear = math.clamp((now() - startedAt) / Config.FlightDurationSeconds, 0, 1)
 		local alpha = linear * linear * (3 - 2 * linear)
 		local position = quadraticBezier(startPosition, control, endPosition, alpha)
-		local nextPosition = quadraticBezier(
-			startPosition,
-			control,
-			endPosition,
-			math.min(1, alpha + 0.015)
-		)
+		local nextPosition = quadraticBezier(startPosition, control, endPosition, math.min(1, alpha + 0.015))
 		local forward = nextPosition - position
 		if forward.Magnitude <= 0.01 then
 			forward = destinationCFrame.LookVector
@@ -465,10 +377,7 @@ local function performFlight(player, eligibility, flightToken)
 		FocusPosition = focusPosition,
 	})
 
-	while state.FlightToken == flightToken
-		and now() < releaseAt
-		and playerCanTravel(player)
-	do
+	while state.FlightToken == flightToken and now() < releaseAt and playerCanTravel(player) do
 		RunService.Heartbeat:Wait()
 	end
 	if state.FlightToken ~= flightToken or not playerCanTravel(player) then
@@ -486,28 +395,25 @@ end
 
 local function beginAdvance(player, readyToken)
 	local state = states[player]
-	if not state
-		or state.Phase ~= "Ready"
-		or tonumber(readyToken) ~= state.ReadyToken
-	then
+	if not state or state.Phase ~= "Ready" then
+		return
+	end
+	if tonumber(readyToken) ~= state.ReadyToken then
 		return
 	end
 
-	local eligibility = resolveEligibility(player, false)
-	if not eligibility
-		or eligibility.CurrentIndex ~= state.ReadyForSourceIndex
-	then
-		hideReady(player, "EligibilityChanged")
+	local eligibility = resolve(player, false)
+	if not eligibility or eligibility.CurrentIndex ~= state.ReadyForSourceIndex then
+		hideReady(player, "SituationChanged")
 		return
 	end
 
 	state.Phase = "Warning"
 	state.FlightToken += 1
 	local flightToken = state.FlightToken
-	player:SetAttribute("DungeonManualAdvanceReady", false)
+	clearReadyAttributes(player)
 	player:SetAttribute("DungeonAssistedTransportState", "Warning")
 	local transportAt = now() + Config.LevelUpDelaySeconds
-
 	fire(player, {
 		Action = "Warning",
 		Reason = "PlayerConfirmedAdvance",
@@ -515,47 +421,33 @@ local function beginAdvance(player, readyToken)
 		TransportAt = transportAt,
 		Countdown = Config.LevelUpDelaySeconds,
 		DestinationIndex = eligibility.DestinationIndex,
-		DestinationLabel = "ILHA " .. tostring(math.max(1, eligibility.DestinationIndex - 1)),
-		RecommendedLevel = eligibility.RecommendedLevel,
+		DestinationLabel = "ILHA " .. tostring(eligibility.DestinationIndex),
 	})
 
 	task.delay(Config.LevelUpDelaySeconds, function()
 		local latest = states[player]
-		if not latest
-			or latest.FlightToken ~= flightToken
-			or latest.Phase ~= "Warning"
-		then
+		if not latest or latest.FlightToken ~= flightToken or latest.Phase ~= "Warning" then
 			return
 		end
-
-		local finalEligibility = resolveEligibility(player, true)
-		if not finalEligibility
-			or finalEligibility.CurrentIndex ~= eligibility.CurrentIndex
-		then
-			cancelTravel(player, "EligibilityChanged")
+		local final = resolve(player, true)
+		if not final or final.CurrentIndex ~= eligibility.CurrentIndex then
+			cancelTravel(player, "SituationChanged")
 			return
 		end
-		performFlight(player, finalEligibility, flightToken)
+		performFlight(player, final, flightToken)
 	end)
 end
 
 local function refreshPlayer(player)
 	local state = states[player]
-	if not state then
+	if not state or state.Phase == "Warning" or state.Phase == "Flying" or state.Phase == "Landing" then
 		return
 	end
-	if state.Phase == "Flying"
-		or state.Phase == "Landing"
-		or state.Phase == "Warning"
-	then
-		return
-	end
-
-	local eligibility = resolveEligibility(player, false)
+	local eligibility = resolve(player, false)
 	if eligibility then
 		publishReady(player, eligibility)
 	else
-		hideReady(player, "MissionNotReady")
+		hideReady(player, "SituationNotComplete")
 	end
 end
 
@@ -563,7 +455,6 @@ local function bindPlayer(player)
 	if states[player] then
 		return
 	end
-
 	states[player] = {
 		Phase = "Idle",
 		ReadyToken = 0,
@@ -572,45 +463,33 @@ local function bindPlayer(player)
 		ReadyDestinationIndex = nil,
 		WaitingForArrivalIndex = nil,
 	}
-	player:SetAttribute("DungeonManualAdvanceReady", false)
+	clearReadyAttributes(player)
+	player:SetAttribute("DungeonLinearAdvancePolicy", "ClearSituationThenAdvance")
 
-	player:GetAttributeChangedSignal("CurrentGlobalIslandIndex"):Connect(function()
-		task.defer(refreshPlayer, player)
-	end)
+	for _, attribute in ipairs({
+		"CurrentGlobalIslandIndex",
+		"DungeonLinearObjectiveComplete",
+		"DungeonLinearObjectiveIsland",
+	}) do
+		player:GetAttributeChangedSignal(attribute):Connect(function()
+			task.defer(refreshPlayer, player)
+		end)
+	end
 	player.CharacterAdded:Connect(function()
-		task.delay(0.4, refreshPlayer, player)
+		task.delay(0.25, refreshPlayer, player)
 	end)
 
 	task.spawn(function()
 		while player.Parent == Players and states[player] do
 			refreshPlayer(player)
-			task.wait(math.max(0.12, Config.EligibilityPollSeconds))
+			task.wait(math.max(0.08, Config.EligibilityPollSeconds))
 		end
 	end)
 end
 
 remote.OnServerEvent:Connect(function(player, payload)
-	if type(payload) ~= "table" or payload.Action ~= "AdvanceRequest" then
-		return
-	end
-	beginAdvance(player, payload.ReadyToken)
-end)
-
--- O clear oficial ja publica este serial. Reagir a ele deixa o botao aparecer
--- imediatamente, sem depender do proximo ciclo de polling.
-workspace:GetAttributeChangedSignal("DungeonIslandClearFeedbackSerial"):Connect(function()
-	local clearedIndex = tonumber(
-		workspace:GetAttribute("DungeonIslandClearFeedbackIsland")
-	)
-	if not clearedIndex then
-		return
-	end
-	clearedIndex = math.floor(clearedIndex)
-	for _, player in ipairs(Players:GetPlayers()) do
-		local currentIndex = tonumber(player:GetAttribute("CurrentGlobalIslandIndex"))
-		if currentIndex and math.floor(currentIndex) == clearedIndex then
-			task.defer(refreshPlayer, player)
-		end
+	if type(payload) == "table" and payload.Action == "AdvanceRequest" then
+		beginAdvance(player, payload.ReadyToken)
 	end
 end)
 
@@ -628,3 +507,6 @@ end
 
 workspace:SetAttribute("DungeonManualIslandAdvanceReady", true)
 workspace:SetAttribute("DungeonManualIslandAdvanceVersion", VERSION)
+workspace:SetAttribute("DungeonLinearProgressionPolicy", "ClearSituationThenAdvance")
+workspace:SetAttribute("DungeonRecommendedLevelIsHardGate", false)
+workspace:SetAttribute("DungeonRecommendedLevelWarningActive", false)
