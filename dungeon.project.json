@@ -26,162 +26,90 @@
       "StarterPlayerScripts": {
         "$className": "StarterPlayerScripts",
         "AdaptiveDecorationCulling": {
-          "$attributes": {
-            "_lemonadeUniqueId": "CGZwmAZHCGZw"
-          },
+          "$attributes": { "_lemonadeUniqueId": "CGZwmAZHCGZw" },
           "$path": "src/client/AdaptiveDecorationCulling.client.luau"
         },
         "AdaptivePerformanceController": {
-          "$attributes": {
-            "_lemonadeUniqueId": "fih8tgIUfih8"
-          },
+          "$attributes": { "_lemonadeUniqueId": "fih8tgIUfih8" },
           "$path": "src/client/AdaptivePerformanceController.client.luau"
         },
-        "AssistedIslandTransportController": {
-          "$path": "src/client/AssistedIslandTransportController.client.luau"
-        },
-        "CombatFeedbackController": {
-          "$path": "src/client/CombatFeedbackController.client.luau"
-        },
-        "ChestPromptController": {
-          "$path": "src/client/ChestPromptController.client.luau"
-        },
-        "CompanionInventoryController": {
-          "$path": "src/client/CompanionInventoryController.client.luau"
-        },
-        "CompanionInventoryTypography": {
-          "$path": "src/client/CompanionInventoryTypography.client.luau"
-        },
+        "AssistedIslandTransportController": { "$path": "src/client/AssistedIslandTransportController.client.luau" },
+        "CombatFeedbackController": { "$path": "src/client/CombatFeedbackController.client.luau" },
+        "ChestPromptController": { "$path": "src/client/ChestPromptController.client.luau" },
+        "CompanionInventoryController": { "$path": "src/client/CompanionInventoryController.client.luau" },
+        "CompanionInventoryTypography": { "$path": "src/client/CompanionInventoryTypography.client.luau" },
         "DungeonArtHUDController": {
-          "$attributes": {
-            "_lemonadeUniqueId": "vrORjdDTvrOR"
-          },
+          "$attributes": { "_lemonadeUniqueId": "vrORjdDTvrOR" },
           "$path": "src/client/DungeonArtHUDController.client.luau"
         },
         "DungeonCameraController": {
-          "$attributes": {
-            "_lemonadeUniqueId": "qd59RB4Aqd59"
-          },
+          "$attributes": { "_lemonadeUniqueId": "qd59RB4Aqd59" },
           "$path": "src/client/DungeonCameraController.client.luau"
         },
         "DungeonHUDBootstrap": {
-          "$attributes": {
-            "_lemonadeUniqueId": "QrR6ToTZQrR6"
-          },
+          "$attributes": { "_lemonadeUniqueId": "QrR6ToTZQrR6" },
           "$path": "src/client/DungeonHUDBootstrap.client.luau"
         },
-        "DungeonClientLegacyGuard": {
-          "$path": "src/client/DungeonClientLegacyGuard.client.luau"
-        },
-        "DungeonMobileAccessibility": {
-          "$path": "src/client/DungeonMobileAccessibility.client.luau"
-        },
-        "DungeonMobileCombatTelemetry": {
-          "$path": "src/client/DungeonMobileCombatTelemetry.client.luau"
-        },
-        "DungeonPortraitEnemyReadability": {
-          "$path": "src/client/DungeonPortraitEnemyReadability.client.luau"
-        },
-        "DungeonStrongHitFeedback": {
-          "$path": "src/client/DungeonStrongHitFeedback.client.luau"
-        },
+        "DungeonClientLegacyGuard": { "$path": "src/client/DungeonClientLegacyGuard.client.luau" },
+        "DungeonMobileAccessibility": { "$path": "src/client/DungeonMobileAccessibility.client.luau" },
+        "DungeonMobileCombatTelemetry": { "$path": "src/client/DungeonMobileCombatTelemetry.client.luau" },
+        "DungeonPortraitEnemyReadability": { "$path": "src/client/DungeonPortraitEnemyReadability.client.luau" },
+        "DungeonStrongHitFeedback": { "$path": "src/client/DungeonStrongHitFeedback.client.luau" },
         "InputProfileController": {
-          "$attributes": {
-            "_lemonadeUniqueId": "mgSxRbeAmgSx"
-          },
+          "$attributes": { "_lemonadeUniqueId": "mgSxRbeAmgSx" },
           "$path": "src/client/InputProfileController.client.luau"
         },
         "IslandEffectCulling": {
-          "$attributes": {
-            "_lemonadeUniqueId": "GYlZqjwGGYlZ"
-          },
+          "$attributes": { "_lemonadeUniqueId": "GYlZqjwGGYlZ" },
           "$path": "src/client/IslandEffectCulling.client.luau"
         },
-        "InstantOnboardingController": {
-          "$path": "src/client/InstantOnboardingController.client.luau"
-        },
-        "EnemyCombatFeedback": {
-          "$path": "src/client/EnemyCombatFeedback.client.luau"
-        },
+        "InstantOnboardingController": { "$path": "src/client/InstantOnboardingController.client.luau" },
+        "EnemyCombatFeedback": { "$path": "src/client/EnemyCombatFeedback.client.luau" },
         "LevelUpPanelAnimation": {
-          "$attributes": {
-            "_lemonadeUniqueId": "wcB9xxWIwcB9"
-          },
+          "$attributes": { "_lemonadeUniqueId": "wcB9xxWIwcB9" },
           "$path": "src/client/LevelUpPanelAnimation.client.luau"
         },
         "LevelUpStatValues": {
-          "$attributes": {
-            "_lemonadeUniqueId": "0eHVcaBZ0eHV"
-          },
+          "$attributes": { "_lemonadeUniqueId": "0eHVcaBZ0eHV" },
           "$path": "src/client/LevelUpStatValues.client.luau"
         },
         "MobilityPerksController": {
-          "$attributes": {
-            "_lemonadeUniqueId": "HYj1CVLnHYj1"
-          },
+          "$attributes": { "_lemonadeUniqueId": "HYj1CVLnHYj1" },
           "$path": "src/client/MobilityPerksController.client.luau"
         },
-        "MobHitScaleClient": {
-          "$path": "src/client/MobHitScaleClient.client.luau"
-        },
-        "MobileControls": {
-          "$path": "src/client/MobileControls.client.luau"
-        },
-        "DungeonShopUI": {
-          "$path": "src/client/MonetizationUI.client.luau"
-        },
-        "OrbChoiceLemonadeOnlyV2": {
-          "$path": "src/client/OrbChoiceLemonadeOnlyV2.client.luau"
-        },
+        "MobHitScaleClient": { "$path": "src/client/MobHitScaleClient.client.luau" },
+        "MobileControls": { "$path": "src/client/MobileControls.client.luau" },
+        "DungeonShopUI": { "$path": "src/client/MonetizationUI.client.luau" },
         "OrbCombatClient": {
-          "$attributes": {
-            "_lemonadeUniqueId": "yL4rINgcyL4r"
-          },
+          "$attributes": { "_lemonadeUniqueId": "yL4rINgcyL4r" },
           "$path": "src/client/OrbCombatClient.client.luau"
         },
         "OrbVisualClient": {
-          "$attributes": {
-            "_lemonadeUniqueId": "eRM8snrpeRM8"
-          },
+          "$attributes": { "_lemonadeUniqueId": "eRM8snrpeRM8" },
           "$path": "src/client/OrbVisualClient.client.luau"
         },
         "ProgressiveAssetPreloader": {
-          "$attributes": {
-            "_lemonadeUniqueId": "w15dIiCww15d"
-          },
+          "$attributes": { "_lemonadeUniqueId": "w15dIiCww15d" },
           "$path": "src/client/ProgressiveAssetPreloader.client.luau"
         },
         "SneakController": {
-          "$attributes": {
-            "_lemonadeUniqueId": "jNhvFDVHjNhv"
-          },
+          "$attributes": { "_lemonadeUniqueId": "jNhvFDVHjNhv" },
           "$path": "src/client/SneakController.client.luau"
         },
         "SprintController": {
-          "$attributes": {
-            "_lemonadeUniqueId": "btus714Cbtus"
-          },
+          "$attributes": { "_lemonadeUniqueId": "btus714Cbtus" },
           "$path": "src/client/SprintController.client.luau"
         },
         "SwordInputClient": {
-          "$attributes": {
-            "_lemonadeUniqueId": "zSwxXMESzSwx"
-          },
+          "$attributes": { "_lemonadeUniqueId": "zSwxXMESzSwx" },
           "$path": "src/client/SwordInputClient.client.luau"
         },
-        "UI": {
-          "$className": "Folder",
-          "$path": "src/client/UI"
-        },
+        "UI": { "$className": "Folder", "$path": "src/client/UI" },
         "XPCollectSound": {
-          "$attributes": {
-            "_lemonadeUniqueId": "zN0q8Z80zN0q"
-          },
+          "$attributes": { "_lemonadeUniqueId": "zN0q8Z80zN0q" },
           "$path": "src/client/XPCollectSound.client.luau"
         },
-        "$attributes": {
-          "_lemonadeUniqueId": "sps"
-        }
+        "$attributes": { "_lemonadeUniqueId": "sps" }
       },
       "$properties": {
         "AvatarJointUpgrade": "Enabled",
@@ -189,9 +117,7 @@
         "CharacterBreakJointsOnDeath": false,
         "CharacterUseJumpPower": false
       },
-      "$attributes": {
-        "_lemonadeUniqueId": "sp1"
-      }
+      "$attributes": { "_lemonadeUniqueId": "sp1" }
     }
   },
   "servePort": 34872
