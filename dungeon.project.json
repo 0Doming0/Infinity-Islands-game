@@ -64,12 +64,6 @@
           },
           "$path": "src/client/DungeonCameraController.client.luau"
         },
-        "DungeonBossPortraitCamera": {
-          "$path": "src/client/DungeonBossPortraitCamera.client.luau"
-        },
-        "DungeonNextIslandCameraGuidance": {
-          "$path": "src/client/DungeonNextIslandCameraGuidance.client.luau"
-        },
         "DungeonHUDBootstrap": {
           "$attributes": {
             "_lemonadeUniqueId": "QrR6ToTZQrR6"
@@ -84,9 +78,6 @@
         },
         "DungeonMobileCombatTelemetry": {
           "$path": "src/client/DungeonMobileCombatTelemetry.client.luau"
-        },
-        "DungeonMobileSoftAim": {
-          "$path": "src/client/DungeonMobileSoftAim.client.luau"
         },
         "DungeonPortraitEnemyReadability": {
           "$path": "src/client/DungeonPortraitEnemyReadability.client.luau"
