@@ -1,34 +1,22 @@
--- Mobile Dungeon Mode — Task 17: Device Scaling + Accessibility.
---
--- Preferencias desta versao sao locais por sessao. Se um sistema persistente
--- publicar os mesmos Attributes antes deste controller iniciar, eles sao
--- preservados e usados em vez dos defaults.
---
--- Integracoes:
--- ClientSetting_ReducedEffects -> Tasks 08/09/10
--- ClientSetting_WorldMarkers   -> Task 09
--- ClientSetting_Haptics        -> Task 08
--- DungeonMobileUIUserScale     -> Task 03
--- DungeonMobileTouchUserScale  -> Task 03
--- DungeonMobileTextUserScale   -> Tasks 09/10/11
+--[[
+	Infinity Islands - Mobile Accessibility
+
+	Uma unica UI pequena para preferencias locais do mobile.
+	O botao Aa fica diretamente ao lado esquerdo do SettingsButton.
+	Nao reposiciona nenhum controle de combate autorado no Studio.
+]]
 
 local ContextActionService = game:GetService("ContextActionService")
-local GuiService = game:GetService("GuiService")
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
 
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local VERSION = "DungeonMobileAccessibilityV1"
-local RENDER_STEP = "InfinityIslandsMobileAccessibility"
-local UPDATE_INTERVAL = 0.20
-
-local ACTIONS_TO_HIDE = {
-	"SkyDungeonAttack",
-	"SkyDungeonSprint",
-	"SkyDungeonSneak",
-}
+local VERSION = "DungeonMobileAccessibilityV2_BesideSettings"
+local PANEL_OWNER = "Accessibility"
+local UPDATE_INTERVAL = 0.25
 
 local COLORS = {
 	Glass = Color3.fromRGB(12, 25, 39),
@@ -41,31 +29,50 @@ local COLORS = {
 	Backdrop = Color3.fromRGB(4, 9, 14),
 }
 
-local active = false
-local elapsed = 0
+local SETTINGS = {
+	{
+		Key = "ClientSetting_LargeUI",
+		Title = "Interface maior",
+		Detail = "Aumenta texto e elementos de leitura.",
+		Default = false,
+	},
+	{
+		Key = "ClientSetting_LargeControls",
+		Title = "Controles maiores",
+		Detail = "Aumenta a escala sugerida dos controles.",
+		Default = false,
+	},
+	{
+		Key = "ClientSetting_ReducedEffects",
+		Title = "Reduzir efeitos",
+		Detail = "Diminui efeitos visuais intensos.",
+		Default = false,
+	},
+	{
+		Key = "ClientSetting_WorldMarkers",
+		Title = "Indicadores de perigo",
+		Detail = "Mantem marcadores uteis no mundo.",
+		Default = true,
+	},
+	{
+		Key = "ClientSetting_Haptics",
+		Title = "Vibracao",
+		Detail = "Feedback tatil quando suportado.",
+		Default = true,
+	},
+}
+
 local gui
 local accessButton
 local backdrop
 local panel
 local rows = {}
-local viewportConnection
+local active = false
+local elapsed = 0
 
-local function getViewport()
-	local camera = workspace.CurrentCamera
-	return camera and camera.ViewportSize or Vector2.new(390, 844)
-end
-
-local function getInsets()
-	local topLeft = Vector2.zero
-	local bottomRight = Vector2.zero
-	local success, first, second = pcall(function()
-		return GuiService:GetGuiInset()
-	end)
-	if success then
-		topLeft = typeof(first) == "Vector2" and first or Vector2.zero
-		bottomRight = typeof(second) == "Vector2" and second or Vector2.zero
-	end
-	return topLeft, bottomRight
+local function isMobile()
+	return player:GetAttribute("DungeonMobileMode") == true
+		or UserInputService.TouchEnabled == true
 end
 
 local function ensureBool(name, defaultValue)
@@ -75,66 +82,13 @@ local function ensureBool(name, defaultValue)
 	return player:GetAttribute(name) == true
 end
 
-local function deviceClass(viewport)
-	if viewport.X < 350 or viewport.Y < 650 then
-		return "CompactPhone", 0.94
-	elseif viewport.X < 430 then
-		return "Phone", 1.00
-	elseif viewport.X < 600 then
-		return "LargePhone", 1.04
-	end
-	return "TabletPortrait", 1.08
-end
-
 local function publishScales()
 	local largeUi = ensureBool("ClientSetting_LargeUI", false)
 	local largeControls = ensureBool("ClientSetting_LargeControls", false)
 
-	player:SetAttribute(
-		"DungeonMobileUIUserScale",
-		largeUi and 1.08 or 1.00
-	)
-	player:SetAttribute(
-		"DungeonMobileTextUserScale",
-		largeUi and 1.16 or 1.00
-	)
-	player:SetAttribute(
-		"DungeonMobileTouchUserScale",
-		largeControls and 1.15 or 1.00
-	)
-end
-
-local function publishDeviceMetrics()
-	local viewport = getViewport()
-	local topLeft, bottomRight = getInsets()
-	local class, recommendedScale = deviceClass(viewport)
-
-	player:SetAttribute("DungeonMobileDeviceClass", class)
-	player:SetAttribute("DungeonMobileDeviceRecommendedScale", recommendedScale)
-	player:SetAttribute("DungeonMobileViewportWidth", math.floor(viewport.X + 0.5))
-	player:SetAttribute("DungeonMobileViewportHeight", math.floor(viewport.Y + 0.5))
-	player:SetAttribute("DungeonMobileSafeInsetTop", math.floor(topLeft.Y + 0.5))
-	player:SetAttribute("DungeonMobileSafeInsetBottom", math.floor(bottomRight.Y + 0.5))
-	player:SetAttribute(
-		"DungeonMobileCompactDevice",
-		class == "CompactPhone"
-	)
-
-	publishScales()
-end
-
-local function panelOpen()
-	return player:GetAttribute("DungeonMobileAccessibilityPanelOpen") == true
-end
-
-local function setPanelOpen(open)
-	player:SetAttribute("DungeonMobileAccessibilityPanelOpen", open == true)
-	if backdrop then
-		backdrop.Visible = open == true
-	end
-	if panel then
-		panel.Visible = open == true
-	end
+	player:SetAttribute("DungeonMobileUIUserScale", largeUi and 1.08 or 1)
+	player:SetAttribute("DungeonMobileTextUserScale", largeUi and 1.16 or 1)
+	player:SetAttribute("DungeonMobileTouchUserScale", largeControls and 1.15 or 1)
 end
 
 local function addCorner(object, radius)
@@ -151,103 +105,73 @@ local function addStroke(object, color, transparency, thickness)
 	stroke.Parent = object
 end
 
-local function createLabel(parent, text, position, size, textSize, bold)
-	local label = Instance.new("TextLabel")
-	label.BackgroundTransparency = 1
-	label.Position = position
-	label.Size = size
-	label.Text = text
-	label.TextColor3 = COLORS.Text
-	label.Font = bold and Enum.Font.GothamBold or Enum.Font.GothamMedium
-	label.TextSize = textSize
-	label.TextXAlignment = Enum.TextXAlignment.Left
-	label.TextWrapped = true
-	label.ZIndex = parent.ZIndex + 1
-	label.Parent = parent
-	return label
+local function label(parent, text, position, size, textSize, bold)
+	local item = Instance.new("TextLabel")
+	item.BackgroundTransparency = 1
+	item.Position = position
+	item.Size = size
+	item.Text = text
+	item.TextColor3 = COLORS.Text
+	item.Font = bold and Enum.Font.GothamBold or Enum.Font.GothamMedium
+	item.TextSize = textSize
+	item.TextXAlignment = Enum.TextXAlignment.Left
+	item.TextWrapped = true
+	item.ZIndex = parent.ZIndex + 1
+	item.Parent = parent
+	return item
 end
 
-local SETTINGS = {
-	{
-		Key = "ClientSetting_LargeUI",
-		Title = "Texto e interface maiores",
-		Detail = "Aumenta leitura sem cobrir o centro.",
-		Default = false,
-	},
-	{
-		Key = "ClientSetting_LargeControls",
-		Title = "Controles maiores",
-		Detail = "Aumenta o botão de ataque.",
-		Default = false,
-	},
-	{
-		Key = "ClientSetting_ReducedEffects",
-		Title = "Reduzir efeitos",
-		Detail = "Remove pulsos, ring e vibração.",
-		Default = false,
-	},
-	{
-		Key = "ClientSetting_WorldMarkers",
-		Title = "Indicadores de perigo",
-		Detail = "Setas para ameaças fora da tela.",
-		Default = true,
-	},
-	{
-		Key = "ClientSetting_Haptics",
-		Title = "Vibração no acerto",
-		Detail = "Feedback tátil quando suportado.",
-		Default = true,
-	},
-}
-
-local function rowValue(row)
-	return player:GetAttribute(row.Definition.Key) == true
+local function panelOpen()
+	return panel and panel.Visible == true
 end
 
-local function updateRow(row)
-	local enabled = rowValue(row)
+local function setPanelOpen(value)
+	local open = value == true
+	if panel then
+		panel.Visible = open
+	end
+	if backdrop then
+		backdrop.Visible = open
+	end
+	player:SetAttribute("DungeonMobileAccessibilityPanelOpen", open)
+
+	if open then
+		playerGui:SetAttribute("SkyDungeonExclusivePanel", PANEL_OWNER)
+	elseif playerGui:GetAttribute("SkyDungeonExclusivePanel") == PANEL_OWNER then
+		playerGui:SetAttribute("SkyDungeonExclusivePanel", nil)
+	end
+end
+
+local function refreshRow(row)
+	local enabled = player:GetAttribute(row.Definition.Key) == true
 	row.Toggle.Text = enabled and "ON" or "OFF"
 	row.Toggle.BackgroundColor3 = enabled and COLORS.Green or COLORS.Off
 	row.Toggle.TextColor3 = enabled and Color3.fromRGB(12, 39, 31) or COLORS.Text
 end
 
-local function refreshRows()
-	for _, row in ipairs(rows) do
-		updateRow(row)
-	end
-end
-
-local function toggleSetting(row)
-	local key = row.Definition.Key
-	player:SetAttribute(key, not rowValue(row))
-	publishScales()
-	refreshRows()
-end
-
 local function createRow(parent, definition, y)
-	local row = Instance.new("Frame")
-	row.Name = definition.Key
-	row.Position = UDim2.fromOffset(12, y)
-	row.Size = UDim2.new(1, -24, 0, 46)
-	row.BackgroundColor3 = COLORS.Raised
-	row.BackgroundTransparency = 0.12
-	row.BorderSizePixel = 0
-	row.ZIndex = panel.ZIndex + 1
-	row.Parent = parent
-	addCorner(row, 9)
+	local frame = Instance.new("Frame")
+	frame.Name = definition.Key
+	frame.Position = UDim2.fromOffset(12, y)
+	frame.Size = UDim2.new(1, -24, 0, 46)
+	frame.BackgroundColor3 = COLORS.Raised
+	frame.BackgroundTransparency = 0.12
+	frame.BorderSizePixel = 0
+	frame.ZIndex = panel.ZIndex + 1
+	frame.Parent = parent
+	addCorner(frame, 9)
 
-	local title = createLabel(
-		row,
+	label(
+		frame,
 		definition.Title,
 		UDim2.fromOffset(11, 5),
 		UDim2.new(1, -80, 0, 17),
 		10,
 		true
 	)
-	title.TextColor3 = COLORS.Text
 
-	local detail = createLabel(
-		row,
+	local detail = label(
+		frame,
 		definition.Detail,
 		UDim2.fromOffset(11, 22),
 		UDim2.new(1, -80, 0, 18),
@@ -263,45 +187,40 @@ local function createRow(parent, definition, y)
 	toggle.Size = UDim2.fromOffset(53, 29)
 	toggle.BackgroundColor3 = COLORS.Off
 	toggle.BorderSizePixel = 0
-	toggle.AutoButtonColor = true
-	toggle.Text = "OFF"
 	toggle.TextColor3 = COLORS.Text
 	toggle.Font = Enum.Font.GothamBlack
 	toggle.TextSize = 9
-	toggle.ZIndex = row.ZIndex + 2
-	toggle.Parent = row
+	toggle.ZIndex = frame.ZIndex + 2
+	toggle.Parent = frame
 	addCorner(toggle, 14)
 
-	local record = {
+	local row = {
 		Definition = definition,
-		Frame = row,
-		Title = title,
-		Detail = detail,
+		Frame = frame,
 		Toggle = toggle,
 	}
-	table.insert(rows, record)
+	table.insert(rows, row)
 
 	toggle.Activated:Connect(function()
-		toggleSetting(record)
+		player:SetAttribute(definition.Key, not (player:GetAttribute(definition.Key) == true))
+		publishScales()
+		refreshRow(row)
 	end)
 
-	updateRow(record)
+	refreshRow(row)
 end
 
 local function createGui()
-	if gui and gui.Parent then
-		return
-	end
-
-	local existing = playerGui:FindFirstChild("DungeonMobileAccessibilityUI")
-	if existing then
-		existing:Destroy()
+	local old = playerGui:FindFirstChild("DungeonMobileAccessibilityUI")
+	if old then
+		old:Destroy()
 	end
 
 	gui = Instance.new("ScreenGui")
 	gui.Name = "DungeonMobileAccessibilityUI"
 	gui.ResetOnSpawn = false
-	gui.IgnoreGuiInset = true
+	-- SettingsUI usa o inset padrao; usar a mesma referencia deixa os botoes alinhados.
+	gui.IgnoreGuiInset = false
 	gui.DisplayOrder = 125
 	gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 	gui.Enabled = false
@@ -309,8 +228,9 @@ local function createGui()
 
 	accessButton = Instance.new("TextButton")
 	accessButton.Name = "AccessibilityButton"
-	accessButton.AnchorPoint = Vector2.new(0, 0)
-	accessButton.Size = UDim2.fromOffset(40, 34)
+	accessButton.AnchorPoint = Vector2.new(1, 0)
+	accessButton.Position = UDim2.new(1, -74, 0, 318)
+	accessButton.Size = UDim2.fromOffset(40, 38)
 	accessButton.BackgroundColor3 = COLORS.Glass
 	accessButton.BackgroundTransparency = 0.04
 	accessButton.BorderSizePixel = 0
@@ -338,7 +258,7 @@ local function createGui()
 	panel = Instance.new("Frame")
 	panel.Name = "Panel"
 	panel.AnchorPoint = Vector2.new(0.5, 0.5)
-	panel.Position = UDim2.fromScale(0.5, 0.50)
+	panel.Position = UDim2.fromScale(0.5, 0.5)
 	panel.Size = UDim2.fromOffset(330, 330)
 	panel.BackgroundColor3 = COLORS.Glass
 	panel.BackgroundTransparency = 0.02
@@ -349,7 +269,7 @@ local function createGui()
 	addCorner(panel, 16)
 	addStroke(panel, COLORS.Cyan, 0.24, 1.3)
 
-	local title = createLabel(
+	local title = label(
 		panel,
 		"ACESSIBILIDADE",
 		UDim2.fromOffset(14, 10),
@@ -359,9 +279,9 @@ local function createGui()
 	)
 	title.TextColor3 = COLORS.Cyan
 
-	local subtitle = createLabel(
+	local subtitle = label(
 		panel,
-		"Ajustes do Dungeon mobile",
+		"Ajustes do mobile",
 		UDim2.fromOffset(14, 31),
 		UDim2.new(1, -58, 0, 18),
 		8,
@@ -376,10 +296,10 @@ local function createGui()
 	close.Size = UDim2.fromOffset(34, 30)
 	close.BackgroundColor3 = COLORS.Raised
 	close.BorderSizePixel = 0
-	close.Text = "×"
+	close.Text = "x"
 	close.TextColor3 = COLORS.Text
 	close.Font = Enum.Font.GothamBold
-	close.TextSize = 18
+	close.TextSize = 16
 	close.ZIndex = panel.ZIndex + 2
 	close.Parent = panel
 	addCorner(close, 9)
@@ -389,17 +309,6 @@ local function createGui()
 		ensureBool(definition.Key, definition.Default)
 		createRow(panel, definition, 55 + (index - 1) * 51)
 	end
-
-	local sessionNote = createLabel(
-		panel,
-		"Preferências locais desta sessão.",
-		UDim2.fromOffset(14, 309),
-		UDim2.new(1, -28, 0, 14),
-		7,
-		false
-	)
-	sessionNote.TextColor3 = COLORS.Muted
-	sessionNote.TextXAlignment = Enum.TextXAlignment.Center
 
 	accessButton.Activated:Connect(function()
 		setPanelOpen(not panelOpen())
@@ -412,35 +321,49 @@ local function createGui()
 	end)
 end
 
+local function settingsButton()
+	local settingsGui = playerGui:FindFirstChild("SettingsUI")
+	local candidate = settingsGui and settingsGui:FindFirstChild("SettingsButton", true)
+	return candidate and candidate:IsA("GuiButton") and candidate or nil
+end
+
 local function layout()
-	if not gui or not accessButton or not panel then
+	if not accessButton or not panel then
 		return
 	end
 
-	local viewport = getViewport()
-	local topLeft = getInsets()
-	local width = math.clamp(viewport.X - 26, 286, 360)
-	local height = 330
+	local camera = workspace.CurrentCamera
+	local viewport = camera and camera.ViewportSize or Vector2.new(390, 844)
+	panel.Size = UDim2.fromOffset(math.clamp(viewport.X - 26, 286, 360), 330)
 
-	panel.Size = UDim2.fromOffset(width, height)
-
-	-- Abaixo do CombatHeader e antes da faixa reservada aos threat indicators.
-	accessButton.Position = UDim2.fromOffset(
-		math.max(8, topLeft.X + 8),
-		math.max(146, topLeft.Y + 150)
-	)
-
-	local class = tostring(player:GetAttribute("DungeonMobileDeviceClass") or "")
-	accessButton.Size = class == "CompactPhone"
-		and UDim2.fromOffset(38, 32)
-		or UDim2.fromOffset(40, 34)
+	local settings = settingsButton()
+	if settings then
+		-- SettingsButton: AnchorPoint (1,0). O Aa usa a mesma referencia e fica
+		-- imediatamente a esquerda, com 8 px de espaco.
+		local gap = 8
+		local settingsWidth = settings.AbsoluteSize.X > 0 and settings.AbsoluteSize.X or 48
+		accessButton.AnchorPoint = Vector2.new(1, 0)
+		accessButton.Position = UDim2.new(
+			settings.Position.X.Scale,
+			settings.Position.X.Offset - settingsWidth - gap,
+			settings.Position.Y.Scale,
+			settings.Position.Y.Offset
+		)
+		accessButton.Size = UDim2.fromOffset(40, math.max(34, settings.AbsoluteSize.Y > 0 and settings.AbsoluteSize.Y or 38))
+		player:SetAttribute("DungeonAccessibilityBesideSettings", true)
+	else
+		accessButton.AnchorPoint = Vector2.new(1, 0)
+		accessButton.Position = UDim2.new(1, -74, 0, 318)
+		accessButton.Size = UDim2.fromOffset(40, 38)
+		player:SetAttribute("DungeonAccessibilityBesideSettings", false)
+	end
 end
 
-local function hideCombatActionsWhileOpen()
+local function hideLegacyContextButtonsWhileOpen()
 	if not panelOpen() then
 		return
 	end
-	for _, actionName in ipairs(ACTIONS_TO_HIDE) do
+	for _, actionName in ipairs({ "SkyDungeonAttack", "SkyDungeonSprint", "SkyDungeonSneak" }) do
 		local button = ContextActionService:GetButton(actionName)
 		if button and button:IsA("GuiButton") then
 			button.Visible = false
@@ -448,88 +371,51 @@ local function hideCombatActionsWhileOpen()
 	end
 end
 
-local function activate()
-	if active or player:GetAttribute("DungeonMobileMode") ~= true then
-		return
-	end
-
-	createGui()
-	active = true
-	gui.Enabled = true
-
-	ensureBool("ClientSetting_LargeUI", false)
-	ensureBool("ClientSetting_LargeControls", false)
-	ensureBool("ClientSetting_ReducedEffects", false)
-	ensureBool("ClientSetting_WorldMarkers", true)
-	ensureBool("ClientSetting_Haptics", true)
-
-	publishDeviceMetrics()
-	refreshRows()
-	layout()
-
-	player:SetAttribute("DungeonMobileAccessibilityReady", true)
-	player:SetAttribute("DungeonMobileAccessibilityActive", true)
-	player:SetAttribute("DungeonMobileAccessibilityVersion", VERSION)
-	player:SetAttribute(
-		"DungeonMobileAccessibilityPolicy",
-		"ResponsivePortraitSessionSettingsV1"
-	)
-end
-
-local function deactivate()
-	if not active then
-		return
-	end
-
-	active = false
-	setPanelOpen(false)
-	if gui then
-		gui.Enabled = false
-	end
-	player:SetAttribute("DungeonMobileAccessibilityActive", false)
-end
-
 local function refreshActivation()
-	if player:GetAttribute("DungeonMobileMode") == true then
-		activate()
+	active = isMobile()
+	if not gui then
+		createGui()
+	end
+	gui.Enabled = active
+	accessButton.Visible = active
+	if not active then
+		setPanelOpen(false)
 	else
-		deactivate()
-	end
-end
-
-local function bindCamera()
-	if viewportConnection then
-		viewportConnection:Disconnect()
-		viewportConnection = nil
-	end
-	local camera = workspace.CurrentCamera
-	if camera then
-		viewportConnection = camera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
-			if active then
-				publishDeviceMetrics()
-				layout()
-			end
-		end)
-	end
-end
-
-workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
-	bindCamera()
-	if active then
-		publishDeviceMetrics()
+		publishScales()
 		layout()
 	end
-end)
-bindCamera()
 
-for _, setting in ipairs(SETTINGS) do
-	player:GetAttributeChangedSignal(setting.Key):Connect(function()
-		if active then
-			publishScales()
-			refreshRows()
+	player:SetAttribute("DungeonMobileAccessibilityReady", true)
+	player:SetAttribute("DungeonMobileAccessibilityActive", active)
+	player:SetAttribute("DungeonMobileAccessibilityVersion", VERSION)
+	player:SetAttribute("DungeonMobileAccessibilityPolicy", "BesideSettingsSessionPreferences")
+end
+
+for _, definition in ipairs(SETTINGS) do
+	ensureBool(definition.Key, definition.Default)
+	player:GetAttributeChangedSignal(definition.Key):Connect(function()
+		publishScales()
+		for _, row in ipairs(rows) do
+			if row.Definition.Key == definition.Key then
+				refreshRow(row)
+				break
+			end
 		end
 	end)
 end
+
+playerGui:GetAttributeChangedSignal("SkyDungeonExclusivePanel"):Connect(function()
+	local owner = playerGui:GetAttribute("SkyDungeonExclusivePanel")
+	if owner ~= nil and owner ~= PANEL_OWNER and panelOpen() then
+		setPanelOpen(false)
+	end
+end)
+
+playerGui.DescendantAdded:Connect(function(instance)
+	if instance.Name == "SettingsButton" then
+		task.defer(layout)
+	end
+end)
 
 player:GetAttributeChangedSignal("DungeonMobileMode"):Connect(refreshActivation)
 
@@ -542,42 +428,12 @@ RunService.Heartbeat:Connect(function(deltaTime)
 		return
 	end
 	elapsed = 0
-	publishDeviceMetrics()
 	layout()
+	hideLegacyContextButtonsWhileOpen()
 end)
 
-RunService:BindToRenderStep(
-	RENDER_STEP,
-	Enum.RenderPriority.Last.Value + 10,
-	hideCombatActionsWhileOpen
-)
+createGui()
+publishScales()
+refreshActivation()
 
 player:SetAttribute("DungeonMobileAccessibilityControllerLoaded", true)
-player:SetAttribute("DungeonMobileAccessibilityVersion", VERSION)
-
-if player:GetAttribute("DungeonInputProfileReady") == true
-	or player:GetAttribute("DungeonMobileMode") ~= nil
-then
-	refreshActivation()
-else
-	local readyConnection
-	readyConnection = player:GetAttributeChangedSignal(
-		"DungeonInputProfileReady"
-	):Connect(function()
-		if player:GetAttribute("DungeonInputProfileReady") == true then
-			if readyConnection then
-				readyConnection:Disconnect()
-				readyConnection = nil
-			end
-			refreshActivation()
-		end
-	end)
-end
-
-script.Destroying:Connect(function()
-	deactivate()
-	if viewportConnection then
-		viewportConnection:Disconnect()
-	end
-	RunService:UnbindFromRenderStep(RENDER_STEP)
-end)
