@@ -2,33 +2,27 @@
 
 local Config = {}
 
-Config.Version = "AutomaticIslandTransitV7"
-Config.Enabled = true
+Config.Version = "ManualAdvanceIslandTransitV8"
 
--- O transporte automatico agora e o metodo oficial de transicao entre arenas.
--- Cada ilha pode disparar novamente caso o jogador retorne a ela durante a
--- mesma sessao; o limite alto existe apenas como protecao contra loops.
+-- O servico automatico legado fica desligado. ManualIslandAdvance.server.luau
+-- passa a ser a autoridade do avanco normal entre arenas: limpa a missao,
+-- aparece AVANCAR, o jogador confirma e entao o transporte automatico inicia.
+Config.Enabled = false
+Config.ManualAdvanceEnabled = true
+
 Config.AutomaticFlightsPerSourceIsland = 99
 Config.GuidanceIndicatorEnabled = true
-
--- O transporte vale para toda a rota, nao apenas para as primeiras ilhas.
 Config.EarlyIslandAutomaticTransportMaxIndex = 1000000
--- Assim que a arena estiver limpa e o proximo nivel estiver elegivel, a
--- transicao comeca quase imediatamente.
 Config.EarlyIslandIdleSeconds = 0.25
 
--- Pequeno aviso para o jogador perceber que a arena terminou sem interromper o
--- ritmo do combate.
-Config.LevelUpDelaySeconds = 1.25
+-- Depois que o jogador toca em AVANCAR, usamos apenas um aviso curto antes do voo.
+Config.LevelUpDelaySeconds = 0.45
 Config.FlightDurationSeconds = 1.35
 Config.LandingCountdownSeconds = 0.35
 Config.ReleaseProtectionSeconds = 0.25
 Config.CooldownSeconds = 0
 Config.DestinationReadyTimeoutSeconds = 5
 Config.EligibilityPollSeconds = 0.15
-
--- Mantem o loop limpar arena -> avancar. Nunca transporta enquanto ainda houver
--- inimigos obrigatorios na ilha atual.
 Config.RequireCurrentIslandCleared = true
 
 Config.MinimumArcHeightStuds = 24
@@ -51,17 +45,12 @@ Config.GuidanceWaypointArrivalRadiusStuds = 8
 Config.GuidanceArrowScale = 1.35
 Config.GuidanceFallbackToDestination = true
 
--- Um Sound chamado AssistedTransportWhistle em ReplicatedStorage tem
--- prioridade. Este som interno e apenas o fallback para Studio.
 Config.ReleaseWhistleSoundId = "rbxasset://sounds/electronicpingshort.wav"
 Config.ReleaseWhistleVolume = 0.8
 Config.ReleaseWhistlePlaybackSpeed = 1.25
 
 function Config.Validate()
-	assert(
-		Config.AutomaticFlightsPerSourceIsland >= 1,
-		"AutomaticFlightsPerSourceIsland precisa ser >= 1"
-	)
+	assert(Config.AutomaticFlightsPerSourceIsland >= 1, "AutomaticFlightsPerSourceIsland precisa ser >= 1")
 	assert(Config.EarlyIslandAutomaticTransportMaxIndex >= 1, "Limite de ilhas automaticas invalido")
 	assert(Config.EarlyIslandIdleSeconds >= 0, "EarlyIslandIdleSeconds precisa ser >= 0")
 	assert(Config.LevelUpDelaySeconds >= 0, "LevelUpDelaySeconds precisa ser >= 0")
