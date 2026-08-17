@@ -5,6 +5,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 
 local ScoreService = require(script.Parent.BlockParkour:WaitForChild("ScoreService_SkyDungeon_V10"))
 local RunLevelService = require(script.Parent.BlockParkour:WaitForChild("RunLevelService"))
@@ -14,11 +15,13 @@ local GameplayAnalytics = require(script.Parent:WaitForChild("GameplayAnalyticsS
 ScoreService.Start()
 DownedService.Start()
 
-local CROUCH_HEAL_RATE = 0.04 -- +4% da vida maxima por segundo.
-local CROUCH_WARMUP_SECONDS = 0.75
-local CROUCH_DAMAGE_DELAY_SECONDS = 2.0
-local CROUCH_MAX_HORIZONTAL_SPEED = 12
-local CROUCH_HEAL_STEP = 0.20
+-- Recuperacao intencionalmente perceptivel: serve como opcao de recuo/defesa.
+local CROUCH_HEAL_RATE = 0.08 -- +8% da vida maxima por segundo.
+local CROUCH_WARMUP_SECONDS = 0.40
+local CROUCH_DAMAGE_DELAY_SECONDS = 1.25
+local CROUCH_MAX_HORIZONTAL_SPEED = 10
+local CROUCH_HEAL_STEP = 0.10
+local CROUCH_EFFECT_POLICY = "PhysicalNeonRingCoreV1"
 
 local crouchRemote = ReplicatedStorage:FindFirstChild("CrouchStateRequest")
 if crouchRemote and not crouchRemote:IsA("RemoteEvent") then
@@ -51,6 +54,143 @@ local function detectDeathCause(character)
 	return "Unknown"
 end
 
+local function configureEffectPart(part)
+	part.Anchored = false
+	part.CanCollide = false
+	part.CanTouch = false
+	part.CanQuery = false
+	part.CastShadow = false
+	part.Massless = true
+	part.Material = Enum.Material.Neon
+	part.Color = Color3.fromRGB(85, 255, 135)
+end
+
+local function weldToRoot(root, part)
+	local weld = Instance.new("WeldConstraint")
+	weld.Name = "HealingEffectWeld"
+	weld.Part0 = root
+	weld.Part1 = part
+	weld.Parent = part
+end
+
+local function createCrouchHealEffect(character, root)
+	local old = character:FindFirstChild("DungeonCrouchHealEffect")
+	if old then
+		old:Destroy()
+	end
+
+	local folder = Instance.new("Folder")
+	folder.Name = "DungeonCrouchHealEffect"
+	folder.Parent = character
+
+	-- Disco fisico Neon sob os pes. Ele e uma Part real replicada pelo servidor,
+	-- mas sem colisao/toque/query para nunca interferir no movimento.
+	local ring = Instance.new("Part")
+	ring.Name = "HealingRing"
+	ring.Shape = Enum.PartType.Cylinder
+	ring.Size = Vector3.new(0.12, 4.6, 4.6)
+	configureEffectPart(ring)
+	ring.Transparency = 1
+	ring.CFrame = root.CFrame
+		* CFrame.new(0, -2.75, 0)
+		* CFrame.Angles(0, 0, math.rad(90))
+	ring.Parent = folder
+	weldToRoot(root, ring)
+
+	-- Pequeno nucleo luminoso acompanhando o personagem deixa a recuperacao
+	-- legivel mesmo quando o chao/ilha tem cores fortes.
+	local core = Instance.new("Part")
+	core.Name = "HealingCore"
+	core.Shape = Enum.PartType.Ball
+	core.Size = Vector3.new(0.75, 0.75, 0.75)
+	configureEffectPart(core)
+	core.Transparency = 1
+	core.CFrame = root.CFrame * CFrame.new(0, -1.8, 0)
+	core.Parent = folder
+	weldToRoot(root, core)
+
+	local light = Instance.new("PointLight")
+	light.Name = "HealingGlow"
+	light.Color = Color3.fromRGB(105, 255, 145)
+	light.Brightness = 1.25
+	light.Range = 7
+	light.Enabled = false
+	light.Parent = core
+
+	local attachment = Instance.new("Attachment")
+	attachment.Name = "DungeonCrouchHealAttachment"
+	attachment.Position = Vector3.new(0, -1.4, 0)
+	attachment.Parent = root
+
+	local emitter = Instance.new("ParticleEmitter")
+	emitter.Name = "DungeonCrouchHealParticles"
+	emitter.Enabled = false
+	emitter.Texture = "rbxasset://textures/particles/sparkles_main.dds"
+	emitter.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(80, 255, 125)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(220, 255, 225)),
+	})
+	emitter.LightEmission = 0.75
+	emitter.Rate = 24
+	emitter.Lifetime = NumberRange.new(0.65, 1.05)
+	emitter.Speed = NumberRange.new(1.2, 2.4)
+	emitter.SpreadAngle = Vector2.new(45, 45)
+	emitter.Rotation = NumberRange.new(0, 360)
+	emitter.RotSpeed = NumberRange.new(-70, 70)
+	emitter.Size = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.28),
+		NumberSequenceKeypoint.new(0.55, 0.18),
+		NumberSequenceKeypoint.new(1, 0),
+	})
+	emitter.Transparency = NumberSequence.new({
+		NumberSequenceKeypoint.new(0, 0.05),
+		NumberSequenceKeypoint.new(0.75, 0.3),
+		NumberSequenceKeypoint.new(1, 1),
+	})
+	emitter.Acceleration = Vector3.new(0, 3.2, 0)
+	emitter.Parent = attachment
+
+	local highlight = Instance.new("Highlight")
+	highlight.Name = "HealingHighlight"
+	highlight.Adornee = character
+	highlight.DepthMode = Enum.HighlightDepthMode.Occluded
+	highlight.FillColor = Color3.fromRGB(85, 255, 135)
+	highlight.FillTransparency = 0.88
+	highlight.OutlineColor = Color3.fromRGB(180, 255, 195)
+	highlight.OutlineTransparency = 0.38
+	highlight.Enabled = false
+	highlight.Parent = folder
+
+	local ringTween = TweenService:Create(
+		ring,
+		TweenInfo.new(0.65, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+		{
+			Size = Vector3.new(0.12, 5.5, 5.5),
+			Transparency = 0.72,
+		}
+	)
+	local coreTween = TweenService:Create(
+		core,
+		TweenInfo.new(0.55, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+		{
+			Size = Vector3.new(1.15, 1.15, 1.15),
+			Transparency = 0.58,
+		}
+	)
+
+	return {
+		Folder = folder,
+		Ring = ring,
+		Core = core,
+		Attachment = attachment,
+		Emitter = emitter,
+		Light = light,
+		Highlight = highlight,
+		RingTween = ringTween,
+		CoreTween = coreTween,
+	}
+end
+
 local function setCrouchHealingActive(player, state, active)
 	if not state then
 		return
@@ -60,14 +200,60 @@ local function setCrouchHealingActive(player, state, active)
 		return
 	end
 	state.HealingActive = active
-	if state.Emitter and state.Emitter.Parent then
-		state.Emitter.Enabled = active
+
+	local effect = state.Effect
+	if effect then
+		if effect.Emitter and effect.Emitter.Parent then
+			effect.Emitter.Enabled = active
+		end
+		if effect.Light and effect.Light.Parent then
+			effect.Light.Enabled = active
+		end
+		if effect.Highlight and effect.Highlight.Parent then
+			effect.Highlight.Enabled = active
+		end
+		if active then
+			if effect.Ring and effect.Ring.Parent then
+				effect.Ring.Size = Vector3.new(0.12, 4.6, 4.6)
+				effect.Ring.Transparency = 0.42
+			end
+			if effect.Core and effect.Core.Parent then
+				effect.Core.Size = Vector3.new(0.75, 0.75, 0.75)
+				effect.Core.Transparency = 0.20
+			end
+			if effect.RingTween then
+				effect.RingTween:Play()
+			end
+			if effect.CoreTween then
+				effect.CoreTween:Play()
+			end
+		else
+			if effect.RingTween then
+				effect.RingTween:Cancel()
+			end
+			if effect.CoreTween then
+				effect.CoreTween:Cancel()
+			end
+			if effect.Ring and effect.Ring.Parent then
+				effect.Ring.Transparency = 1
+				effect.Ring.Size = Vector3.new(0.12, 4.6, 4.6)
+			end
+			if effect.Core and effect.Core.Parent then
+				effect.Core.Transparency = 1
+				effect.Core.Size = Vector3.new(0.75, 0.75, 0.75)
+			end
+		end
 	end
+
 	if state.Character and state.Character.Parent then
 		state.Character:SetAttribute("DungeonCrouchHealingActive", active)
 	end
 	if player and player.Parent == Players then
 		player:SetAttribute("DungeonCrouchHealingActive", active)
+		player:SetAttribute("DungeonCrouchHealingPhysicalEffectActive", active)
+		if active then
+			player:SetAttribute("DungeonCrouchHealingActivationSerial", (player:GetAttribute("DungeonCrouchHealingActivationSerial") or 0) + 1)
+		end
 	end
 end
 
@@ -80,49 +266,21 @@ local function clearCrouchState(player)
 	for _, connection in ipairs(state.Connections) do
 		connection:Disconnect()
 	end
-	crouchStates[player] = nil
-end
-
-local function createCrouchHealEffect(root)
-	local old = root:FindFirstChild("DungeonCrouchHealAttachment")
-	if old then
-		old:Destroy()
+	if state.Effect then
+		if state.Effect.RingTween then
+			state.Effect.RingTween:Cancel()
+		end
+		if state.Effect.CoreTween then
+			state.Effect.CoreTween:Cancel()
+		end
+		if state.Effect.Folder and state.Effect.Folder.Parent then
+			state.Effect.Folder:Destroy()
+		end
+		if state.Effect.Attachment and state.Effect.Attachment.Parent then
+			state.Effect.Attachment:Destroy()
+		end
 	end
-
-	local attachment = Instance.new("Attachment")
-	attachment.Name = "DungeonCrouchHealAttachment"
-	attachment.Position = Vector3.new(0, -1.2, 0)
-	attachment.Parent = root
-
-	local emitter = Instance.new("ParticleEmitter")
-	emitter.Name = "DungeonCrouchHealParticles"
-	emitter.Enabled = false
-	emitter.Texture = "rbxasset://textures/particles/sparkles_main.dds"
-	emitter.Color = ColorSequence.new({
-		ColorSequenceKeypoint.new(0, Color3.fromRGB(125, 255, 155)),
-		ColorSequenceKeypoint.new(1, Color3.fromRGB(215, 255, 220)),
-	})
-	emitter.LightEmission = 0.45
-	emitter.Rate = 7
-	emitter.Lifetime = NumberRange.new(0.55, 0.9)
-	emitter.Speed = NumberRange.new(0.6, 1.35)
-	emitter.SpreadAngle = Vector2.new(28, 28)
-	emitter.Rotation = NumberRange.new(0, 360)
-	emitter.RotSpeed = NumberRange.new(-45, 45)
-	emitter.Size = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0.18),
-		NumberSequenceKeypoint.new(0.55, 0.12),
-		NumberSequenceKeypoint.new(1, 0),
-	})
-	emitter.Transparency = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0.15),
-		NumberSequenceKeypoint.new(0.75, 0.35),
-		NumberSequenceKeypoint.new(1, 1),
-	})
-	emitter.Acceleration = Vector3.new(0, 1.8, 0)
-	emitter.Parent = attachment
-
-	return attachment, emitter
+	crouchStates[player] = nil
 end
 
 local function bindCrouchRecovery(player, character, humanoid)
@@ -133,13 +291,12 @@ local function bindCrouchRecovery(player, character, humanoid)
 		return
 	end
 
-	local attachment, emitter = createCrouchHealEffect(root)
+	local effect = createCrouchHealEffect(character, root)
 	local state = {
 		Character = character,
 		Humanoid = humanoid,
 		Root = root,
-		Attachment = attachment,
-		Emitter = emitter,
+		Effect = effect,
 		Requested = false,
 		CrouchSince = nil,
 		LastDamageAt = -math.huge,
@@ -152,7 +309,11 @@ local function bindCrouchRecovery(player, character, humanoid)
 	player:SetAttribute("DungeonCrouching", false)
 	player:SetAttribute("DungeonCrouchHealingActive", false)
 	player:SetAttribute("DungeonCrouchHealingRate", CROUCH_HEAL_RATE)
+	player:SetAttribute("DungeonCrouchHealingWarmupSeconds", CROUCH_WARMUP_SECONDS)
+	player:SetAttribute("DungeonCrouchHealingDamageDelaySeconds", CROUCH_DAMAGE_DELAY_SECONDS)
 	player:SetAttribute("DungeonCrouchHealingReady", true)
+	player:SetAttribute("DungeonCrouchHealingPhysicalEffect", CROUCH_EFFECT_POLICY)
+	player:SetAttribute("DungeonCrouchHealingPhysicalEffectActive", false)
 	character:SetAttribute("DungeonCrouching", false)
 	character:SetAttribute("DungeonCrouchHealingActive", false)
 
@@ -207,6 +368,8 @@ crouchRemote.OnServerEvent:Connect(function(player, requested)
 		return
 	end
 
+	player:SetAttribute("DungeonLastCrouchRequestAt", workspace:GetServerTimeNow())
+	player:SetAttribute("DungeonLastCrouchRequestValue", requested)
 	if state.Requested == requested then
 		return
 	end
@@ -241,6 +404,7 @@ RunService.Heartbeat:Connect(function(dt)
 			local amount = math.max(1, humanoid.MaxHealth * CROUCH_HEAL_RATE) * step
 			humanoid.Health = math.min(humanoid.MaxHealth, humanoid.Health + amount)
 			state.LastHealth = humanoid.Health
+			player:SetAttribute("DungeonLastCrouchHealAmount", amount)
 			player:SetAttribute("DungeonLastCrouchHealAt", workspace:GetServerTimeNow())
 		end
 	end
