@@ -1,35 +1,28 @@
 -- DungeonCameraController: unica autoridade da camera mobile durante gameplay.
--- Ativa desde a primeira ilha e continua pela rota inteira.
 --
--- Prioridade:
--- 1. alvo que o MobileControls esta perseguindo;
--- 2. mob vivo mais proximo da arena atual;
--- 3. saida/direcao da ilha como fallback.
+-- A camera enquadra a ILHA e a direcao da rota. Ela nunca mira automaticamente
+-- no mob selecionado pelo ataque. Assim o combate pode escolher/perseguir alvos
+-- sem fazer a camera abandonar a leitura espacial da arena.
 --
--- Durante transporte este controller apenas cede a camera ao controller do voo.
+-- Durante o transporte este controller cede a camera ao controller do voo.
 
-local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 
 local player = Players.LocalPlayer
-local playerGui = player:WaitForChild("PlayerGui")
-local CombatConfig = require(
-	ReplicatedStorage:WaitForChild("SwordCombat"):WaitForChild("CombatConfig")
-)
 
-local VERSION = "LinearMobileCameraV1"
+local VERSION = "IslandSmartMobileCameraV2"
 local BIND_NAME = "DungeonCameraController"
-local HEIGHT = 25
-local DISTANCE = 20
-local FOV = 70
-local POSITION_SPEED = 8
-local ROTATION_SPEED = 9
-local TARGET_RADIUS = 85
-local OBSTRUCTION_PADDING = 1.4
+local CAMERA_HEIGHT = 28
+local CAMERA_DISTANCE = 22
+local CAMERA_FOV = 70
+local POSITION_SPEED = 7
+local ROTATION_SPEED = 8
+local FOV_SPEED = 6
+local FOCUS_TOWARD_EXIT = 0.20
+local OBSTRUCTION_PADDING = 1.5
 
 local active = false
 local bound = false
@@ -38,19 +31,14 @@ local focusPosition
 local savedType
 local savedSubject
 local savedFov
+local cachedIsland
+local cachedIslandIndex
+local lastRouteDirection
+local lastRouteSideCenter
 
 local function isMobile()
 	return player:GetAttribute("DungeonMobileMode") == true
 		or UserInputService.TouchEnabled == true
-end
-
-local function currentIslandIndex()
-	local value = tonumber(player:GetAttribute("CurrentGlobalIslandIndex"))
-		or tonumber(Workspace:GetAttribute("DungeonCurrentObjectiveIsland"))
-	if not value or value <= 0 then
-		return 1
-	end
-	return math.max(1, math.floor(value))
 end
 
 local function characterParts()
@@ -69,86 +57,39 @@ local function characterParts()
 	return character, humanoid, root
 end
 
-local function rootOf(model)
-	if not model or not model:IsA("Model") or not model.Parent then
+local function horizontalUnit(vector)
+	local flat = Vector3.new(vector.X, 0, vector.Z)
+	return flat.Magnitude > 0.05 and flat.Unit or nil
+end
+
+local function currentIslandIndex()
+	local value = tonumber(player:GetAttribute("CurrentGlobalIslandIndex"))
+		or tonumber(Workspace:GetAttribute("DungeonObjectiveGlobalIslandIndex"))
+		or tonumber(Workspace:GetAttribute("DungeonCurrentObjectiveIsland"))
+	return value and math.max(1, math.floor(value)) or 1
+end
+
+local function findAnchor(container, names)
+	if not container then
 		return nil
 	end
-	local root = model:FindFirstChild("HumanoidRootPart", true)
-		or model.PrimaryPart
-		or model:FindFirstChildWhichIsA("BasePart", true)
-	return root and root:IsA("BasePart") and root or nil
-end
-
-local function alive(model)
-	local humanoid = model and model:FindFirstChildWhichIsA("Humanoid", true)
-	return humanoid ~= nil and humanoid.Health > 0
-end
-
-local function targetIsland(model)
-	local value = tonumber(model:GetAttribute("GlobalIslandIndex"))
-		or tonumber(model:GetAttribute("ProgressionIslandIndex"))
-		or tonumber(model:GetAttribute("CombatIslandIndex"))
-	if not value then
-		return nil
-	end
-	if value <= 0 and model:GetAttribute("IsInitialIslandMob") == true then
-		return 1
-	end
-	return math.floor(value)
-end
-
-local function validCameraTarget(model, root)
-	if not model
-		or not model:IsA("Model")
-		or not model.Parent
-		or model:GetAttribute("ObjectiveTargetCompleted") == true
-		or not alive(model)
-	then
-		return false
-	end
-	local targetRoot = rootOf(model)
-	if not targetRoot then
-		return false
-	end
-	local index = targetIsland(model)
-	if index and index > 0 and index ~= currentIslandIndex() then
-		return false
-	end
-	local offset = targetRoot.Position - root.Position
-	return Vector2.new(offset.X, offset.Z).Magnitude <= TARGET_RADIUS
-		and math.abs(offset.Y) <= 24
-end
-
-local function mobileCombatTarget(root)
-	local value = playerGui:FindFirstChild("DungeonMobileCombatTarget")
-	local selected = value and value:IsA("ObjectValue") and value.Value or nil
-	if validCameraTarget(selected, root) then
-		return selected
-	end
-
-	local best
-	local bestDistance = TARGET_RADIUS
-	local seen = {}
-	for _, tagged in ipairs(CollectionService:GetTagged(CombatConfig.TargetTag)) do
-		local model = tagged:IsA("Model") and tagged
-			or tagged:FindFirstAncestorOfClass("Model")
-		if model and not seen[model] then
-			seen[model] = true
-			if validCameraTarget(model, root) then
-				local targetRoot = rootOf(model)
-				local offset = targetRoot.Position - root.Position
-				local distance = Vector2.new(offset.X, offset.Z).Magnitude
-				if distance < bestDistance then
-					best = model
-					bestDistance = distance
-				end
-			end
+	for _, name in ipairs(names) do
+		local instance = container:FindFirstChild(name, true)
+		if instance and instance:IsA("BasePart") then
+			return instance
 		end
 	end
-	return best
+	return nil
 end
 
-local function islandModel(index, root)
+local function findIsland(index, root)
+	if cachedIsland
+		and cachedIsland.Parent
+		and cachedIslandIndex == index
+	then
+		return cachedIsland
+	end
+
 	local exact
 	local nearest
 	local nearestDistance = math.huge
@@ -161,70 +102,139 @@ local function islandModel(index, root)
 					exact = instance
 					break
 				end
-				local bounds = instance:GetBoundingBox()
-				local distance = (bounds.Position - root.Position).Magnitude
-				if distance < nearestDistance then
-					nearest = instance
-					nearestDistance = distance
+				if root then
+					local bounds = instance:GetBoundingBox()
+					local distance = (bounds.Position - root.Position).Magnitude
+					if distance < nearestDistance then
+						nearest = instance
+						nearestDistance = distance
+					end
 				end
 			end
 		end
 	end
-	return exact or nearest
+
+	cachedIsland = exact or nearest
+	cachedIslandIndex = index
+	return cachedIsland
 end
 
-local function routeFocus(root)
-	local island = islandModel(currentIslandIndex(), root)
-	if island then
-		for _, name in ipairs({ "ExitAnchor", "Exit", "ObjectiveAnchor" }) do
-			local anchor = island:FindFirstChild(name, true)
-			if anchor and anchor:IsA("BasePart") then
-				return anchor.Position
-			end
+local function exitSide(island)
+	if not island then
+		return nil
+	end
+
+	local exit = findAnchor(island, { "ExitAnchor", "Exit" })
+	if not exit then
+		return nil
+	end
+
+	local boundsCFrame, boundsSize = island:GetBoundingBox()
+	local localExit = boundsCFrame:PointToObjectSpace(exit.Position)
+	local half = boundsSize * 0.5
+	local candidates = {
+		{ math.abs(half.X - localExit.X), Vector3.new(1, 0, 0), Vector3.new(half.X, 0, 0) },
+		{ math.abs(-half.X - localExit.X), Vector3.new(-1, 0, 0), Vector3.new(-half.X, 0, 0) },
+		{ math.abs(half.Z - localExit.Z), Vector3.new(0, 0, 1), Vector3.new(0, 0, half.Z) },
+		{ math.abs(-half.Z - localExit.Z), Vector3.new(0, 0, -1), Vector3.new(0, 0, -half.Z) },
+	}
+
+	local closest = candidates[1]
+	for index = 2, #candidates do
+		if candidates[index][1] < closest[1] then
+			closest = candidates[index]
 		end
-		local bounds = island:GetBoundingBox()
-		return bounds.Position
 	end
-	return root.Position + root.CFrame.LookVector * 12
+
+	local direction = horizontalUnit(boundsCFrame:VectorToWorldSpace(closest[2]))
+	local sideCenter = boundsCFrame:PointToWorldSpace(closest[3])
+	return direction, sideCenter
 end
 
-local function desiredFrame(root)
-	local target = mobileCombatTarget(root)
-	local targetRoot = target and rootOf(target)
-	local rawFocus = targetRoot and targetRoot.Position or routeFocus(root)
-	local horizontal = Vector3.new(
-		rawFocus.X - root.Position.X,
-		0,
-		rawFocus.Z - root.Position.Z
-	)
-	local forward
-	if horizontal.Magnitude > 0.1 then
-		forward = horizontal.Unit
+local function routeFrame(root)
+	local island = findIsland(currentIslandIndex(), root)
+	local direction, sideCenter = exitSide(island)
+
+	if direction and sideCenter then
+		lastRouteDirection = direction
+		lastRouteSideCenter = sideCenter
 	else
-		local look = Vector3.new(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z)
-		forward = look.Magnitude > 0.01 and look.Unit or Vector3.new(0, 0, -1)
+		direction = lastRouteDirection
+		sideCenter = lastRouteSideCenter
 	end
 
-	local blendToTarget = targetRoot and 0.42 or 0.22
-	local focus = root.Position:Lerp(
-		Vector3.new(rawFocus.X, root.Position.Y + 2, rawFocus.Z),
-		blendToTarget
-	) + Vector3.new(0, 1.5, 0)
-	local desiredPosition = root.Position - forward * DISTANCE + Vector3.new(0, HEIGHT, 0)
+	if not direction then
+		if island then
+			local bounds = island:GetBoundingBox()
+			direction = horizontalUnit(bounds.Position - root.Position)
+		end
+		direction = direction
+			or horizontalUnit(root.CFrame.LookVector)
+			or Vector3.new(0, 0, -1)
+	end
+
+	if not sideCenter then
+		if island then
+			local bounds = island:GetBoundingBox()
+			sideCenter = bounds.Position
+		else
+			sideCenter = root.Position + direction * 8
+		end
+	end
+
+	local focus = Vector3.new(
+		root.Position.X + (sideCenter.X - root.Position.X) * FOCUS_TOWARD_EXIT,
+		root.Position.Y + (sideCenter.Y - root.Position.Y) * FOCUS_TOWARD_EXIT,
+		root.Position.Z + (sideCenter.Z - root.Position.Z) * FOCUS_TOWARD_EXIT
+	)
+	return direction, focus, sideCenter
+end
+
+local function humanoidModel(instance)
+	local current = instance
+	while current and current ~= Workspace do
+		if current:IsA("Model") and current:FindFirstChildWhichIsA("Humanoid") then
+			return current
+		end
+		current = current.Parent
+	end
+	return nil
+end
+
+local function desiredCameraPosition(root, direction, focus)
+	local desired = root.Position - direction * CAMERA_DISTANCE
+		+ Vector3.new(0, CAMERA_HEIGHT, 0)
+	local ray = desired - focus
+	if ray.Magnitude <= 0.1 then
+		return desired
+	end
 
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
-	params.FilterDescendantsInstances = { player.Character }
+	local excluded = {}
+	if player.Character then
+		table.insert(excluded, player.Character)
+	end
+	params.FilterDescendantsInstances = excluded
 	params.IgnoreWater = true
-	local rayDirection = desiredPosition - focus
-	if rayDirection.Magnitude > 0.1 then
-		local hit = Workspace:Raycast(focus, rayDirection, params)
-		if hit and not hit.Instance:FindFirstAncestorWhichIsA("Model") then
-			desiredPosition = hit.Position - rayDirection.Unit * OBSTRUCTION_PADDING
+
+	-- Mobs nunca devem empurrar a camera para frente. Ignoramos modelos com
+	-- Humanoid e somente usamos geometria da ilha/mundo como obstrucao real.
+	for _ = 1, 24 do
+		local hit = Workspace:Raycast(focus, ray, params)
+		if not hit then
+			break
+		end
+		local model = humanoidModel(hit.Instance)
+		if model then
+			table.insert(excluded, model)
+			params.FilterDescendantsInstances = excluded
+		else
+			desired = hit.Position - ray.Unit * OBSTRUCTION_PADDING
+			break
 		end
 	end
-
-	return CFrame.lookAt(desiredPosition, focus, Vector3.yAxis), focus, target
+	return desired
 end
 
 local function capture(camera)
@@ -262,12 +272,7 @@ local function restore()
 end
 
 local function update(dt)
-	if not active then
-		return
-	end
-	if player:GetAttribute("DungeonAssistedTransportActive") == true then
-		cameraCFrame = nil
-		focusPosition = nil
+	if not active or player:GetAttribute("DungeonAssistedTransportActive") == true then
 		return
 	end
 
@@ -276,29 +281,39 @@ local function update(dt)
 	if not camera or not root then
 		return
 	end
+
 	capture(camera)
 	camera.CameraType = Enum.CameraType.Scriptable
 
-	local desired, desiredFocus, target = desiredFrame(root)
+	local direction, desiredFocus, sideCenter = routeFrame(root)
+	local desiredPosition = desiredCameraPosition(root, direction, desiredFocus)
 	local positionAlpha = 1 - math.exp(-POSITION_SPEED * math.max(dt, 0))
 	local rotationAlpha = 1 - math.exp(-ROTATION_SPEED * math.max(dt, 0))
-	cameraCFrame = (cameraCFrame or camera.CFrame):Lerp(desired, positionAlpha)
-	focusPosition = (focusPosition or desiredFocus):Lerp(desiredFocus, rotationAlpha)
-	camera.CFrame = CFrame.lookAt(cameraCFrame.Position, focusPosition, Vector3.yAxis)
+	local fovAlpha = 1 - math.exp(-FOV_SPEED * math.max(dt, 0))
+
+	cameraCFrame = cameraCFrame or camera.CFrame
+	focusPosition = focusPosition or desiredFocus
+	local position = cameraCFrame.Position:Lerp(desiredPosition, positionAlpha)
+	focusPosition = focusPosition:Lerp(desiredFocus, rotationAlpha)
+	if (focusPosition - position).Magnitude < 0.1 then
+		focusPosition = position + direction * CAMERA_DISTANCE
+	end
+
+	cameraCFrame = CFrame.lookAt(position, focusPosition, Vector3.yAxis)
+	camera.CFrame = cameraCFrame
 	camera.Focus = CFrame.new(focusPosition)
-	camera.FieldOfView += (FOV - camera.FieldOfView) * positionAlpha
+	camera.FieldOfView += (CAMERA_FOV - camera.FieldOfView) * fovAlpha
 
 	player:SetAttribute("DungeonMobileCameraActive", true)
 	player:SetAttribute("DungeonMobileCameraPolicy", VERSION)
-	player:SetAttribute(
-		"DungeonMobileCameraMode",
-		target and "CombatFollow" or "RouteFollow"
-	)
+	player:SetAttribute("DungeonMobileCameraMode", "IslandRouteFollow")
+	player:SetAttribute("DungeonMobileCameraForward", direction)
+	player:SetAttribute("DungeonMobileCameraFocusWorld", focusPosition)
+	player:SetAttribute("DungeonMobileCameraSideCenterWorld", sideCenter)
 end
 
 local function eligible()
-	return isMobile()
-		and player:GetAttribute("DungeonMVPVictory") ~= true
+	return isMobile() and player:GetAttribute("DungeonMVPVictory") ~= true
 end
 
 local function refresh()
@@ -322,12 +337,24 @@ local function refresh()
 	end
 end
 
+local function invalidateIslandCache()
+	cachedIsland = nil
+	cachedIslandIndex = nil
+	lastRouteDirection = nil
+	lastRouteSideCenter = nil
+end
+
 player.CharacterAdded:Connect(function()
 	cameraCFrame = nil
 	focusPosition = nil
+	invalidateIslandCache()
 	task.defer(refresh)
 end)
 player:GetAttributeChangedSignal("DungeonMobileMode"):Connect(refresh)
+player:GetAttributeChangedSignal("CurrentGlobalIslandIndex"):Connect(function()
+	invalidateIslandCache()
+	refresh()
+end)
 player:GetAttributeChangedSignal("DungeonMVPVictory"):Connect(refresh)
 player:GetAttributeChangedSignal("DungeonAssistedTransportActive"):Connect(function()
 	cameraCFrame = nil
