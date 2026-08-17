@@ -1,10 +1,11 @@
 -- StudioFreshPlayerData
 --
 -- Em qualquer Play/Test executado dentro do Roblox Studio, a experiencia deve
--- se comportar como a de um jogador novo. Dados persistentes podem ate existir
--- no DataStore real, mas nunca sao expostos aos sistemas depois deste wrapper e
--- nenhum Save/resultado e persistido durante a sessao de teste.
+-- comecar como a de um jogador novo. O reset acontece UMA unica vez por jogador
+-- em cada sessao de Play; depois disso Load() e somente pass-through para que XP,
+-- level, ilha liberada e demais progressos conquistados durante o teste funcionem.
 --
+-- Dados de Studio continuam temporarios: nenhum Save/resultado e persistido.
 -- Em servidores publicados este script encerra imediatamente e nao altera nada.
 
 local RunService = game:GetService("RunService")
@@ -24,6 +25,7 @@ local PlayerDataService = require(
 
 local originalLoad = PlayerDataService.Load
 local resetPlayers = setmetatable({}, { __mode = "k" })
+local VERSION = "FreshBeginnerV2_InitializeOnce"
 
 local function freshData()
 	return {
@@ -117,7 +119,10 @@ local function publishFreshAttributes(player)
 	end
 
 	player:SetAttribute("StudioFreshPlayerData", true)
-	player:SetAttribute("StudioFreshPlayerDataVersion", "FreshBeginnerV1")
+	player:SetAttribute("StudioFreshPlayerDataVersion", VERSION)
+	player:SetAttribute("StudioFreshPlayerDataInitializedOnce", true)
+	player:SetAttribute("StudioFreshPlayerDataResetCount", 1)
+	player:SetAttribute("StudioFreshPlayerDataInitializedAt", Workspace:GetServerTimeNow())
 	player:SetAttribute("PlayerDataLoaded", true)
 	player:SetAttribute("PlayerDataTemporary", true)
 	player:SetAttribute("Coins", 0)
@@ -152,21 +157,36 @@ local function clearStaleRuntimeObjects(player)
 	end
 end
 
-local function resetPlayer(player)
+local function resetPlayerOnce(player)
 	local data = originalLoad(player)
-	if not resetPlayers[player] then
-		resetPlayers[player] = true
-		replaceDataInPlace(data)
+
+	-- CRITICO: depois do primeiro reset desta sessao, nunca publique novamente
+	-- Level=1/XP=0. Muitos servicos chamam Load() durante o gameplay e isso nao
+	-- pode apagar o progresso conquistado alguns segundos antes.
+	if resetPlayers[player] then
+		if player.Parent == Players then
+			player:SetAttribute("StudioFreshPlayerDataLoadPolicy", "PassThroughAfterInitialReset")
+		end
+		return data
 	end
+
+	resetPlayers[player] = true
+	replaceDataInPlace(data)
 	publishFreshAttributes(player)
 	clearStaleRuntimeObjects(player)
+
+	if player.Parent == Players then
+		player:SetAttribute("StudioFreshPlayerDataLoadPolicy", "PassThroughAfterInitialReset")
+	end
+
 	return data
 end
 
 -- Todos os consumidores do ModuleScript compartilham esta mesma tabela.
--- Depois deste ponto, qualquer Load recebe sempre o snapshot iniciante.
+-- A primeira chamada cria o snapshot iniciante; chamadas seguintes preservam
+-- integralmente o progresso feito dentro desta mesma sessao de Play.
 PlayerDataService.Load = function(player)
-	return resetPlayer(player)
+	return resetPlayerOnce(player)
 end
 
 -- No Studio, salvar deve parecer bem-sucedido para os sistemas chamadores,
@@ -191,14 +211,7 @@ end
 
 local function setup(player)
 	task.spawn(function()
-		resetPlayer(player)
-		-- Pequeno segundo passe cobre scripts que publicaram atributos no mesmo
-		-- frame a partir de um snapshot antigo antes deste bootstrap executar.
-		task.wait(0.15)
-		if player.Parent == Players then
-			publishFreshAttributes(player)
-			clearStaleRuntimeObjects(player)
-		end
+		resetPlayerOnce(player)
 	end)
 end
 
@@ -211,5 +224,6 @@ for _, player in ipairs(Players:GetPlayers()) do
 end
 
 Workspace:SetAttribute("DungeonStudioFreshPlayerDataEnabled", true)
-Workspace:SetAttribute("DungeonStudioFreshPlayerDataVersion", "FreshBeginnerV1")
-print("[StudioFreshPlayerData] Studio usando perfil iniciante temporario; saves desativados.")
+Workspace:SetAttribute("DungeonStudioFreshPlayerDataVersion", VERSION)
+Workspace:SetAttribute("DungeonStudioFreshPlayerDataResetPolicy", "OncePerPlaySession")
+print("[StudioFreshPlayerData] Perfil iniciante aplicado uma vez; progresso da sessao preservado.")
