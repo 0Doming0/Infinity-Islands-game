@@ -1,13 +1,14 @@
 --[[
-	Infinity Islands - Task 07
-	PlayerLevelConfig V1
+	Infinity Islands - PlayerLevelConfig
 
-	Player progression is run-scoped for the MVP balance phase.
+	Player progression is persistent for the MVP.
 
-	Core curve:
+	Early retention curve:
 	- Level 1 starts at 0 XP.
-	- XP needed for the next level:
-	  60 + 25 * (level - 1)
+	- Level 1 -> 2 requires 54 XP so the first level-up lands exactly after
+	  the Initial Island (18 XP) + Numbered Island 1 (36 XP).
+	- From Level 2 onward the original curve is preserved:
+	  60 + 25 * (level - 1), therefore L2->3 = 85, L3->4 = 110, etc.
 	- +8% outgoing combat damage per level after Level 1.
 	- +4% maximum health per level after Level 1.
 
@@ -16,12 +17,13 @@
 
 local PlayerLevelConfig = {}
 
-PlayerLevelConfig.Version = "PlayerLevelV2"
+PlayerLevelConfig.Version = "PlayerLevelV3_FirstLevel54"
 PlayerLevelConfig.PersistencePolicy = "PersistentProfileV2"
 
 PlayerLevelConfig.StartingLevel = 1
 PlayerLevelConfig.MaximumLevel = 100
 
+PlayerLevelConfig.FirstLevelXPToNextLevel = 54
 PlayerLevelConfig.BaseXPToNextLevel = 60
 PlayerLevelConfig.XPIncreasePerLevel = 25
 
@@ -46,6 +48,10 @@ function PlayerLevelConfig.GetXPToNextLevel(level)
 
 	if level >= PlayerLevelConfig.MaximumLevel then
 		return 0
+	end
+
+	if level == PlayerLevelConfig.StartingLevel then
+		return PlayerLevelConfig.FirstLevelXPToNextLevel
 	end
 
 	return math.max(
@@ -94,18 +100,18 @@ end
 
 function PlayerLevelConfig.Validate()
 	assert(
-		PlayerLevelConfig.GetXPToNextLevel(1) == 60,
-		"Level 1 precisa pedir 60 XP"
+		PlayerLevelConfig.GetXPToNextLevel(1) == 54,
+		"Level 1 precisa pedir 54 XP para coincidir com o primeiro pacing"
 	)
 
 	assert(
 		PlayerLevelConfig.GetXPToNextLevel(2) == 85,
-		"Level 2 precisa pedir 85 XP"
+		"Level 2 precisa preservar os 85 XP originais"
 	)
 
 	assert(
 		PlayerLevelConfig.GetXPToNextLevel(3) == 110,
-		"Level 3 precisa pedir 110 XP"
+		"Level 3 precisa preservar os 110 XP originais"
 	)
 
 	assert(
