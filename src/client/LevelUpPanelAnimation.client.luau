@@ -7,21 +7,29 @@ local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService = game:GetService("TweenService")
 
+local CompanionCatalog = require(ReplicatedStorage:WaitForChild("CompanionCatalog"))
+
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 
-local VERSION = "NonBlockingProgressionToastV3_RandomCompanionUpgrade"
+local VERSION = "NonBlockingProgressionToastV4_CompanionLevelIcon"
 local TOAST_GUI_NAME = "ProgressionLevelToastGui"
 local DISPLAY_SECONDS = 1.35
+local COMPANION_DISPLAY_SECONDS = 0.9
 local FADE_SECONDS = 0.18
+local COMPANION_FADE_SECONDS = 0.12
 local random = Random.new()
 
 local toastGui
+local toastHolder
+local toastIcon
 local toastLabel
 local toastSerial = 0
 local lastPlayerLevelSerial
 local lastOrbLevels = {}
 local panelConnections = setmetatable({}, { __mode = "k" })
+local companionOfferSerials = {}
+local pendingCompanionUpgrades = {}
 
 local function suppressLevelUpPanel(root)
 	if not root then
@@ -51,9 +59,12 @@ local function suppressAllLegacyPanels()
 end
 
 local function ensureToast()
-	if toastGui and toastGui.Parent and toastLabel and toastLabel.Parent then
-		return toastLabel
+	if toastGui and toastGui.Parent and toastHolder and toastHolder.Parent
+		and toastLabel and toastLabel.Parent and toastIcon and toastIcon.Parent
+	then
+		return toastHolder, toastLabel, toastIcon
 	end
+
 	local old = playerGui:FindFirstChild(TOAST_GUI_NAME)
 	if old then
 		old:Destroy()
@@ -67,11 +78,41 @@ local function ensureToast()
 	toastGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 	toastGui.Parent = playerGui
 
+	toastHolder = Instance.new("Frame")
+	toastHolder.Name = "LevelToastHolder"
+	toastHolder.AnchorPoint = Vector2.new(0.5, 0)
+	toastHolder.Position = UDim2.new(0.5, 0, 0.105, 0)
+	toastHolder.Size = UDim2.new(0.92, 0, 0, 44)
+	toastHolder.BackgroundTransparency = 1
+	toastHolder.BorderSizePixel = 0
+	toastHolder.Visible = false
+	toastHolder.ZIndex = 181
+	toastHolder.Parent = toastGui
+
+	local layout = Instance.new("UIListLayout")
+	layout.FillDirection = Enum.FillDirection.Horizontal
+	layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	layout.VerticalAlignment = Enum.VerticalAlignment.Center
+	layout.Padding = UDim.new(0, 8)
+	layout.Parent = toastHolder
+
+	toastIcon = Instance.new("ImageLabel")
+	toastIcon.Name = "CompanionLevelIcon"
+	toastIcon.Size = UDim2.fromOffset(38, 38)
+	toastIcon.BackgroundTransparency = 1
+	toastIcon.BorderSizePixel = 0
+	toastIcon.Image = ""
+	toastIcon.ImageTransparency = 1
+	toastIcon.ScaleType = Enum.ScaleType.Fit
+	toastIcon.Visible = false
+	toastIcon.LayoutOrder = 1
+	toastIcon.ZIndex = 182
+	toastIcon.Parent = toastHolder
+
 	toastLabel = Instance.new("TextLabel")
 	toastLabel.Name = "LevelToast"
-	toastLabel.AnchorPoint = Vector2.new(0.5, 0)
-	toastLabel.Position = UDim2.new(0.5, 0, 0.105, 0)
-	toastLabel.Size = UDim2.new(0.72, 0, 0, 42)
+	toastLabel.AutomaticSize = Enum.AutomaticSize.X
+	toastLabel.Size = UDim2.fromOffset(0, 42)
 	toastLabel.BackgroundTransparency = 1
 	toastLabel.BorderSizePixel = 0
 	toastLabel.Font = Enum.Font.GothamBlack
@@ -79,52 +120,78 @@ local function ensureToast()
 	toastLabel.TextColor3 = Color3.fromRGB(255, 239, 118)
 	toastLabel.TextStrokeColor3 = Color3.fromRGB(20, 13, 31)
 	toastLabel.TextStrokeTransparency = 0.18
-	toastLabel.TextScaled = true
+	toastLabel.TextSize = 24
 	toastLabel.TextWrapped = false
 	toastLabel.TextTransparency = 1
-	toastLabel.ZIndex = 181
-	toastLabel.Parent = toastGui
+	toastLabel.LayoutOrder = 2
+	toastLabel.ZIndex = 182
+	toastLabel.Parent = toastHolder
 
-	local constraint = Instance.new("UITextSizeConstraint")
-	constraint.MinTextSize = 16
-	constraint.MaxTextSize = 32
-	constraint.Parent = toastLabel
-	return toastLabel
+	return toastHolder, toastLabel, toastIcon
 end
 
-local function showToast(message, color)
+local function showToast(message, color, options)
 	if type(message) ~= "string" or message == "" then
 		return
 	end
-	local label = ensureToast()
+
+	options = type(options) == "table" and options or {}
+	local holder, label, icon = ensureToast()
 	toastSerial += 1
 	local serial = toastSerial
+	local duration = math.max(0.1, tonumber(options.Duration) or DISPLAY_SECONDS)
+	local fadeSeconds = math.max(0.05, tonumber(options.FadeSeconds) or FADE_SECONDS)
+	local imageId = type(options.ImageId) == "string" and options.ImageId or ""
+	local showIcon = imageId ~= ""
 
 	label.Text = message
 	label.TextColor3 = color or Color3.fromRGB(255, 239, 118)
 	label.TextTransparency = 1
 	label.TextStrokeTransparency = 1
+	label.TextSize = math.clamp(math.floor(tonumber(options.TextSize) or 24), 16, 30)
 	label.Visible = true
+
+	icon.Image = imageId
+	icon.Visible = showIcon
+	icon.ImageTransparency = 1
+	holder.Visible = true
 
 	TweenService:Create(
 		label,
-		TweenInfo.new(FADE_SECONDS, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+		TweenInfo.new(fadeSeconds, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
 		{ TextTransparency = 0, TextStrokeTransparency = 0.18 }
 	):Play()
+	if showIcon then
+		TweenService:Create(
+			icon,
+			TweenInfo.new(fadeSeconds, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+			{ ImageTransparency = 0 }
+		):Play()
+	end
 
-	task.delay(DISPLAY_SECONDS, function()
-		if serial ~= toastSerial or not label.Parent then
+	task.delay(duration, function()
+		if serial ~= toastSerial or not holder.Parent then
 			return
 		end
-		local fade = TweenService:Create(
+
+		local labelFade = TweenService:Create(
 			label,
-			TweenInfo.new(FADE_SECONDS, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+			TweenInfo.new(fadeSeconds, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
 			{ TextTransparency = 1, TextStrokeTransparency = 1 }
 		)
-		fade:Play()
-		fade.Completed:Wait()
-		if serial == toastSerial and label.Parent then
-			label.Visible = false
+		labelFade:Play()
+		if showIcon and icon.Parent then
+			TweenService:Create(
+				icon,
+				TweenInfo.new(fadeSeconds, Enum.EasingStyle.Quad, Enum.EasingDirection.In),
+				{ ImageTransparency = 1 }
+			):Play()
+		end
+		labelFade.Completed:Wait()
+
+		if serial == toastSerial and holder.Parent then
+			holder.Visible = false
+			icon.Visible = false
 		end
 	end)
 end
@@ -191,7 +258,13 @@ local function bindOrbLevelNotifications()
 	end
 end
 
-local companionOfferSerials = {}
+local function companionLevelIcon(speciesId)
+	if type(speciesId) ~= "string" then
+		return ""
+	end
+	local definition = CompanionCatalog.Get(speciesId)
+	return definition and definition.LevelIconImageId or ""
+end
 
 local function autoAcceptCompanionOffer(payload, request)
 	local serial = math.floor(tonumber(payload.Serial) or 0)
@@ -216,6 +289,15 @@ local function autoAcceptCompanionOffer(payload, request)
 
 	local chosen = available[random:NextInteger(1, #available)]
 	companionOfferSerials[serial] = true
+	pendingCompanionUpgrades[instanceId] = {
+		Serial = serial,
+		SpeciesId = payload.SpeciesId,
+		CompanionName = payload.CompanionName or payload.SpeciesName or "Companheiro",
+		Level = math.max(1, math.floor(tonumber(payload.Level) or 1)),
+		UpgradeId = chosen.UpgradeId,
+		UpgradeLabel = chosen.AttributeLabel or chosen.DisplayName or "MELHORIA",
+	}
+
 	player:SetAttribute("DungeonCompanionLastRandomUpgrade", chosen.UpgradeId)
 	player:SetAttribute("DungeonCompanionLastRandomUpgradeSerial", serial)
 
@@ -224,6 +306,36 @@ local function autoAcceptCompanionOffer(payload, request)
 		InstanceId = instanceId,
 		UpgradeId = chosen.UpgradeId,
 	})
+end
+
+local function showConfirmedCompanionUpgrade(payload)
+	local instanceId = payload.InstanceId
+	local pending = type(instanceId) == "string" and pendingCompanionUpgrades[instanceId] or nil
+	if not pending then
+		return
+	end
+	pendingCompanionUpgrades[instanceId] = nil
+
+	if type(payload.UpgradeId) == "string" and payload.UpgradeId ~= pending.UpgradeId then
+		return
+	end
+
+	local imageId = companionLevelIcon(pending.SpeciesId)
+	local upgradeLabel = tostring(pending.UpgradeLabel or "MELHORIA")
+	showToast(
+		"MELHORIA APLICADA • " .. string.upper(upgradeLabel),
+		Color3.fromRGB(126, 255, 176),
+		{
+			ImageId = imageId,
+			Duration = COMPANION_DISPLAY_SECONDS,
+			FadeSeconds = COMPANION_FADE_SECONDS,
+			TextSize = 22,
+		}
+	)
+
+	player:SetAttribute("DungeonCompanionUpgradeToastInstanceId", instanceId)
+	player:SetAttribute("DungeonCompanionUpgradeToastLevel", pending.Level)
+	player:SetAttribute("DungeonCompanionUpgradeToastHasLevelIcon", imageId ~= "")
 end
 
 local function bindCompanionProgression()
@@ -244,13 +356,11 @@ local function bindCompanionProgression()
 			return
 		end
 		if payload.Action == "Offer" then
-			local level = math.max(1, math.floor(tonumber(payload.Level) or 1))
-			local name = payload.CompanionName or payload.SpeciesName or "Companheiro"
-			showToast(
-				string.format("%s • NÍVEL %d", tostring(name), level),
-				Color3.fromRGB(126, 255, 176)
-			)
+			-- Nao mostramos nada antes da confirmacao; isso evita interromper o
+			-- combate e garante que o toast represente uma melhoria realmente aplicada.
 			autoAcceptCompanionOffer(payload, request)
+		elseif payload.Action == "Selected" then
+			showConfirmedCompanionUpgrade(payload)
 		end
 	end)
 	return true
@@ -286,3 +396,4 @@ end)
 player:SetAttribute("DungeonProgressionToastVersion", VERSION)
 player:SetAttribute("DungeonBlockingLevelUpPanelDisabled", true)
 player:SetAttribute("DungeonCompanionLevelUpChoicePolicy", "AutomaticRandomAvailableUpgrade")
+player:SetAttribute("DungeonCompanionUpgradeToastPolicy", "ConfirmedQuickLevelIcon")
