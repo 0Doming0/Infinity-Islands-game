@@ -33,6 +33,7 @@
         "DungeonHUDBootstrap": { "$attributes": { "_lemonadeUniqueId": "QrR6ToTZQrR6" }, "$path": "src/client/DungeonHUDBootstrap.client.luau" },
         "DungeonClientLegacyGuard": { "$path": "src/client/DungeonClientLegacyGuard.client.luau" },
         "DungeonMobileAccessibility": { "$path": "src/client/DungeonMobileAccessibility.client.luau" },
+        "DungeonMobileCombatAssist": { "$path": "src/client/DungeonMobileCombatAssist.client.luau" },
         "DungeonMobileCombatTelemetry": { "$path": "src/client/DungeonMobileCombatTelemetry.client.luau" },
         "DungeonPortraitEnemyReadability": { "$path": "src/client/DungeonPortraitEnemyReadability.client.luau" },
         "DungeonStrongHitFeedback": { "$path": "src/client/DungeonStrongHitFeedback.client.luau" },
